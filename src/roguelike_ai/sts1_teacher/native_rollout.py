@@ -1,6 +1,6 @@
-"""Native public-state rollout backend for the first audited STS1 V1 slice.
+"""Native public-state rollout backends for the first audited STS1 V1 slices.
 
-This backend never receives a source simulator BattleContext. Every rollout
+These backends never receive a source simulator BattleContext. Every rollout
 creates a fresh native BattleContext from the already-admitted public state and
 an action-independent ``PublicSample``. The deterministic follow-up policy is
 intentionally simple; V1 proves plumbing and public-only search semantics, not
@@ -30,13 +30,7 @@ def _enum_name(value: Any) -> str:
 
 
 class NativePublicJawWormRolloutV1:
-    """First executable public-only rollout backend.
-
-    Supported public input is deliberately restricted by the reconstruction
-    admission layer (starter Strike/Defend/Bash, one Jaw Worm, Ironclad,
-    Burning Blood/empty potion belt). Unknown or mismatched surfaces fail
-    closed instead of borrowing hidden state from the source simulator.
-    """
+    """Executable public-only rollout backend for the first Jaw Worm slice."""
 
     backend_id = "sts1-public-native-jaw-worm-rollout-v1"
     uses_hidden_information = False
@@ -138,8 +132,6 @@ class NativePublicJawWormRolloutV1:
         first = self._native_action(bc, action)
         first.execute(bc)
 
-        # ``max_depth`` is an action-step cap for this first native rollout
-        # policy. The first candidate action already consumed one step.
         steps = 1
         while steps < config.max_depth:
             if _enum_name(getattr(bc, "outcome", "UNDECIDED")) != "UNDECIDED":
@@ -150,4 +142,18 @@ class NativePublicJawWormRolloutV1:
         return self._score(bc)
 
 
-__all__ = ["NativePublicJawWormRolloutV1", "NativePublicRolloutError"]
+class NativePublicCultistRolloutV1(NativePublicJawWormRolloutV1):
+    """Same public-only rollout policy, with a distinct Cultist evidence identity.
+
+    The shared native constructor is guarded by reconstruction admission and the
+    native boundary, so Cultist V1 is still opening-turn INCANTATION only.
+    """
+
+    backend_id = "sts1-public-native-cultist-rollout-v1"
+
+
+__all__ = [
+    "NativePublicJawWormRolloutV1",
+    "NativePublicCultistRolloutV1",
+    "NativePublicRolloutError",
+]

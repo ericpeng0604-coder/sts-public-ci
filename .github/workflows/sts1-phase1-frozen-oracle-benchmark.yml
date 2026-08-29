@@ -1,0 +1,180 @@
+name: STS1 Phase 1 Frozen Oracle Benchmark
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-teacher-345
+    paths:
+      - '.github/workflows/sts1-phase1-frozen-oracle-benchmark.yml'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
+      - 'scripts/sts1/run_phase1_frozen-oracle-benchmark.py'
+      - 'scripts/sts1/aggregate_phase1_frozen_oracle_benchmark.py'
+      - 'tests/test_sts1_teacher.py'
+      - 'tests/test_sts1_phase1_frozen_oracle_benchmark.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate HEAD
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+
+      - name: Focused Phase 1 tests
+        run: >-
+          python -m pytest -q
+          tests/test_sts1_teacher.py
+          tests/test_sts1_phase1_frozen_oracle_benchmark.py
+
+      - name: Syntax gate
+        run: >-
+          python -m py_compile
+          src/roguelike_ai/sts1_teacher/benchmark.py
+          src/roguelike_ai/sts1_teacher/simulator.py
+          src/roguelike_ai/sts1_teacher/jialeiv_armb.py
+          scripts/sts1/apply_phase1_oracle_judge_overlay.py
+          scripts/sts1/run_phase1_frozen_oracle_benchmark.py
+          scripts/sts1/aggregate_phase1_frozen_oracle_benchmark.py
+
+      - name: Diff whitespace gate
+        run: git diff --check origin/main...HEAD
+
+  benchmark:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat: [1, 2]
+        shard: [0, 1, 2, 3, 4]
+    env:
+      PYTHONUNBUFFERED: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+
+    steps:
+      - name: Checkout exact candidate HEAD
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install frozen runtime dependency
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.11.0
+
+      - name: Record runner identity
+        run: |
+          echo "repo_head=$(git rev-parse HEAD)"
+          python --version
+          cmake --version
+          c++ --version
+          git --version
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply benchmark-only oracle binding
+        run: |
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-before.diff"
+          python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
+          cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
+          git -C external/sts_lightspeed/source diff --name-only
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Run frozen oracle shard
+        id: run_benchmark
+        continue-on-error: true
+        run: >-
+          python scripts/sts1/run_phase1_frozen_oracle_benchmark.py
+          --repeat ${{ matrix.repeat }}
+          --shard-index ${{ matrix.shard }}
+          --shard-count 5
+          --output-dir "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}"
+
+      - name: Require diagnostic evidence even on a research-gate failure
+        run: |
+          test -f "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/benchmark_summary.json"
+          test -f "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/benchmark_decisions.ndjson"
+          test -f "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/benchmark_errors.ndjson"
+          test -f "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/provenance.json"
+          cat "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/benchmark_summary.json"
+
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}
+          path: artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate HEAD
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download all benchmark shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: repeat-*-shard-*
+          path: downloaded
+
+      - name: Aggregate two full repeats and enforce Arm B baseline gate
+        run: >-
+          python scripts/sts1/aggregate_phase1_frozen_oracle_benchmark.py
+          --input-root downloaded
+          --output-dir evidence/sts1/phase1_frozen_oracle
+
+      - name: Show final evidence
+        if: always()
+        run: |
+          if [ -f evidence/sts1/phase1_frozen_oracle/benchmark_summary.json ]; then
+            cat evidence/sts1/phase1_frozen_oracle/benchmark_summary.json
+          fi
+          if [ -f evidence/sts1/phase1_frozen_oracle/determinism.json ]; then
+            cat evidence/sts1/phase1_frozen_oracle/determinism.json
+          fi
+
+      - name: Upload final frozen benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-frozen-oracle-evidence
+          path: evidence/sts1/phase1_frozen_oracle/
+          if-no-files-found: warn
+          retention-days: 90

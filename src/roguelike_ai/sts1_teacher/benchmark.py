@@ -42,12 +42,20 @@ def sha256_file(path: str | Path) -> str:
 
 def load_heldout_seeds(path: str | Path) -> tuple[int, ...]:
     raw = Path(path).read_text(encoding="utf-8").splitlines()
-    seeds = tuple(int(line.strip()) for line in raw if line.strip())
+    seeds: list[int] = []
+    for raw_line in raw:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            seeds.append(int(line))
+        except ValueError as exc:
+            raise BenchmarkContractError(f"heldout_seed_not_integer:{line!r}") from exc
     if len(seeds) != EXPECTED_HELDOUT_SEEDS or len(set(seeds)) != EXPECTED_HELDOUT_SEEDS:
         raise BenchmarkContractError(
             f"heldout_seed_contract:{len(seeds)}:{len(set(seeds))}:{EXPECTED_HELDOUT_SEEDS}"
         )
-    return seeds
+    return tuple(seeds)
 
 
 def oracle_ties(scores: Mapping[str, float], *, tolerance: float = ORACLE_TIE_TOLERANCE) -> tuple[str, ...]:

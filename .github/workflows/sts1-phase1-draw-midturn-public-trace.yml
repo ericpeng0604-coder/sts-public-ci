@@ -30,8 +30,11 @@ jobs:
       - name: Compile mirrored tracker
         run: python -m py_compile scripts/sts1/phase1_draw_midturn_bridge_reference.py
 
-      - name: Run Pommel Strike public-trace gate
-        run: python -m pytest -q tests/sts1/test_phase1_draw_midturn_public_trace.py
+      - name: Run Pommel + Shrug public-trace gates
+        run: >-
+          python -m pytest -q
+          tests/sts1/test_phase1_draw_midturn_public_trace.py
+          tests/sts1/test_phase1_shrug_draw_midturn_public_trace.py
 
       - name: Verify no hidden-state vocabulary was introduced
         shell: bash

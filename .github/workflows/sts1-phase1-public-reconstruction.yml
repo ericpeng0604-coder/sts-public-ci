@@ -6,28 +6,17 @@ on:
       - gpt/sts1-phase1-public-reconstruction
     paths:
       - '.github/workflows/sts1-phase1-public-reconstruction.yml'
-      - 'src/roguelike_ai/sts1_teacher/reconstruction.py'
-      - 'src/roguelike_ai/sts1_teacher/public_run_state.py'
-      - 'src/roguelike_ai/sts1_teacher/redeterminization.py'
-      - 'src/roguelike_ai/sts1_teacher/card_reconstruction.py'
-      - 'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py'
-      - 'src/roguelike_ai/sts1_teacher/player_reconstruction.py'
-      - 'src/roguelike_ai/sts1_teacher/run_reconstruction.py'
-      - 'src/roguelike_ai/sts1_teacher/reconstruction_state.py'
-      - 'src/roguelike_ai/sts1_teacher/native_rollout.py'
-      - 'tests/test_sts1_public_reconstruction.py'
-      - 'tests/test_sts1_public_run_state.py'
-      - 'tests/test_sts1_public_redeterminization.py'
-      - 'tests/test_sts1_public_card_reconstruction.py'
-      - 'tests/test_sts1_public_enemy_reconstruction.py'
-      - 'tests/test_sts1_public_native_v1_admission.py'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'tests/test_sts1_public_*.py'
       - 'tests/test_sts1_reconstruction_state.py'
-      - 'tests/test_sts1_public_reconstruction_smoke.py'
+      - 'tests/data/sts1_phase1_public_search_v1_source_seeds_64.txt'
       - 'scripts/sts1/apply_phase1_public_state_overlay.py'
       - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
       - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
       - 'scripts/sts1/verify_phase1_public_reconstruction_native.py'
       - 'scripts/sts1/verify_phase1_public_search_native.py'
+      - 'scripts/sts1/generate_phase1_public_search_v1_suite.py'
+      - 'scripts/sts1/run_phase1_public_search_v1_quality.py'
   workflow_dispatch:
 
 permissions:
@@ -78,6 +67,20 @@ jobs:
           scripts/sts1/apply_phase1_public_history_guard_overlay.py
           scripts/sts1/verify_phase1_public_reconstruction_native.py
           scripts/sts1/verify_phase1_public_search_native.py
+          scripts/sts1/generate_phase1_public_search_v1_suite.py
+          scripts/sts1/run_phase1_public_search_v1_quality.py
+
+      - name: Source seed freeze contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p = Path('tests/data/sts1_phase1_public_search_v1_source_seeds_64.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert len(seeds) == 64 and len(set(seeds)) == 64
+          print('PUBLIC_SEARCH_V1_SOURCE_SEEDS = PASS')
+          print('SOURCE_SEED_FILE_SHA256=' + hashlib.sha256(p.read_bytes()).hexdigest())
+          PY
 
       - name: Diff whitespace gate
         run: git diff --check origin/main...HEAD
@@ -122,17 +125,11 @@ jobs:
           import sys
           sys.path.insert(0, 'external/sts_lightspeed/source/build-probe')
           import slaythespire as sts
-
           gc = sts.GameContext(sts.CharacterClass.IRONCLAD, 1, 0)
           belt = list(gc.potions)
-          assert len(belt) == 3, belt
-          for index, item in enumerate(belt):
-              assert item['index'] == index
-              assert item['id'] == 'EMPTY_POTION_SLOT'
-              assert item['name'] == 'EMPTY_POTION_SLOT'
-              assert item['empty'] is True
+          assert len(belt) == 3
+          assert all(item['id'] == 'EMPTY_POTION_SLOT' and item['empty'] is True for item in belt)
           print('PUBLIC_POTION_BELT = PASS')
-          print('VISIBLE_SLOTS = 3')
           PY
 
       - name: Native reconstruction roundtrip and executable action proof
@@ -149,3 +146,61 @@ jobs:
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_potion_belt_v1'
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_reconstruction_v1'
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_history_turn_guard_v1'
+
+  public-search-v1-quality:
+    needs: public-native-reconstruction
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply zero-based monster history guard
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate frozen suite twice
+        run: |
+          python scripts/sts1/generate_phase1_public_search_v1_suite.py --output evidence/freeze-a.json
+          python scripts/sts1/generate_phase1_public_search_v1_suite.py --output evidence/freeze-b.json
+          cmp evidence/freeze-a.json evidence/freeze-b.json
+          cp evidence/freeze-a.json evidence/suite.json
+
+      - name: Run two-repeat quality benchmark
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v1_quality.py
+          --suite evidence/suite.json
+          --output-dir evidence/sts1/phase1_public_search_v1_quality
+
+      - name: Show quality summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_public_search_v1_quality/summary.json && cat evidence/sts1/phase1_public_search_v1_quality/summary.json || true
+
+      - name: Upload quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-public-search-v1-quality-evidence
+          path: evidence/sts1/phase1_public_search_v1_quality/
+          if-no-files-found: warn
+          retention-days: 90

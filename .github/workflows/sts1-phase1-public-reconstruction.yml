@@ -8,6 +8,7 @@ on:
       - '.github/workflows/sts1-phase1-public-reconstruction.yml'
       - 'src/roguelike_ai/sts1_teacher/reconstruction.py'
       - 'tests/test_sts1_public_reconstruction.py'
+      - 'scripts/sts1/apply_phase1_public_state_overlay.py'
   workflow_dispatch:
 
 permissions:
@@ -33,7 +34,57 @@ jobs:
         run: python -m pytest -q tests/test_sts1_public_reconstruction.py
 
       - name: Syntax gate
-        run: python -m py_compile src/roguelike_ai/sts1_teacher/reconstruction.py
+        run: >-
+          python -m py_compile
+          src/roguelike_ai/sts1_teacher/reconstruction.py
+          scripts/sts1/apply_phase1_public_state_overlay.py
 
       - name: Diff whitespace gate
         run: git diff --check origin/main...HEAD
+
+  public-potion-binding:
+    needs: reconstruction-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Verify visible potion belt
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'external/sts_lightspeed/source/build-probe')
+          import slaythespire as sts
+
+          gc = sts.GameContext(sts.CharacterClass.IRONCLAD, 1, 0)
+          belt = list(gc.potions)
+          assert len(belt) == 3, belt
+          for index, item in enumerate(belt):
+              assert item['index'] == index
+              assert item['id'] == 'EMPTY_POTION_SLOT'
+              assert item['name'] == 'EMPTY_POTION_SLOT'
+              assert item['empty'] is True
+          print('PUBLIC_POTION_BELT = PASS')
+          print('VISIBLE_SLOTS = 3')
+          PY
+
+      - name: Prove overlay touched binding only
+        run: |
+          changed="$(git -C external/sts_lightspeed/source diff --name-only)"
+          test "$changed" = "bindings/slaythespire.cpp"
+          git -C external/sts_lightspeed/source diff --check

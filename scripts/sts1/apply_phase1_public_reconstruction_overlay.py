@@ -2,9 +2,10 @@
 """Add the first fail-closed public-state -> BattleContext constructor.
 
 V1 is intentionally tiny: Ironclad, one Jaw Worm, starter Strike/Defend/Bash,
-empty potion slots, and no relic other than Burning Blood.  The constructor
+empty potion slots, and no relic other than Burning Blood. The constructor
 accepts only a public-state dict plus caller-supplied re-determinization seeds;
-it never accepts or clones an existing BattleContext.
+it never accepts or clones an existing BattleContext. Hidden draw-pile order is
+removed by canonicalizing the public composition before a fresh seeded shuffle.
 """
 from __future__ import annotations
 
@@ -74,7 +75,7 @@ INSERT = r'''    // phase1_public_reconstruction_v1: build from public observati
               require_bool(state, "combat_active", true);
 
               BattleContext bc;
-              bc.seed = 0;  // Never copied from the source simulator; formal sampling uses the explicit RNGs below.
+              bc.seed = 0;  // Never copied from the source simulator; formal sampling uses explicit fresh RNGs below.
               bc.floorNum = get_i(state, "floor");
               bc.encounter = MonsterEncounter::JAW_WORM;
               bc.ascension = get_i(state, "ascension_level");
@@ -159,6 +160,25 @@ INSERT = r'''    // phase1_public_reconstruction_v1: build from public observati
               add_cards("discard_pile");
               add_cards("exhaust_pile");
 
+              // The public contract exposes draw-pile composition, not hidden future order.
+              // Canonicalize the composition first so the incoming vector order has zero influence,
+              // then sample a fresh order from the action-independent draw_order seed.
+              std::sort(
+                  bc.cards.drawPile.begin(),
+                  bc.cards.drawPile.end(),
+                  [](const CardInstance &a, const CardInstance &b) {
+                      if (a.id != b.id) return static_cast<int>(a.id) < static_cast<int>(b.id);
+                      if (a.upgraded != b.upgraded) return a.upgraded < b.upgraded;
+                      if (a.cost != b.cost) return a.cost < b.cost;
+                      return a.costForTurn < b.costForTurn;
+                  }
+              );
+              java::Collections::shuffle(
+                  bc.cards.drawPile.begin(),
+                  bc.cards.drawPile.end(),
+                  java::Random(get_u64(seeds, "draw_order"))
+              );
+
               auto enemies = pybind11::cast<pybind11::list>(state["enemies"]);
               if (pybind11::len(enemies) != 1) throw std::runtime_error("enemy_count_not_one_v1");
               auto enemy = pybind11::cast<pybind11::dict>(enemies[0]);
@@ -214,6 +234,7 @@ def main() -> None:
     print("constructor=build_public_jaw_worm_context_v1")
     print("accepts_existing_battle_context=0")
     print("source_hidden_rng_access=0")
+    print("source_draw_order_access=0")
 
 
 if __name__ == "__main__":

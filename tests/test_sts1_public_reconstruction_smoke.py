@@ -78,7 +78,7 @@ def test_jaw_worm_basic_combat_reaches_full_reconstruction_admission() -> None:
 
 def test_same_state_with_unsupported_enemy_fails_closed() -> None:
     state = jaw_worm_public_state()
-    state["enemies"][0]["name"] = "Cultist"
+    state["enemies"][0]["name"] = "Fungi Beast"
     attached = attach_reconstruction_capabilities(state, run_state=run_state_capabilities())
     admission = assess_public_reconstruction(attached)
     assert attached["reconstruction"]["public_enemy_state_complete"] is False

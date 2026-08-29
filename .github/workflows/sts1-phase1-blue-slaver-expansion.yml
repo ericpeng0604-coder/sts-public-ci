@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gpt/sts1-phase1-blue-slaver-expansion
+      - gpt/sts1-phase1-public-reconstruction
     paths:
       - '.github/workflows/sts1-phase1-blue-slaver-expansion.yml'
       - 'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py'

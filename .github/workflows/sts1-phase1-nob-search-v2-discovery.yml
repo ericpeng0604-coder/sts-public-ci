@@ -1,0 +1,80 @@
+name: STS1 Phase 1 Nob Search V2 Discovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-nob-search-v2-discovery
+    paths:
+      - '.github/workflows/sts1-phase1-nob-search-v2-discovery.yml'
+      - 'scripts/sts1/run_phase1_public_search_v2_gremlin_nob_discovery.py'
+      - 'tests/data/sts1_phase1_public_search_v2_gremlin_nob_discovery_seeds_64.txt'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'scripts/sts1/apply_phase1_public_state_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+      - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nob-search-v2-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Discovery contract and syntax
+        run: |
+          python -m py_compile scripts/sts1/run_phase1_public_search_v2_gremlin_nob_discovery.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/data/sts1_phase1_public_search_v2_gremlin_nob_discovery_seeds_64.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert len(seeds) == 64 and len(set(seeds)) == 64
+          assert min(seeds) == 350001 and max(seeds) == 350064
+          assert not any(340001 <= seed <= 340064 for seed in seeds)
+          print('NOB_V2_DISCOVERY_SEED_CONTRACT = PASS')
+          print('FROZEN_340XXX_HOLDOUT_SEEDS_PRESENT = 0')
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply zero-based monster history guard
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Run two-repeat Nob V2 discovery
+        run: python scripts/sts1/run_phase1_public_search_v2_gremlin_nob_discovery.py
+
+      - name: Show discovery summary
+        if: always()
+        run: test -f evidence/sts1/phase1_nob_search_v2_discovery/summary.json && cat evidence/sts1/phase1_nob_search_v2_discovery/summary.json || true
+
+      - name: Upload discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-nob-search-v2-discovery-evidence
+          path: evidence/sts1/phase1_nob_search_v2_discovery/
+          if-no-files-found: warn
+          retention-days: 90

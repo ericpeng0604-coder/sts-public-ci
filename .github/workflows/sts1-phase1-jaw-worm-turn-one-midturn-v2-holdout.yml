@@ -1,0 +1,109 @@
+name: STS1 Phase 1 Jaw Worm Turn-One Midturn V2 Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-jaw-worm-turn-one-midturn-v2-holdout
+    paths:
+      - '.github/workflows/sts1-phase1-jaw-worm-turn-one-midturn-v2-holdout.yml'
+      - 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout_seeds_64.txt'
+      - 'scripts/sts1/generate_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout.py'
+      - 'scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout.py'
+      - 'src/roguelike_ai/sts1_teacher/midturn_v2.py'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'scripts/sts1/apply_phase1_public_state_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_midturn_counter_overlay.py'
+      - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jaw-worm-turn-one-midturn-v2-fresh-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fresh holdout freeze contract and syntax
+        run: |
+          python -m py_compile \
+            src/roguelike_ai/sts1_teacher/midturn_v2.py \
+            scripts/sts1/generate_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout.py \
+            scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout.py
+          python - <<'PY'
+          from pathlib import Path
+          hold = Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout_seeds_64.txt')
+          retired = Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_midturn_source_seeds_64.txt')
+          dev = Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery_seeds_64.txt')
+          def read(p):
+              return [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          h, r, d = read(hold), set(read(retired)), set(read(dev))
+          assert len(h) == 64 and len(set(h)) == 64
+          assert min(h) == 440001 and max(h) == 440064
+          assert not set(h).intersection(r)
+          assert not set(h).intersection(d)
+          from roguelike_ai.sts1_teacher.midturn_v2 import FROZEN_MARGIN, POLICY_ID
+          assert FROZEN_MARGIN == 1.0
+          assert POLICY_ID == 'jaw-worm-turn1-midturn-margin1-else-simple-v1'
+          print('MIDTURN_V2_FRESH_HOLDOUT_SEED_CONTRACT = PASS')
+          print('RETIRED_420XXX_OVERLAP = 0')
+          print('DISCOVERY_430XXX_OVERLAP = 0')
+          print('PRESELECTED_MARGIN = 1.0')
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Apply public-derived midturn counter overlay
+        run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate fresh holdout twice
+        run: |
+          python scripts/sts1/generate_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout.py --output evidence/midturn-v2-holdout-a.json
+          python scripts/sts1/generate_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout.py --output evidence/midturn-v2-holdout-b.json
+          cmp evidence/midturn-v2-holdout-a.json evidence/midturn-v2-holdout-b.json
+          cp evidence/midturn-v2-holdout-a.json evidence/midturn-v2-holdout.json
+
+      - name: Run frozen V2 on fresh holdout twice
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout.py
+          --suite evidence/midturn-v2-holdout.json
+          --output-dir evidence/sts1/phase1_jaw_worm_turn_one_midturn_v2_holdout
+
+      - name: Show fresh holdout summary
+        if: always()
+        run: test -f evidence/sts1/phase1_jaw_worm_turn_one_midturn_v2_holdout/summary.json && cat evidence/sts1/phase1_jaw_worm_turn_one_midturn_v2_holdout/summary.json || true
+
+      - name: Upload fresh holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-jaw-worm-turn-one-midturn-v2-fresh-holdout-evidence
+          path: evidence/sts1/phase1_jaw_worm_turn_one_midturn_v2_holdout/
+          if-no-files-found: warn
+          retention-days: 90

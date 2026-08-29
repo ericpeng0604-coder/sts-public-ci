@@ -5,6 +5,7 @@ on:
     branches:
       - gpt/sts1-phase1-pommel-midturn-native-ci
       - gpt/sts1-phase1-public-reconstruction
+      - gpt/sts1-phase1-anger-midturn
   workflow_dispatch:
 
 permissions:
@@ -29,6 +30,7 @@ jobs:
       - name: Syntax gate
         run: >-
           python -m py_compile
+          src/roguelike_ai/sts1_teacher/anger_reconstruction.py
           src/roguelike_ai/sts1_teacher/card_reconstruction.py
           src/roguelike_ai/sts1_teacher/player_reconstruction.py
           src/roguelike_ai/sts1_teacher/reconstruction_state.py
@@ -36,13 +38,18 @@ jobs:
           scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
           scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
           scripts/sts1/verify_phase1_public_pommel_midturn_native.py
+          scripts/sts1/verify_phase1_public_anger_midturn_native.py
           tests/test_sts1_pommel_midturn_reconstruction.py
+          tests/test_sts1_anger_midturn_reconstruction.py
           tests/test_sts1_public_native_v1_admission.py
 
       - name: Focused Python reconstruction tests
         run: >-
           python -m pytest -q
+          tests/test_sts1_anger_midturn_reconstruction.py
           tests/test_sts1_pommel_midturn_reconstruction.py
+          tests/test_sts1_shrug_midturn_reconstruction.py
+          tests/test_sts1_shrug_upgraded_midturn_reconstruction.py
           tests/test_sts1_public_card_reconstruction.py
           tests/test_sts1_public_native_v1_admission.py
           tests/test_sts1_reconstruction_state.py
@@ -50,13 +57,13 @@ jobs:
       - name: Frozen contract file was not changed
         shell: bash
         run: |
-          git diff --name-only 1d2a01dc5aa73a6bd3c8f617e0c4763780854f46...HEAD > "$RUNNER_TEMP/changed.txt"
+          git diff --name-only 27afef860b8aba189a4c48edbb1da969923980f4...HEAD > "$RUNNER_TEMP/changed.txt"
           ! grep -Fx 'src/roguelike_ai/sts1_teacher/contract.py' "$RUNNER_TEMP/changed.txt"
           ! grep -Fx 'docs/sts1/STS1_PUBLIC_STATE_CONTRACT_V1.md' "$RUNNER_TEMP/changed.txt"
           echo 'FROZEN_PUBLIC_CONTRACT_UNCHANGED = PASS'
 
       - name: Diff whitespace gate
-        run: git diff --check 1d2a01dc5aa73a6bd3c8f617e0c4763780854f46...HEAD
+        run: git diff --check 27afef860b8aba189a4c48edbb1da969923980f4...HEAD
 
   native-pommel-proof:
     needs: preflight
@@ -95,7 +102,7 @@ jobs:
       - name: Apply CommunicationMod starter id aliases
         run: python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
 
-      - name: Apply Pommel draw-midturn auxiliary path
+      - name: Apply audited rich-card midturn auxiliary path
         run: python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
 
       - name: Build native Python binding
@@ -107,6 +114,15 @@ jobs:
       - name: Run Pommel draw-midturn native proof
         run: python scripts/sts1/verify_phase1_public_pommel_midturn_native.py
 
+      - name: Re-run Shrug native regression
+        run: python scripts/sts1/verify_phase1_public_shrug_midturn_native.py
+
+      - name: Re-run upgraded Shrug native regression
+        run: python scripts/sts1/verify_phase1_public_shrug_upgraded_midturn_native.py
+
+      - name: Run Anger generated-card native proof
+        run: python scripts/sts1/verify_phase1_public_anger_midturn_native.py
+
       - name: Prove overlays changed no non-target simulator file
         shell: bash
         run: |
@@ -115,4 +131,6 @@ jobs:
           git -C external/sts_lightspeed/source diff --check
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_communicationmod_card_alias_v1'
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_pommel_midturn_aux_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_shrug_midturn_aux_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_anger_midturn_aux_v1'
           echo 'NON_TARGET_SIMULATOR_DIFF = 0'

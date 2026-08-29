@@ -75,7 +75,7 @@ def test_second_simulator_turn_without_boundary_proof_fails_closed() -> None:
     state["turn"] = 1
     result = assess_public_player(state)
     assert result.allowed is False
-    assert "turn1_boundary_requires_single_enemy" in result.reasons
+    assert "turn1_requires_single_enemy" in result.reasons
 
 
 def test_jaw_worm_second_turn_fresh_boundary_is_admitted() -> None:
@@ -84,16 +84,56 @@ def test_jaw_worm_second_turn_fresh_boundary_is_admitted() -> None:
     assert result.reasons == ()
 
 
-def test_jaw_worm_second_turn_after_card_play_fails_closed() -> None:
+def test_jaw_worm_second_turn_after_one_defend_is_admitted() -> None:
     state = jaw_worm_turn_one_boundary()
     state["energy"] = 2
+    state["block"] = 5
+    played = state["hand"].pop(3)
+    state["discard_pile"].append(played)
+    result = assess_public_player(state)
+    assert result.allowed is True
+    assert result.reasons == ()
+
+
+def test_jaw_worm_second_turn_after_one_strike_is_admitted() -> None:
+    state = jaw_worm_turn_one_boundary()
+    state["energy"] = 2
+    played = state["hand"].pop(0)
+    state["discard_pile"].append(played)
+    result = assess_public_player(state)
+    assert result.allowed is True
+    assert result.reasons == ()
+
+
+def test_jaw_worm_second_turn_after_bash_is_admitted() -> None:
+    state = jaw_worm_turn_one_boundary()
+    state["energy"] = 1
     played = state["hand"].pop()
     state["discard_pile"].append(played)
     result = assess_public_player(state)
+    assert result.allowed is True
+    assert result.reasons == ()
+
+
+def test_jaw_worm_second_turn_impossible_energy_spend_fails_closed() -> None:
+    state = jaw_worm_turn_one_boundary()
+    state["energy"] = 0
+    played = state["hand"].pop(0)
+    state["discard_pile"].append(played)
+    result = assess_public_player(state)
     assert result.allowed is False
-    assert "turn1_boundary_energy_not_fresh:2" in result.reasons
-    assert "turn1_boundary_hand_not_fresh:4" in result.reasons
-    assert "turn1_boundary_discard_not_complete:6" in result.reasons
+    assert "turn1_energy_spend_unreachable:played=1:spent=3" in result.reasons
+
+
+def test_jaw_worm_second_turn_impossible_block_fails_closed() -> None:
+    state = jaw_worm_turn_one_boundary()
+    state["energy"] = 2
+    state["block"] = 4
+    played = state["hand"].pop(3)
+    state["discard_pile"].append(played)
+    result = assess_public_player(state)
+    assert result.allowed is False
+    assert "turn1_block_unreachable:4" in result.reasons
 
 
 def test_jaw_worm_second_turn_wrong_pile_boundary_fails_closed() -> None:
@@ -101,8 +141,15 @@ def test_jaw_worm_second_turn_wrong_pile_boundary_fails_closed() -> None:
     state["draw_pile"].append(state["discard_pile"].pop())
     result = assess_public_player(state)
     assert result.allowed is False
-    assert "turn1_boundary_draw_not_empty:1" in result.reasons
-    assert "turn1_boundary_discard_not_complete:4" in result.reasons
+    assert "turn1_draw_not_empty:1" in result.reasons
+
+
+def test_jaw_worm_second_turn_wrong_starter_composition_fails_closed() -> None:
+    state = jaw_worm_turn_one_boundary()
+    state["hand"][0]["id"] = "DEFEND_RED"
+    result = assess_public_player(state)
+    assert result.allowed is False
+    assert "turn1_starter_composition_mismatch" in result.reasons
 
 
 def test_second_turn_non_jaw_worm_fails_closed() -> None:
@@ -110,7 +157,7 @@ def test_second_turn_non_jaw_worm_fails_closed() -> None:
     state["enemies"][0]["name"] = "CULTIST"
     result = assess_public_player(state)
     assert result.allowed is False
-    assert "turn1_boundary_requires_jaw_worm" in result.reasons
+    assert "turn1_requires_jaw_worm" in result.reasons
 
 
 def test_second_turn_player_power_fails_closed_even_if_normally_supported() -> None:
@@ -118,7 +165,7 @@ def test_second_turn_player_power_fails_closed_even_if_normally_supported() -> N
     state["powers"] = [{"name": "Strength", "amount": 1}]
     result = assess_public_player(state)
     assert result.allowed is False
-    assert "turn1_boundary_requires_no_player_powers" in result.reasons
+    assert "turn1_requires_no_player_powers" in result.reasons
 
 
 def test_third_simulator_turn_still_fails_closed() -> None:

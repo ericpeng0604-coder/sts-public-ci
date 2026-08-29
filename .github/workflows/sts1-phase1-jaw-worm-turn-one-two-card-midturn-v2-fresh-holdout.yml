@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/sts1-phase1-jaw-worm-turn-one-two-card-midturn-v2-fresh-holdout.yml'
       - 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_holdout_seeds_64.txt'
+      - 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery_seeds_64.txt'
       - 'scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_holdout.py'
       - 'src/roguelike_ai/sts1_teacher/two_card_midturn_policy_v2.py'
       - 'tests/test_sts1_midturn_nonstarter_failclosed.py'

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 _SUPPORTED_RELICS_V1 = frozenset({"BURNING_BLOOD"})
+_SUPPORTED_SOURCES_V1 = frozenset({"SIMULATOR", "REAL_GAME"})
 _EMPTY_POTION = "EMPTY_POTION_SLOT"
 
 
@@ -24,7 +25,7 @@ def assess_public_run_state(state: Mapping[str, Any]) -> PublicRunAdmission:
     relic_reasons: list[str] = []
     potion_reasons: list[str] = []
 
-    if _norm(state.get("source")) != "SIMULATOR":
+    if _norm(state.get("source")) not in _SUPPORTED_SOURCES_V1:
         reasons.append("source_unsupported_v1")
     if _norm(state.get("character")) != "IRONCLAD":
         reasons.append("character_unsupported_v1")
@@ -59,9 +60,12 @@ def assess_public_run_state(state: Mapping[str, Any]) -> PublicRunAdmission:
 
     reasons.extend(relic_reasons)
     reasons.extend(potion_reasons)
+    source_ok = "source_unsupported_v1" not in reasons
+    character_ok = "character_unsupported_v1" not in reasons
+    room_ok = "room_unsupported_v1" not in reasons
     return PublicRunAdmission(
-        relics_allowed=not relic_reasons and "source_unsupported_v1" not in reasons and "character_unsupported_v1" not in reasons and "room_unsupported_v1" not in reasons,
-        potions_allowed=not potion_reasons and "source_unsupported_v1" not in reasons and "character_unsupported_v1" not in reasons and "room_unsupported_v1" not in reasons,
+        relics_allowed=not relic_reasons and source_ok and character_ok and room_ok,
+        potions_allowed=not potion_reasons and source_ok and character_ok and room_ok,
         reasons=tuple(sorted(set(reasons))),
     )
 

@@ -42,6 +42,7 @@ def complete_state() -> dict:
         ],
         "reconstruction": {
             "schema_version": PUBLIC_RECONSTRUCTION_SCHEMA,
+            "public_player_state_complete": True,
             "public_card_instance_state_complete": True,
             "public_relic_state_complete": True,
             "public_potion_state_complete": True,

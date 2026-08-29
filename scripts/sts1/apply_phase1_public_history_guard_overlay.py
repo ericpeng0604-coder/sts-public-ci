@@ -106,10 +106,10 @@ def main() -> None:
     text = replace_once(text, ENEMY_MOVE_ANCHOR, ENEMY_MOVE_REPLACEMENT, "enemy-move")
     text = replace_once(text, HISTORY_ANCHOR, HISTORY_REPLACEMENT, "history-guard")
 
-    # Marker is intentionally embedded in the patched binding for CI scope proof.
+    # Markers are intentionally embedded in the patched binding for CI scope proof.
     text = text.replace(
         "// audited single-enemy opening surfaces only.",
-        "// audited single-enemy opening surfaces only. phase1_public_blue_slaver_opening_v1",
+        "// audited single-enemy opening surfaces only. phase1_public_cultist_opening_v1 phase1_public_gremlin_nob_opening_v1 phase1_public_blue_slaver_opening_v1",
         1,
     )
     TARGET.write_text(text, encoding="utf-8")

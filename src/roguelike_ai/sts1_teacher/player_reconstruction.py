@@ -1,25 +1,39 @@
 """Narrow V1 admission for public player combat state.
 
 The pinned sts_lightspeed BattleContext is zero-based: ``turn == 0`` is the
-first player turn. V1 admits that opening surface directly. A second, strictly
-audited slice admits Jaw Worm turn 1 both at the fresh boundary and during the
-same player turn, but only for the starter-only/Burning-Blood surface where the
-per-turn counters are derivable from public hand, energy and block.
-Any other later-turn state continues to fail closed.
+first player turn. V1 admits that opening surface directly. The established
+turn-1 starter-only slice remains unchanged when no reconstruction auxiliary
+trace is supplied.
+
+The first draw-card expansion is deliberately separate: a bounded
+CommunicationMod command trace may prove exactly one Pommel Strike play on
+Jaw Worm turn 1. The trace is reconstruction metadata only; it is never merged
+into policy state or decision identity. Any other richer midturn still fails
+closed.
 """
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 _SUPPORTED_PLAYER_POWERS_V1 = frozenset({"STRENGTH", "DEXTERITY", "FOCUS", "ARTIFACT"})
 _SUPPORTED_STARTER_CARDS_V1 = frozenset({"STRIKE_RED", "DEFEND_RED", "BASH"})
 _EXPECTED_STARTER_COUNTS_V1 = Counter({"STRIKE_RED": 5, "DEFEND_RED": 4, "BASH": 1})
+_EXPECTED_POMMEL_COUNTS_V1 = Counter({"STRIKE_RED": 5, "DEFEND_RED": 4, "BASH": 1, "POMMEL_STRIKE": 1})
+_CARD_ID_ALIASES = {"STRIKE_R": "STRIKE_RED", "DEFEND_R": "DEFEND_RED"}
+_AUX_SCHEMA = "sts1-public-reconstruction-aux-v1"
+_AUX_SOURCE = "communicationmod_command_trace_v1"
 
 
 def _norm(value: Any) -> str:
     return str(value or "").strip().upper().replace(" ", "_").replace("-", "_")
+
+
+def _card_id(value: Any) -> str:
+    normalized = _norm(value)
+    return _CARD_ID_ALIASES.get(normalized, normalized)
 
 
 def _sequence(value: Any) -> Sequence[Any] | None:
@@ -29,22 +43,7 @@ def _sequence(value: Any) -> Sequence[Any] | None:
 
 
 def _jaw_worm_turn_one_reasons(state: Mapping[str, Any]) -> list[str]:
-    """Prove the tiny turn-1 surface from public state only.
-
-    Under the frozen V1 slice there are exactly ten non-exhausting starter cards,
-    no draw/energy/retain/discard cards, Burning Blood only and no usable potion.
-    The second player turn therefore begins with five cards, three energy, zero
-    block and five cards already in discard. During that same turn:
-
-    * cards played = 5 - current hand size;
-    * skills played = current block / 5 (starter Defend is the only block source);
-    * attacks played = cards played - skills played;
-    * energy spent is either one per played card, plus one extra iff Bash was
-      among the current-turn plays.
-
-    This makes the simulator bookkeeping derivable from the current public state
-    without adding move history or hidden counters to the Teacher contract.
-    """
+    """Prove the established starter-only turn-1 surface from public state."""
 
     reasons: list[str] = []
     enemies = _sequence(state.get("enemies"))
@@ -76,7 +75,7 @@ def _jaw_worm_turn_one_reasons(state: Mapping[str, Any]) -> list[str]:
         if not isinstance(card, Mapping):
             reasons.append(f"turn1_card_not_mapping:{index}")
             continue
-        card_id = _norm(card.get("id"))
+        card_id = _card_id(card.get("id"))
         ids.append(card_id)
         if card_id not in _SUPPORTED_STARTER_CARDS_V1:
             reasons.append(f"turn1_nonstarter_card:{card_id or 'MISSING'}")
@@ -110,21 +109,87 @@ def _jaw_worm_turn_one_reasons(state: Mapping[str, Any]) -> list[str]:
         return reasons
 
     discard_ids = Counter(
-        _norm(card.get("id"))
+        _card_id(card.get("id"))
         for card in discard
         if isinstance(card, Mapping)
     )
     if skills > discard_ids["DEFEND_RED"]:
         reasons.append("turn1_skill_history_not_publicly_reachable")
     if spent == played + 1:
-        # The one extra energy can only be the unique Bash.  There must be at
-        # least one current attack and Bash must be outside the current hand.
         if attacks < 1 or discard_ids["BASH"] < 1 or attacks - 1 > discard_ids["STRIKE_RED"]:
             reasons.append("turn1_bash_history_not_publicly_reachable")
     elif attacks > discard_ids["STRIKE_RED"]:
-        # No extra energy means every current-turn attack must be a 1-cost Strike.
         reasons.append("turn1_attack_history_not_publicly_reachable")
 
+    return reasons
+
+
+def _pommel_turn_one_reasons(state: Mapping[str, Any], aux: Mapping[str, Any]) -> list[str]:
+    """Prove exactly one normal Pommel Strike play using public state + bounded trace."""
+
+    reasons: list[str] = []
+    if aux.get("schema_version") != _AUX_SCHEMA:
+        reasons.append("pommel_aux_schema_mismatch")
+    if aux.get("source") != _AUX_SOURCE:
+        reasons.append("pommel_aux_source_mismatch")
+    if aux.get("complete") is not True:
+        reasons.append("pommel_aux_incomplete")
+
+    expected_ints = {
+        "turn": 1,
+        "cards_played_this_turn": 1,
+        "attacks_played_this_turn": 1,
+        "skills_played_this_turn": 0,
+        "cards_discarded_this_turn": 0,
+    }
+    for key, expected in expected_ints.items():
+        value = aux.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value != expected:
+            reasons.append(f"pommel_aux_{key}_mismatch:{value!r}!={expected}")
+
+    enemies = _sequence(state.get("enemies"))
+    if enemies is None or len(enemies) != 1 or not isinstance(enemies[0], Mapping):
+        reasons.append("pommel_turn1_requires_single_enemy")
+    elif _norm(enemies[0].get("name")) != "JAW_WORM":
+        reasons.append("pommel_turn1_requires_jaw_worm")
+
+    hand = _sequence(state.get("hand"))
+    draw = _sequence(state.get("draw_pile"))
+    discard = _sequence(state.get("discard_pile"))
+    exhaust = _sequence(state.get("exhaust_pile"))
+    if hand is None or draw is None or discard is None or exhaust is None:
+        reasons.append("pommel_turn1_card_piles_not_sequences")
+        return reasons
+
+    if len(hand) != 5 or len(draw) != 0 or len(discard) != 6 or len(exhaust) != 0:
+        reasons.append(
+            f"pommel_turn1_pile_shape:hand={len(hand)}:draw={len(draw)}:discard={len(discard)}:exhaust={len(exhaust)}"
+        )
+
+    ids: list[str] = []
+    for index, card in enumerate([*hand, *draw, *discard, *exhaust]):
+        if not isinstance(card, Mapping):
+            reasons.append(f"pommel_turn1_card_not_mapping:{index}")
+            continue
+        ids.append(_card_id(card.get("id")))
+        upgrades = card.get("upgrades")
+        if upgrades != 0 or isinstance(upgrades, bool):
+            reasons.append(f"pommel_turn1_requires_unupgraded_cards:{index}:{upgrades!r}")
+    if Counter(ids) != _EXPECTED_POMMEL_COUNTS_V1:
+        reasons.append("pommel_turn1_deck_composition_mismatch")
+    if sum(1 for card in discard if isinstance(card, Mapping) and _card_id(card.get("id")) == "POMMEL_STRIKE") != 1:
+        reasons.append("pommel_turn1_pommel_not_in_discard")
+
+    if state.get("energy") != 2 or isinstance(state.get("energy"), bool):
+        reasons.append(f"pommel_turn1_energy_mismatch:{state.get('energy')!r}")
+    if state.get("block") != 0 or isinstance(state.get("block"), bool):
+        reasons.append(f"pommel_turn1_block_mismatch:{state.get('block')!r}")
+
+    powers = _sequence(state.get("powers"))
+    if powers is None:
+        reasons.append("pommel_turn1_powers_not_sequence")
+    elif len(powers) != 0:
+        reasons.append("pommel_turn1_requires_no_player_powers")
     return reasons
 
 
@@ -134,7 +199,11 @@ class PublicPlayerAdmission:
     reasons: tuple[str, ...]
 
 
-def assess_public_player(state: Mapping[str, Any]) -> PublicPlayerAdmission:
+def assess_public_player(
+    state: Mapping[str, Any],
+    *,
+    reconstruction_aux: Mapping[str, Any] | None = None,
+) -> PublicPlayerAdmission:
     reasons: list[str] = []
     for field in ("hp", "max_hp", "block", "energy", "gold", "turn", "floor", "ascension_level"):
         value = state.get(field)
@@ -143,7 +212,12 @@ def assess_public_player(state: Mapping[str, Any]) -> PublicPlayerAdmission:
 
     turn = state.get("turn")
     if turn == 1:
-        reasons.extend(_jaw_worm_turn_one_reasons(state))
+        if reconstruction_aux is None:
+            reasons.extend(_jaw_worm_turn_one_reasons(state))
+        elif not isinstance(reconstruction_aux, MappingABC):
+            reasons.append("reconstruction_aux_not_mapping")
+        else:
+            reasons.extend(_pommel_turn_one_reasons(state, reconstruction_aux))
     elif turn != 0:
         reasons.append(f"turn_unsupported_v1:{turn}")
 

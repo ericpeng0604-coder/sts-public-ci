@@ -5,9 +5,14 @@ creates a fresh native BattleContext from the already-admitted public state and
 an action-independent ``PublicSample``. The deterministic follow-up policy is
 intentionally simple; V1 proves plumbing and public-only search semantics, not
 a final Phase-1 Teacher quality gate.
+
+A caller may separately provide bounded reconstruction auxiliary counters from
+the CommunicationMod command trace. They are not merged into policy state or
+decision identity; native reconstruction validates them fail-closed.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -35,11 +40,22 @@ class NativePublicJawWormRolloutV1:
     backend_id = "sts1-public-native-jaw-worm-rollout-v1"
     uses_hidden_information = False
 
-    def __init__(self, public_state: dict[str, Any], native_module: Any) -> None:
+    def __init__(
+        self,
+        public_state: dict[str, Any],
+        native_module: Any,
+        *,
+        reconstruction_aux: Mapping[str, Any] | None = None,
+    ) -> None:
         admitted = require_public_reconstruction(public_state)
         self._decision_signature = admitted.decision_signature
         self._public_state = deepcopy(public_state)
         self._native = native_module
+        if reconstruction_aux is not None and not isinstance(reconstruction_aux, Mapping):
+            raise NativePublicRolloutError("reconstruction_aux_must_be_mapping")
+        self._reconstruction_aux = (
+            None if reconstruction_aux is None else deepcopy(dict(reconstruction_aux))
+        )
 
     def _build(self, context: DecisionContext, sample: PublicSample) -> Any:
         if context.decision_signature != self._decision_signature:
@@ -52,7 +68,13 @@ class NativePublicJawWormRolloutV1:
             raise NativePublicRolloutError("native_v1_requires_exactly_one_enemy")
         seeds = dict(plan.rng_seeds)
         seeds["previous_history"] = plan.monster_history[0].previous_history_seed
-        return self._native.build_public_jaw_worm_context_v1(self._public_state, seeds)
+        if self._reconstruction_aux is None:
+            return self._native.build_public_jaw_worm_context_v1(self._public_state, seeds)
+        return self._native.build_public_jaw_worm_context_v1(
+            self._public_state,
+            seeds,
+            self._reconstruction_aux,
+        )
 
     def _native_action(self, bc: Any, action: ActionSpec) -> Any:
         legal = list(self._native.get_legal_actions(bc))
@@ -89,7 +111,7 @@ class NativePublicJawWormRolloutV1:
             source_idx = int(getattr(action, "source_idx"))
             hand = list(getattr(bc, "hand"))
             card_name = str(getattr(hand[source_idx], "name", "")).upper()
-            priority = {"BASH": 0, "STRIKE": 1, "DEFEND": 2}.get(card_name, 50)
+            priority = {"BASH": 0, "STRIKE": 1, "POMMEL STRIKE": 1, "DEFEND": 2}.get(card_name, 50)
             return (0, priority, int(getattr(action, "target_idx", 0)))
         if action_type == "END_TURN":
             return (1, 0, 0)

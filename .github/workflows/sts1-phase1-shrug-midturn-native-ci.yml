@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gpt/sts1-phase1-shrug-midturn-native-ci
+      - gpt/sts1-phase1-public-reconstruction
   workflow_dispatch:
 
 permissions:

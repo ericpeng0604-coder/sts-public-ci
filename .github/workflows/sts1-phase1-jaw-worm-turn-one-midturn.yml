@@ -1,0 +1,85 @@
+name: STS1 Phase 1 Jaw Worm Turn-One Midturn
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-jaw-worm-turn-one-midturn
+    paths:
+      - '.github/workflows/sts1-phase1-jaw-worm-turn-one-midturn.yml'
+      - 'src/roguelike_ai/sts1_teacher/player_reconstruction.py'
+      - 'scripts/sts1/apply_phase1_public_midturn_counter_overlay.py'
+      - 'scripts/sts1/verify_phase1_public_jaw_worm_turn_one_midturn_native.py'
+      - 'tests/test_sts1_public_native_v1_admission.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jaw-worm-turn-one-midturn-public-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+
+      - name: Focused admission and syntax gate
+        run: |
+          python -m pytest -q \
+            tests/test_sts1_public_native_v1_admission.py \
+            tests/test_sts1_public_reconstruction.py \
+            tests/test_sts1_reconstruction_state.py
+          python -m py_compile \
+            src/roguelike_ai/sts1_teacher/player_reconstruction.py \
+            scripts/sts1/apply_phase1_public_midturn_counter_overlay.py \
+            scripts/sts1/verify_phase1_public_jaw_worm_turn_one_midturn_native.py
+          git diff --check origin/main...HEAD
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Snapshot non-target simulator diff
+        run: >-
+          git -C external/sts_lightspeed/source diff -- .
+          ':(exclude)bindings/slaythespire.cpp'
+          > "$RUNNER_TEMP/nonbinding-before.diff"
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Apply public-derived midturn counter overlay
+        run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Existing fresh turn-one boundary regression
+        run: python scripts/sts1/verify_phase1_public_jaw_worm_turn_one_native.py
+
+      - name: Jaw Worm turn-one midturn public reconstruction proof
+        run: python scripts/sts1/verify_phase1_public_jaw_worm_turn_one_midturn_native.py
+
+      - name: Existing paired PublicStateSearch regression
+        run: python scripts/sts1/verify_phase1_public_search_native.py
+
+      - name: Prove binding-only overlay scope
+        run: |
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
+          cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
+          git -C external/sts_lightspeed/source diff --check
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_jaw_worm_turn_one_midturn_counters_v1'
+          echo 'JAW_WORM_TURN_ONE_MIDTURN_NON_TARGET_SCOPE = PASS'

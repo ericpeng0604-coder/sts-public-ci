@@ -22,8 +22,27 @@ def test_basic_public_cards_are_admitted() -> None:
     assert result.card_count == 3
 
 
-def test_any_card_outside_v1_slice_fails_closed() -> None:
-    for card_id in ("RAMPAGE", "ANGER", "POMMEL_STRIKE", "SEARING_BLOW"):
+def test_communicationmod_starter_aliases_are_admitted() -> None:
+    state = base_state()
+    state["hand"][0]["id"] = "Strike_R"
+    state["draw_pile"][0]["id"] = "Defend_R"
+    result = assess_public_cards(state)
+    assert result.allowed is True
+    assert result.reasons == ()
+
+
+def test_pommel_strike_base_cost_is_reconstructable() -> None:
+    state = base_state()
+    state["hand"][0].update(
+        {"id": "Pommel Strike", "name": "Pommel Strike", "type": "ATTACK", "cost": 1, "upgrades": 0}
+    )
+    result = assess_public_cards(state)
+    assert result.allowed is True
+    assert result.reasons == ()
+
+
+def test_any_other_card_outside_v1_slice_fails_closed() -> None:
+    for card_id in ("RAMPAGE", "ANGER", "SEARING_BLOW"):
         state = base_state()
         state["hand"][0]["id"] = card_id
         result = assess_public_cards(state)

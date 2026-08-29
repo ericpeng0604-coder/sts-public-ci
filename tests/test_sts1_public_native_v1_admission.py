@@ -37,12 +37,11 @@ def jaw_worm_turn_one_boundary() -> dict:
                 {"id": "DEFEND_RED"},
                 {"id": "BASH"},
             ],
-            "draw_pile": [
-                {"id": "STRIKE_RED"},
-                {"id": "STRIKE_RED"},
-                {"id": "STRIKE_RED"},
-            ],
+            "draw_pile": [],
             "discard_pile": [
+                {"id": "STRIKE_RED"},
+                {"id": "STRIKE_RED"},
+                {"id": "STRIKE_RED"},
                 {"id": "DEFEND_RED"},
                 {"id": "DEFEND_RED"},
             ],
@@ -88,12 +87,22 @@ def test_jaw_worm_second_turn_fresh_boundary_is_admitted() -> None:
 def test_jaw_worm_second_turn_after_card_play_fails_closed() -> None:
     state = jaw_worm_turn_one_boundary()
     state["energy"] = 2
-    state["hand"] = state["hand"][:-1]
-    state["discard_pile"].append({"id": "STRIKE_RED"})
+    played = state["hand"].pop()
+    state["discard_pile"].append(played)
     result = assess_public_player(state)
     assert result.allowed is False
     assert "turn1_boundary_energy_not_fresh:2" in result.reasons
     assert "turn1_boundary_hand_not_fresh:4" in result.reasons
+    assert "turn1_boundary_discard_not_complete:6" in result.reasons
+
+
+def test_jaw_worm_second_turn_wrong_pile_boundary_fails_closed() -> None:
+    state = jaw_worm_turn_one_boundary()
+    state["draw_pile"].append(state["discard_pile"].pop())
+    result = assess_public_player(state)
+    assert result.allowed is False
+    assert "turn1_boundary_draw_not_empty:1" in result.reasons
+    assert "turn1_boundary_discard_not_complete:4" in result.reasons
 
 
 def test_second_turn_non_jaw_worm_fails_closed() -> None:

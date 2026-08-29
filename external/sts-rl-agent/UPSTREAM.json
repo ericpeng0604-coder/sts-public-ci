@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/Jialeiv/sts-rl-agent",
+  "commit": "b20eb2cac2f52b22fbb6c79900c309b51ea0a1db",
+  "tree": "dca4869c3fa9fcf0b7cd8a0dab24c38f687cdaec",
+  "license": "MIT",
+  "license_blob_sha": "1c53292144e421c8981f54d717092d2cf5fbed55",
+  "patch_path": "sim_patch/sim_rl_hooks.patch",
+  "patch_git_blob_sha": "83d3a89ba0f7639e93f35df6b8f27bf2fe6326a8",
+  "weight_path": "weights/armG_model_G128x128_15k.pt",
+  "weight_git_blob_sha": "6666fb690fcceb592a1aa8dc74fa27bfee4575f0",
+  "eval_seed_path": "eval/eval_seeds_50.txt",
+  "eval_seed_git_blob_sha": "e1eaebf26a16f31d04933b0dbd7f62f81657e31d",
+  "role": "A0 Ironclad learned non-combat policy plus upstream evaluation code",
+  "upstream_target": {
+    "mcts_2000_avg_floor": 38.5,
+    "mcts_2000_win_rate": 0.04,
+    "mcts_50000_avg_floor": 42.5,
+    "mcts_50000_win_rate": 0.14,
+    "held_out_seeds": 50,
+    "ascension": 0,
+    "character": "IRONCLAD"
+  }
+}

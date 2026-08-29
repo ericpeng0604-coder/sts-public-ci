@@ -1,5 +1,6 @@
 # STS1 Phase 1 Public Search V1 quality-source seeds
 # Frozen before Search/oracle quality results are observed.
+# Freeze anchor: selection inputs are immutable from this commit forward.
 # Selection rule is deterministic: scan in this order and keep the first 24
 # unique, fully V1-admitted opening Jaw Worm public decision signatures.
 310001

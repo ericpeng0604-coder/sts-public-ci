@@ -8,7 +8,7 @@ on:
       - '.github/workflows/sts1-phase1-frozen-oracle-benchmark.yml'
       - 'src/roguelike_ai/sts1_teacher/**'
       - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
-      - 'scripts/sts1/run_phase1_frozen-oracle-benchmark.py'
+      - 'scripts/sts1/run_phase1_frozen_oracle_benchmark.py'
       - 'scripts/sts1/aggregate_phase1_frozen_oracle_benchmark.py'
       - 'tests/test_sts1_teacher.py'
       - 'tests/test_sts1_phase1_frozen_oracle_benchmark.py'

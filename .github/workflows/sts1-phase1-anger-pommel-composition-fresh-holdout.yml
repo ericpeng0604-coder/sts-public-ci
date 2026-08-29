@@ -1,0 +1,123 @@
+name: STS1 Phase 1 Anger Pommel Composition Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-anger-pommel-composition
+    paths:
+      - '.github/workflows/sts1-phase1-anger-pommel-composition-fresh-holdout.yml'
+      - 'tests/data/sts1_phase1_anger_pommel_composition_fresh_holdout_seeds_256.txt'
+      - 'scripts/sts1/generate_phase1_anger_pommel_composition_fresh_holdout.py'
+      - 'scripts/sts1/run_phase1_anger_pommel_composition_fresh_quality.py'
+      - 'src/roguelike_ai/sts1_teacher/anger_pommel_composition_policy_v1.py'
+      - 'src/roguelike_ai/sts1_teacher/composition_reconstruction.py'
+      - 'src/roguelike_ai/sts1_teacher/reconstruction_state.py'
+      - 'scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  anger-pommel-composition-fresh-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Freeze sampling candidate and gate before quality
+        run: |
+          python -m py_compile \
+            scripts/sts1/generate_phase1_anger_pommel_composition_fresh_holdout.py \
+            scripts/sts1/run_phase1_anger_pommel_composition_fresh_quality.py \
+            src/roguelike_ai/sts1_teacher/anger_pommel_composition_policy_v1.py \
+            src/roguelike_ai/sts1_teacher/composition_reconstruction.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p = Path('tests/data/sts1_phase1_anger_pommel_composition_fresh_holdout_seeds_256.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert seeds == list(range(500001, 500257))
+          print('ANGER_POMMEL_FRESH_SOURCE_SEED_FREEZE = PASS')
+          print('SOURCE_SEED_COUNT=256')
+          print('SOURCE_SEED_FILE_SHA256=' + hashlib.sha256(p.read_bytes()).hexdigest())
+          print('CANDIDATE_POLICY=jaw-worm-turn1-anger-pommel-composition-margin0-else-simple-v1')
+          print('QUALITY_GATE=anger-pommel-composition-fresh-v1-candidate-ge-search-gt-simple-random')
+          print('QUALITY_RESULTS_OBSERVED_BEFORE_FREEZE=0')
+          PY
+          git diff --check HEAD^
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Apply established starter midturn counters
+        run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Apply CommunicationMod card aliases
+        run: python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
+
+      - name: Apply audited rich-card auxiliary path
+        run: python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate blind reachable composition suite twice
+        run: |
+          python scripts/sts1/generate_phase1_anger_pommel_composition_fresh_holdout.py --output evidence/anger-pommel-composition-freeze-a.json
+          python scripts/sts1/generate_phase1_anger_pommel_composition_fresh_holdout.py --output evidence/anger-pommel-composition-freeze-b.json
+          cmp evidence/anger-pommel-composition-freeze-a.json evidence/anger-pommel-composition-freeze-b.json
+          cp evidence/anger-pommel-composition-freeze-a.json evidence/anger-pommel-composition-suite.json
+
+      - name: Run unchanged predeclared two-repeat composition quality gate
+        run: >-
+          python scripts/sts1/run_phase1_anger_pommel_composition_fresh_quality.py
+          --suite evidence/anger-pommel-composition-suite.json
+          --output-dir evidence/sts1/phase1_anger_pommel_composition_fresh_quality
+
+      - name: Show composition quality summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_anger_pommel_composition_fresh_quality/summary.json && cat evidence/sts1/phase1_anger_pommel_composition_fresh_quality/summary.json || true
+          test -f evidence/anger-pommel-composition-suite.json && python - <<'PY'
+          from pathlib import Path
+          import json
+          p = Path('evidence/anger-pommel-composition-suite.json')
+          if p.exists():
+              s = json.loads(p.read_text())
+              print('SAMPLING_CONTRACT=' + s['sampling_contract_version'])
+              print('SUITE_DIGEST=' + s['suite_digest'])
+              print('CASE_COUNT=' + str(s['case_count']))
+              print('REJECTED_COUNTS=' + str(s['rejected_counts']))
+              print('PRIOR_480XXX_QUALITY_ROWS_READ=' + str(s['prior_480xxx_quality_rows_read']))
+              print('PRIOR_490XXX_QUALITY_ROWS_READ=' + str(s['prior_490xxx_quality_rows_read']))
+          PY
+
+      - name: Upload composition fresh holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-anger-pommel-composition-fresh-quality-evidence
+          path: |
+            evidence/anger-pommel-composition-suite.json
+            evidence/sts1/phase1_anger_pommel_composition_fresh_quality/
+          if-no-files-found: warn
+          retention-days: 90

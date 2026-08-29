@@ -58,6 +58,12 @@ jobs:
       - name: Hydrate exact upstream sources
         run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
 
+      - name: Snapshot pre-overlay non-target diff
+        run: >-
+          git -C external/sts_lightspeed/source diff -- .
+          ':(exclude)bindings/slaythespire.cpp'
+          > "$RUNNER_TEMP/nonbinding-before.diff"
+
       - name: Apply read-only public-state overlay
         run: python scripts/sts1/apply_phase1_public_state_overlay.py
 
@@ -83,8 +89,9 @@ jobs:
           print('VISIBLE_SLOTS = 3')
           PY
 
-      - name: Prove overlay touched binding only
+      - name: Prove overlay changed no non-target simulator file
         run: |
-          changed="$(git -C external/sts_lightspeed/source diff --name-only)"
-          test "$changed" = "bindings/slaythespire.cpp"
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
+          cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
           git -C external/sts_lightspeed/source diff --check
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_potion_belt_v1'

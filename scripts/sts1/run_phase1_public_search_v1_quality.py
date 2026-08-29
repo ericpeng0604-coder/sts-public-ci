@@ -128,7 +128,16 @@ def run_once(suite: dict) -> tuple[list[dict], dict]:
                 "legal_action_ids": sorted(action.action_id for action in context.legal_actions),
                 "search_tie_ids": list(search_ties),
                 "search_unique_best_action_id": search_result.unique_best_action_id,
-                "search_candidate_scores": dict(sorted(search_result.candidate_scores.items())),
+                "search_candidate_scores": [
+                    {
+                        "action_id": item.action_id,
+                        "semantic_key": item.semantic_key,
+                        "score": item.score,
+                        "samples": item.samples,
+                        "unresolved": item.unresolved,
+                    }
+                    for item in search_result.candidate_scores
+                ],
                 "search_evidence_hash": search_result.evidence_hash,
                 "search_rollout_count": search_result.rollout_count,
                 "simple_action_id": simple.action_id,

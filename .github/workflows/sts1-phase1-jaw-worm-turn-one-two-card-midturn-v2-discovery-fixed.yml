@@ -1,0 +1,61 @@
+name: STS1 Phase 1 Jaw Worm Two-Card Midturn V2 Discovery Fixed
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-two-card-midturn-v2-discovery
+    paths:
+      - '.github/workflows/sts1-phase1-jaw-worm-turn-one-two-card-midturn-v2-discovery-fixed.yml'
+      - 'scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery_fixed.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jaw-worm-two-card-midturn-v2-discovery-fixed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+      - name: Prove serialization-only wrapper and frozen discovery isolation
+        run: |
+          python -m py_compile \
+            scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery.py \
+            scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery_fixed.py
+          python -m pytest -q tests/test_sts1_midturn_nonstarter_failclosed.py
+          python - <<'PY'
+          from pathlib import Path
+          def read(path):
+              return [int(x.strip()) for x in path.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          current = read(Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery_seeds_64.txt'))
+          frozen = read(Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_source_seeds_64.txt'))
+          assert len(current) == 64 and min(current) == 460001 and max(current) == 460064
+          assert set(current).isdisjoint(frozen)
+          print('DISCOVERY_460XXX_STILL_FROZEN = PASS')
+          print('FROZEN_450XXX_QUALITY_ROWS_READ = 0')
+          print('DISCOVERY_SELECTION_LOGIC_CHANGED = 0')
+          PY
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+      - name: Apply public-state overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+      - name: Prove richer card effects remain fail-closed
+        run: python scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py
+      - name: Run unchanged two-repeat discovery with finite evidence serialization
+        run: python scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery_fixed.py

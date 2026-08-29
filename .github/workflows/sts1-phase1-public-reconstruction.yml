@@ -9,9 +9,13 @@ on:
       - 'src/roguelike_ai/sts1_teacher/reconstruction.py'
       - 'src/roguelike_ai/sts1_teacher/public_run_state.py'
       - 'src/roguelike_ai/sts1_teacher/redeterminization.py'
+      - 'src/roguelike_ai/sts1_teacher/card_reconstruction.py'
+      - 'src/roguelike_ai/sts1_teacher/reconstruction_state.py'
       - 'tests/test_sts1_public_reconstruction.py'
       - 'tests/test_sts1_public_run_state.py'
       - 'tests/test_sts1_public_redeterminization.py'
+      - 'tests/test_sts1_public_card_reconstruction.py'
+      - 'tests/test_sts1_reconstruction_state.py'
       - 'scripts/sts1/apply_phase1_public_state_overlay.py'
   workflow_dispatch:
 
@@ -40,6 +44,8 @@ jobs:
           tests/test_sts1_public_reconstruction.py
           tests/test_sts1_public_run_state.py
           tests/test_sts1_public_redeterminization.py
+          tests/test_sts1_public_card_reconstruction.py
+          tests/test_sts1_reconstruction_state.py
 
       - name: Syntax gate
         run: >-
@@ -47,6 +53,8 @@ jobs:
           src/roguelike_ai/sts1_teacher/reconstruction.py
           src/roguelike_ai/sts1_teacher/public_run_state.py
           src/roguelike_ai/sts1_teacher/redeterminization.py
+          src/roguelike_ai/sts1_teacher/card_reconstruction.py
+          src/roguelike_ai/sts1_teacher/reconstruction_state.py
           scripts/sts1/apply_phase1_public_state_overlay.py
 
       - name: Diff whitespace gate

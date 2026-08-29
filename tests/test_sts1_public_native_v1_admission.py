@@ -9,7 +9,7 @@ def base_state() -> dict:
         "block": 0,
         "energy": 3,
         "gold": 99,
-        "turn": 1,
+        "turn": 0,
         "floor": 1,
         "ascension_level": 0,
         "powers": [],
@@ -31,6 +31,14 @@ def test_v1_player_and_run_slice_is_admitted() -> None:
     assert run.relics_allowed is True
     assert run.potions_allowed is True
     assert run.reasons == ()
+
+
+def test_second_simulator_turn_fails_closed() -> None:
+    state = base_state()
+    state["turn"] = 1
+    result = assess_public_player(state)
+    assert result.allowed is False
+    assert "turn_unsupported_v1:1" in result.reasons
 
 
 def test_unimplemented_player_power_fails_closed() -> None:

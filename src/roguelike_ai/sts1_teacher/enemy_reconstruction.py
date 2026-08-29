@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 # later move is DARK_STRIKE; no hidden per-instance setup value is required.
 _SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST"})
 _ALLOWED_POWER_NAMES = frozenset({"STRENGTH", "VULNERABLE", "WEAK", "POISON"})
+_CULTIST_OPENING_INTENTS = frozenset({"INCANTATION", "CULTIST_INCANTATION"})
 
 
 def _canonical_name(value: Any) -> str:
@@ -40,6 +41,7 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
     if enemy_count != 1:
         reasons.append(f"enemy_count_unsupported_v1:{enemy_count}")
 
+    turn = state.get("turn")
     for index, raw_enemy in enumerate(raw_enemies):
         path = f"enemies[{index}]"
         if not isinstance(raw_enemy, Mapping):
@@ -58,6 +60,14 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
         intent = raw_enemy.get("intent")
         if intent is None or not str(intent).strip():
             reasons.append(f"missing_public_intent:{path}")
+        else:
+            normalized_intent = _canonical_name(intent)
+            # Player reconstruction V1 admits only turn 0. On that exact public
+            # surface Cultist's current move is fixed by the pinned simulator:
+            # INVALID prior history -> INCANTATION. Reject impossible opening
+            # states rather than silently constructing a different timeline.
+            if name == "CULTIST" and turn == 0 and normalized_intent not in _CULTIST_OPENING_INTENTS:
+                reasons.append(f"cultist_opening_intent_mismatch_v1:{normalized_intent}")
 
         if raw_enemy.get("is_gone") is True:
             reasons.append(f"gone_enemy_unsupported_v1:{path}")

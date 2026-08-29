@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Layer audited draw-card midturn reconstruction over frozen V1/V2.
+"""Layer audited rich-card midturn reconstruction over frozen V1/V2.
 
 This overlay is intentionally additive and runs *after* the existing public
 reconstruction + history + starter-midturn overlays. Existing two-argument
 calls keep the old behavior. A third reconstruction-aux argument unlocks only
-audited Jaw Worm turn=1 slices: one normal Pommel Strike, or one Shrug It Off
-at upgrade count 0 or 1.
+audited Jaw Worm turn=1 slices: one normal Pommel Strike, one Shrug It Off at
+upgrade count 0 or 1, or one normal Anger whose generated copy is visible in
+the current discard pile.
 
 The auxiliary data contains controller-observed turn counters only. It is not
 part of sts1-public-state-v1 and never contains RNG state, draw order, UUIDs,
-or a replayable action history. Shrug upgrade count is read from the current
-public card instance, not from the auxiliary trace.
+or a replayable action history. Rich card identity and generated-card evidence
+come from the current public card piles, not from hidden history.
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ CARD_OLD = '''                  else if (idText == "BASH") { id = CardId::BASH; 
 CARD_NEW = '''                  else if (idText == "BASH") { id = CardId::BASH; expectedCost = 2; }
                   else if (idText == "POMMEL_STRIKE") { id = CardId::POMMEL_STRIKE; expectedCost = 1; }
                   else if (idText == "SHRUG_IT_OFF") { id = CardId::SHRUG_IT_OFF; expectedCost = 1; }
+                  else if (idText == "ANGER") { id = CardId::ANGER; expectedCost = 0; }
                   else throw std::runtime_error("unsupported_card_v1:" + idText);'''
 
 MIDTURN_OLD = '''              // phase1_public_jaw_worm_turn_one_midturn_counters_v1:
@@ -41,9 +43,10 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
               // phase1_public_pommel_midturn_aux_v1:
               // phase1_public_shrug_midturn_aux_v1:
               // phase1_public_shrug_upgraded_midturn_aux_v1:
+              // phase1_public_anger_midturn_aux_v1:
               // phase1_public_draw_midturn_aux_v2: an optional, separate
               // controller trace can prove counters that snapshot arithmetic
-              // cannot recover after a draw effect.
+              // cannot recover after draw/generated-card effects.
               const bool hasReconstructionAux = !reconstructionAuxObj.is_none();
               if (hasReconstructionAux && bc.turn == 1) {
                   if (!pybind11::isinstance<pybind11::dict>(reconstructionAuxObj)) {
@@ -69,12 +72,46 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                   const int attacks = aux_int("attacks_played_this_turn");
                   const int skills = aux_int("skills_played_this_turn");
                   const int discarded = aux_int("cards_discarded_this_turn");
-                  const bool pommelSlice = played == 1 && attacks == 1 && skills == 0 && discarded == 0;
-                  const bool shrugSlice = played == 1 && attacks == 0 && skills == 1 && discarded == 0;
-                  if (!pommelSlice && !shrugSlice) {
+                  const bool attackCounterSlice = played == 1 && attacks == 1 && skills == 0 && discarded == 0;
+                  const bool skillCounterSlice = played == 1 && attacks == 0 && skills == 1 && discarded == 0;
+                  if (!attackCounterSlice && !skillCounterSlice) {
                       throw std::runtime_error("draw_aux_counter_slice_unsupported");
                   }
-                  const char *prefix = pommelSlice ? "pommel" : "shrug";
+
+                  int strikes = 0;
+                  int defends = 0;
+                  int bashes = 0;
+                  int pommels = 0;
+                  int shrugs = 0;
+                  int angers = 0;
+                  int unsupported = 0;
+                  int upgradedShrugs = 0;
+                  int upgradedOther = 0;
+                  auto count_rich_slice_card = [&](const CardInstance &c) {
+                      if (c.upgraded) {
+                          if (c.id == CardId::SHRUG_IT_OFF) ++upgradedShrugs;
+                          else ++upgradedOther;
+                      }
+                      if (c.id == CardId::STRIKE_RED) ++strikes;
+                      else if (c.id == CardId::DEFEND_RED) ++defends;
+                      else if (c.id == CardId::BASH) ++bashes;
+                      else if (c.id == CardId::POMMEL_STRIKE) ++pommels;
+                      else if (c.id == CardId::SHRUG_IT_OFF) ++shrugs;
+                      else if (c.id == CardId::ANGER) ++angers;
+                      else ++unsupported;
+                  };
+                  for (int i = 0; i < bc.cards.cardsInHand; ++i) count_rich_slice_card(bc.cards.hand[i]);
+                  for (const auto &c : bc.cards.drawPile) count_rich_slice_card(c);
+                  for (const auto &c : bc.cards.discardPile) count_rich_slice_card(c);
+                  for (const auto &c : bc.cards.exhaustPile) count_rich_slice_card(c);
+
+                  const bool pommelSlice = attackCounterSlice && pommels == 1 && shrugs == 0 && angers == 0;
+                  const bool angerSlice = attackCounterSlice && pommels == 0 && shrugs == 0 && angers == 2;
+                  const bool shrugSlice = skillCounterSlice && pommels == 0 && shrugs == 1 && angers == 0;
+                  if (!pommelSlice && !shrugSlice && !angerSlice) {
+                      throw std::runtime_error("draw_aux_public_card_identity_unsupported");
+                  }
+                  const char *prefix = pommelSlice ? "pommel" : (shrugSlice ? "shrug" : "anger");
                   auto slice_error = [&](const char *suffix) -> std::runtime_error {
                       return std::runtime_error(std::string(prefix) + suffix);
                   };
@@ -94,57 +131,38 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                       throw slice_error("_aux_turn_mismatch");
                   }
 
-                  if (bc.cards.cardsInHand != 5
-                      || !bc.cards.drawPile.empty()
-                      || bc.cards.discardPile.size() != 6
+                  const int expectedHand = angerSlice ? 4 : 5;
+                  const int expectedDraw = angerSlice ? 1 : 0;
+                  const int expectedDiscard = angerSlice ? 7 : 6;
+                  if (bc.cards.cardsInHand != expectedHand
+                      || static_cast<int>(bc.cards.drawPile.size()) != expectedDraw
+                      || static_cast<int>(bc.cards.discardPile.size()) != expectedDiscard
                       || !bc.cards.exhaustPile.empty()) {
                       throw slice_error("_midturn_pile_shape_mismatch");
                   }
-                  if (bc.player.energy != 2) {
+                  const int expectedEnergy = angerSlice ? 3 : 2;
+                  if (bc.player.energy != expectedEnergy) {
                       throw slice_error("_midturn_player_shape_mismatch");
                   }
-
-                  int strikes = 0;
-                  int defends = 0;
-                  int bashes = 0;
-                  int pommels = 0;
-                  int shrugs = 0;
-                  int unsupported = 0;
-                  int upgradedShrugs = 0;
-                  int upgradedOther = 0;
-                  auto count_draw_slice_card = [&](const CardInstance &c) {
-                      if (c.upgraded) {
-                          if (c.id == CardId::SHRUG_IT_OFF) ++upgradedShrugs;
-                          else ++upgradedOther;
-                      }
-                      if (c.id == CardId::STRIKE_RED) ++strikes;
-                      else if (c.id == CardId::DEFEND_RED) ++defends;
-                      else if (c.id == CardId::BASH) ++bashes;
-                      else if (c.id == CardId::POMMEL_STRIKE) ++pommels;
-                      else if (c.id == CardId::SHRUG_IT_OFF) ++shrugs;
-                      else ++unsupported;
-                  };
-                  for (int i = 0; i < bc.cards.cardsInHand; ++i) count_draw_slice_card(bc.cards.hand[i]);
-                  for (const auto &c : bc.cards.drawPile) count_draw_slice_card(c);
-                  for (const auto &c : bc.cards.discardPile) count_draw_slice_card(c);
-                  for (const auto &c : bc.cards.exhaustPile) count_draw_slice_card(c);
 
                   if (strikes != 5 || defends != 4 || bashes != 1
                       || pommels != (pommelSlice ? 1 : 0)
                       || shrugs != (shrugSlice ? 1 : 0)
+                      || angers != (angerSlice ? 2 : 0)
                       || unsupported != 0 || upgradedOther != 0
                       || (pommelSlice && upgradedShrugs != 0)
                       || (shrugSlice && (upgradedShrugs < 0 || upgradedShrugs > 1))) {
                       throw slice_error("_midturn_deck_composition_mismatch");
                   }
 
-                  const int expectedBlock = pommelSlice ? 0 : (upgradedShrugs == 1 ? 11 : 8);
+                  const int expectedBlock = pommelSlice || angerSlice ? 0 : (upgradedShrugs == 1 ? 11 : 8);
                   if (bc.player.block != expectedBlock) {
                       throw slice_error("_midturn_player_shape_mismatch");
                   }
 
                   int discardPlayedCard = 0;
                   int discardUpgradedShrugs = 0;
+                  int discardAngers = 0;
                   for (const auto &c : bc.cards.discardPile) {
                       if ((pommelSlice && c.id == CardId::POMMEL_STRIKE)
                           || (shrugSlice && c.id == CardId::SHRUG_IT_OFF)) {
@@ -153,15 +171,19 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                       if (c.id == CardId::SHRUG_IT_OFF && c.upgraded) {
                           ++discardUpgradedShrugs;
                       }
+                      if (c.id == CardId::ANGER) {
+                          ++discardAngers;
+                      }
                   }
-                  if (discardPlayedCard != 1
-                      || (shrugSlice && discardUpgradedShrugs != upgradedShrugs)) {
+                  if ((!angerSlice && discardPlayedCard != 1)
+                      || (shrugSlice && discardUpgradedShrugs != upgradedShrugs)
+                      || (angerSlice && discardAngers != 2)) {
                       throw slice_error("_midturn_play_not_publicly_reachable");
                   }
 
                   bc.player.cardsPlayedThisTurn = 1;
-                  bc.player.attacksPlayedThisTurn = pommelSlice ? 1 : 0;
-                  bc.player.skillsPlayedThisTurn = shrugSlice ? 1 : 0;
+                  bc.player.attacksPlayedThisTurn = attackCounterSlice ? 1 : 0;
+                  bc.player.skillsPlayedThisTurn = skillCounterSlice ? 1 : 0;
                   bc.player.cardsDiscardedThisTurn = 0;
               } else if (bc.turn == 1) {'''
 
@@ -191,7 +213,7 @@ def main() -> None:
     text = replace_once(text, ARGS_OLD, ARGS_NEW, "argument")
     TARGET.write_text(text, encoding="utf-8")
     print(f"patched={TARGET}")
-    print("draw_midturn_aux=POMMEL_STRIKE_V1+SHRUG_IT_OFF_V1+SHRUG_IT_OFF_UPGRADED_V1")
+    print("draw_midturn_aux=POMMEL_STRIKE_V1+SHRUG_IT_OFF_V1+SHRUG_IT_OFF_UPGRADED_V1+ANGER_V1")
     print("existing_two_argument_behavior=PRESERVED")
     print("public_contract_fields_added=0")
     print("hidden_rng_access_added=0")

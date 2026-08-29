@@ -42,6 +42,8 @@ jobs:
             scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout.py
           python - <<'PY'
           from pathlib import Path
+          import sys
+          sys.path.insert(0, 'src')
           hold = Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout_seeds_64.txt')
           retired = Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_midturn_source_seeds_64.txt')
           dev = Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery_seeds_64.txt')

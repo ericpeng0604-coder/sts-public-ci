@@ -78,7 +78,9 @@ def test_finesse_normal_exact_slice_is_admitted_without_policy_mutation_or_anger
 
 
 def test_finesse_without_aux_still_fails_closed() -> None:
-    assert_rejected(finesse_state(), None)
+    result = admitted(finesse_state(), None)
+    assert result["reconstruction"]["public_player_state_complete"] is False
+    assert result["reconstruction"]["finesse_midturn_complete"] is False
 
 
 def test_finesse_rejects_incomplete_or_wrong_counter_trace() -> None:

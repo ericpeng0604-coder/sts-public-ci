@@ -4,12 +4,13 @@
 This overlay is intentionally additive and runs *after* the existing public
 reconstruction + history + starter-midturn overlays. Existing two-argument
 calls keep the old behavior. A third reconstruction-aux argument unlocks only
-two audited slices on Jaw Worm turn=1: exactly one normal Pommel Strike, or
-exactly one normal Shrug It Off.
+audited Jaw Worm turn=1 slices: one normal Pommel Strike, or one Shrug It Off
+at upgrade count 0 or 1.
 
 The auxiliary data contains controller-observed turn counters only. It is not
 part of sts1-public-state-v1 and never contains RNG state, draw order, UUIDs,
-or a replayable action history.
+or a replayable action history. Shrug upgrade count is read from the current
+public card instance, not from the auxiliary trace.
 """
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
               // derive turn-local bookkeeping from public state only.
               // phase1_public_pommel_midturn_aux_v1:
               // phase1_public_shrug_midturn_aux_v1:
+              // phase1_public_shrug_upgraded_midturn_aux_v1:
               // phase1_public_draw_midturn_aux_v2: an optional, separate
               // controller trace can prove counters that snapshot arithmetic
               // cannot recover after a draw effect.
@@ -92,17 +94,13 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                       throw slice_error("_aux_turn_mismatch");
                   }
 
-                  // Both audited cards cost one and draw one. On this exact
-                  // second-player-turn surface, the single remaining draw card
-                  // replaces the played card, so the hand still contains five.
                   if (bc.cards.cardsInHand != 5
                       || !bc.cards.drawPile.empty()
                       || bc.cards.discardPile.size() != 6
                       || !bc.cards.exhaustPile.empty()) {
                       throw slice_error("_midturn_pile_shape_mismatch");
                   }
-                  const int expectedBlock = pommelSlice ? 0 : 8;
-                  if (bc.player.energy != 2 || bc.player.block != expectedBlock) {
+                  if (bc.player.energy != 2) {
                       throw slice_error("_midturn_player_shape_mismatch");
                   }
 
@@ -112,9 +110,13 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                   int pommels = 0;
                   int shrugs = 0;
                   int unsupported = 0;
-                  int upgraded = 0;
+                  int upgradedShrugs = 0;
+                  int upgradedOther = 0;
                   auto count_draw_slice_card = [&](const CardInstance &c) {
-                      if (c.upgraded) ++upgraded;
+                      if (c.upgraded) {
+                          if (c.id == CardId::SHRUG_IT_OFF) ++upgradedShrugs;
+                          else ++upgradedOther;
+                      }
                       if (c.id == CardId::STRIKE_RED) ++strikes;
                       else if (c.id == CardId::DEFEND_RED) ++defends;
                       else if (c.id == CardId::BASH) ++bashes;
@@ -126,21 +128,34 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                   for (const auto &c : bc.cards.drawPile) count_draw_slice_card(c);
                   for (const auto &c : bc.cards.discardPile) count_draw_slice_card(c);
                   for (const auto &c : bc.cards.exhaustPile) count_draw_slice_card(c);
+
                   if (strikes != 5 || defends != 4 || bashes != 1
                       || pommels != (pommelSlice ? 1 : 0)
                       || shrugs != (shrugSlice ? 1 : 0)
-                      || unsupported != 0 || upgraded != 0) {
+                      || unsupported != 0 || upgradedOther != 0
+                      || (pommelSlice && upgradedShrugs != 0)
+                      || (shrugSlice && (upgradedShrugs < 0 || upgradedShrugs > 1))) {
                       throw slice_error("_midturn_deck_composition_mismatch");
                   }
 
+                  const int expectedBlock = pommelSlice ? 0 : (upgradedShrugs == 1 ? 11 : 8);
+                  if (bc.player.block != expectedBlock) {
+                      throw slice_error("_midturn_player_shape_mismatch");
+                  }
+
                   int discardPlayedCard = 0;
+                  int discardUpgradedShrugs = 0;
                   for (const auto &c : bc.cards.discardPile) {
                       if ((pommelSlice && c.id == CardId::POMMEL_STRIKE)
                           || (shrugSlice && c.id == CardId::SHRUG_IT_OFF)) {
                           ++discardPlayedCard;
                       }
+                      if (c.id == CardId::SHRUG_IT_OFF && c.upgraded) {
+                          ++discardUpgradedShrugs;
+                      }
                   }
-                  if (discardPlayedCard != 1) {
+                  if (discardPlayedCard != 1
+                      || (shrugSlice && discardUpgradedShrugs != upgradedShrugs)) {
                       throw slice_error("_midturn_play_not_publicly_reachable");
                   }
 
@@ -176,7 +191,7 @@ def main() -> None:
     text = replace_once(text, ARGS_OLD, ARGS_NEW, "argument")
     TARGET.write_text(text, encoding="utf-8")
     print(f"patched={TARGET}")
-    print("draw_midturn_aux=POMMEL_STRIKE_V1+SHRUG_IT_OFF_V1")
+    print("draw_midturn_aux=POMMEL_STRIKE_V1+SHRUG_IT_OFF_V1+SHRUG_IT_OFF_UPGRADED_V1")
     print("existing_two_argument_behavior=PRESERVED")
     print("public_contract_fields_added=0")
     print("hidden_rng_access_added=0")

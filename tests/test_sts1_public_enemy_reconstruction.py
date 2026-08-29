@@ -3,6 +3,7 @@ from roguelike_ai.sts1_teacher.enemy_reconstruction import assess_public_enemies
 
 def jaw_worm_state() -> dict:
     return {
+        "turn": 0,
         "enemies": [
             {
                 "index": 0,
@@ -16,12 +17,13 @@ def jaw_worm_state() -> dict:
                 "is_gone": False,
                 "powers": [{"name": "Strength", "amount": 3}],
             }
-        ]
+        ],
     }
 
 
 def cultist_state() -> dict:
     return {
+        "turn": 0,
         "enemies": [
             {
                 "index": 0,
@@ -35,7 +37,7 @@ def cultist_state() -> dict:
                 "is_gone": False,
                 "powers": [],
             }
-        ]
+        ],
     }
 
 
@@ -51,6 +53,14 @@ def test_single_cultist_opening_public_surface_is_admitted() -> None:
     assert result.allowed is True
     assert result.reasons == ()
     assert result.enemy_count == 1
+
+
+def test_impossible_cultist_opening_dark_strike_fails_closed() -> None:
+    state = cultist_state()
+    state["enemies"][0]["intent"] = "CULTIST_DARK_STRIKE"
+    result = assess_public_enemies(state)
+    assert result.allowed is False
+    assert "cultist_opening_intent_mismatch_v1:CULTIST_DARK_STRIKE" in result.reasons
 
 
 def test_unknown_monster_fails_closed() -> None:

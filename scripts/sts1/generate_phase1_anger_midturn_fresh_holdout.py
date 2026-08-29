@@ -168,7 +168,12 @@ def _assert_post_anger(state: dict, *, source_seed: int) -> str:
     if state.get("powers") != []:
         raise RuntimeError(f"anger_midturn_player_powers:{source_seed}:{state.get('powers')}")
 
-    piles = [state.get("hand", []), state.get("draw_pile", []), state.get("discard_pile", []), state.get("exhaust_pile", [])]
+    piles = [
+        state.get("hand", []),
+        state.get("draw_pile", []),
+        state.get("discard_pile", []),
+        state.get("exhaust_pile", []),
+    ]
     ids = [_card_id(card) for pile in piles for card in pile]
     expected = Counter({"STRIKE_RED": 5, "DEFEND_RED": 4, "BASH": 1, "ANGER": 2})
     if Counter(ids) != expected:
@@ -203,8 +208,9 @@ def generate() -> dict:
         try:
             gc = sts.GameContext(sts.CharacterClass.IRONCLAD, source_seed, 0)
             gc.obtain_card(sts.Card(sts.CardId.ANGER))
-            if len(list(gc.deck)) != 11:
-                raise RuntimeError(f"deck_size_after_anger:{len(list(gc.deck))}")
+            deck = list(gc.deck)
+            if len(deck) != 11:
+                raise RuntimeError(f"deck_size_after_anger:{len(deck)}")
             gc.floor_num = 1
             gc.cur_room = sts.Room.MONSTER
             bc = sts.BattleContext()
@@ -215,8 +221,10 @@ def generate() -> dict:
             _end_first_player_turn_without_cards(bc)
             run = public_run_state(gc)
             boundary = _project(adapter, bc, run)
-            boundary_state = attach_reconstruction_capabilities(boundary, run_state=run)
-            boundary_context = require_public_reconstruction(boundary_state)
+            # This is a source-generation boundary, not a formal rollout root.
+            # Select Anger strictly from public observation/legal actions; the
+            # post-Anger state must pass the formal reconstruction gate below.
+            boundary_context = DecisionContext.from_public_state(boundary)
             anger_action = _public_anger_action(boundary_context)
             _execute_public_card_on_source(bc, anger_action)
 

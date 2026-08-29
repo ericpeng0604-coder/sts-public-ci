@@ -15,6 +15,7 @@ on:
       - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
       - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
       - 'scripts/sts1/verify_phase1_public_reconstruction_native.py'
+      - 'scripts/sts1/verify_phase1_public_gremlin_nob_native.py'
       - 'scripts/sts1/verify_phase1_public_search_native.py'
       - 'scripts/sts1/generate_phase1_public_search_v1_suite.py'
       - 'scripts/sts1/run_phase1_public_search_v1_quality.py'
@@ -69,6 +70,7 @@ jobs:
           scripts/sts1/apply_phase1_public_reconstruction_overlay.py
           scripts/sts1/apply_phase1_public_history_guard_overlay.py
           scripts/sts1/verify_phase1_public_reconstruction_native.py
+          scripts/sts1/verify_phase1_public_gremlin_nob_native.py
           scripts/sts1/verify_phase1_public_search_native.py
           scripts/sts1/generate_phase1_public_search_v1_suite.py
           scripts/sts1/run_phase1_public_search_v1_quality.py
@@ -144,6 +146,9 @@ jobs:
       - name: Native reconstruction roundtrip and executable action proof
         run: python scripts/sts1/verify_phase1_public_reconstruction_native.py
 
+      - name: Native Gremlin Nob opening proof
+        run: python scripts/sts1/verify_phase1_public_gremlin_nob_native.py
+
       - name: Native PublicStateSearch paired-rollout proof
         run: python scripts/sts1/verify_phase1_public_search_native.py
 
@@ -155,6 +160,7 @@ jobs:
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_potion_belt_v1'
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_reconstruction_v1'
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_history_turn_guard_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_gremlin_nob_opening_v1'
 
   public-search-v1-quality:
     needs: public-native-reconstruction

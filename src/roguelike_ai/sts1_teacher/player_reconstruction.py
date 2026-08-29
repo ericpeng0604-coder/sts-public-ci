@@ -1,7 +1,7 @@
 """Narrow V1 admission for public player combat state.
 
 The pinned sts_lightspeed BattleContext is zero-based: ``turn == 0`` is the
-first player turn.  V1 still admits that opening surface directly.  A second,
+first player turn. V1 still admits that opening surface directly. A second,
 strictly audited slice admits only the *start* of Jaw Worm turn 1, where the
 starter-only public state proves that per-turn player counters are still zero.
 Any other later-turn state continues to fail closed.
@@ -30,9 +30,9 @@ def _jaw_worm_turn_one_boundary_reasons(state: Mapping[str, Any]) -> list[str]:
 
     Under the frozen V1 run/card slice there are exactly ten non-exhausting
     starter cards, no energy gain/draw/retain cards, Burning Blood only, and no
-    usable potions.  Therefore ``energy == 3`` + five cards in hand + ten cards
-    across the public piles identifies the untouched second-turn player
-    boundary; after any starter card is played, both energy and hand size fall.
+    usable potions. On turn 1 the first five cards have all reached discard and
+    the untouched second hand is the remaining five cards. Thus the exact public
+    boundary is energy 3, block 0, hand 5, draw 0, discard 5, exhaust 0.
     """
 
     reasons: list[str] = []
@@ -51,13 +51,16 @@ def _jaw_worm_turn_one_boundary_reasons(state: Mapping[str, Any]) -> list[str]:
     draw = _sequence(state.get("draw_pile"))
     discard = _sequence(state.get("discard_pile"))
     exhaust = _sequence(state.get("exhaust_pile"))
-    if None in (hand, draw, discard, exhaust):
+    if hand is None or draw is None or discard is None or exhaust is None:
         reasons.append("turn1_boundary_card_piles_not_sequences")
         return reasons
 
-    assert hand is not None and draw is not None and discard is not None and exhaust is not None
     if len(hand) != 5:
         reasons.append(f"turn1_boundary_hand_not_fresh:{len(hand)}")
+    if len(draw) != 0:
+        reasons.append(f"turn1_boundary_draw_not_empty:{len(draw)}")
+    if len(discard) != 5:
+        reasons.append(f"turn1_boundary_discard_not_complete:{len(discard)}")
     if len(exhaust) != 0:
         reasons.append(f"turn1_boundary_exhaust_not_empty:{len(exhaust)}")
 

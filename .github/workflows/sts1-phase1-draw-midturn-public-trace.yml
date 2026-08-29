@@ -1,0 +1,52 @@
+name: STS1 Phase 1 Draw Midturn Public Trace
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-draw-midturn-public-trace-ci
+  pull_request:
+    branches:
+      - gpt/sts1-phase1-public-reconstruction
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  draw-midturn-public-trace:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test runner
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Compile mirrored tracker
+        run: python -m py_compile scripts/sts1/phase1_draw_midturn_bridge_reference.py
+
+      - name: Run Pommel Strike public-trace gate
+        run: python -m pytest -q tests/sts1/test_phase1_draw_midturn_public_trace.py
+
+      - name: Verify no hidden-state vocabulary was introduced
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('scripts/sts1/phase1_draw_midturn_bridge_reference.py').read_text(encoding='utf-8').lower()
+          forbidden_runtime_access = (
+              'future_draw_order',
+              'rng_state',
+              'rng_counter',
+              'last_move_id',
+              'second_last_move_id',
+          )
+          for token in forbidden_runtime_access:
+              assert token not in text, token
+          print('HIDDEN_STATE_VOCABULARY: PASS')
+          PY

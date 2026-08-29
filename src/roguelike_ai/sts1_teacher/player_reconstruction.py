@@ -5,11 +5,12 @@ first player turn. V1 admits that opening surface directly. The established
 turn-1 starter-only slice remains unchanged when no reconstruction auxiliary
 trace is supplied.
 
-The first draw-card expansion is deliberately separate: a bounded
-CommunicationMod command trace may prove exactly one Pommel Strike play on
-Jaw Worm turn 1. The trace is reconstruction metadata only; it is never merged
-into policy state or decision identity. Any other richer midturn still fails
-closed.
+Draw-card expansions use a bounded CommunicationMod command trace only for
+turn-local counters that cannot be recovered from one snapshot. The trace is
+reconstruction metadata only; it is never merged into policy state or decision
+identity. Audited draw slices are deliberately tiny: exactly one normal Pommel
+Strike or exactly one normal Shrug It Off on Jaw Worm turn 1. Any other richer
+midturn still fails closed.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ _SUPPORTED_PLAYER_POWERS_V1 = frozenset({"STRENGTH", "DEXTERITY", "FOCUS", "ARTI
 _SUPPORTED_STARTER_CARDS_V1 = frozenset({"STRIKE_RED", "DEFEND_RED", "BASH"})
 _EXPECTED_STARTER_COUNTS_V1 = Counter({"STRIKE_RED": 5, "DEFEND_RED": 4, "BASH": 1})
 _EXPECTED_POMMEL_COUNTS_V1 = Counter({"STRIKE_RED": 5, "DEFEND_RED": 4, "BASH": 1, "POMMEL_STRIKE": 1})
+_EXPECTED_SHRUG_COUNTS_V1 = Counter({"STRIKE_RED": 5, "DEFEND_RED": 4, "BASH": 1, "SHRUG_IT_OFF": 1})
 _CARD_ID_ALIASES = {"STRIKE_R": "STRIKE_RED", "DEFEND_R": "DEFEND_RED"}
 _AUX_SCHEMA = "sts1-public-reconstruction-aux-v1"
 _AUX_SOURCE = "communicationmod_command_trace_v1"
@@ -124,72 +126,123 @@ def _jaw_worm_turn_one_reasons(state: Mapping[str, Any]) -> list[str]:
     return reasons
 
 
-def _pommel_turn_one_reasons(state: Mapping[str, Any], aux: Mapping[str, Any]) -> list[str]:
-    """Prove exactly one normal Pommel Strike play using public state + bounded trace."""
-
+def _validate_aux(
+    aux: Mapping[str, Any],
+    *,
+    prefix: str,
+    attacks: int,
+    skills: int,
+) -> list[str]:
     reasons: list[str] = []
     if aux.get("schema_version") != _AUX_SCHEMA:
-        reasons.append("pommel_aux_schema_mismatch")
+        reasons.append(f"{prefix}_aux_schema_mismatch")
     if aux.get("source") != _AUX_SOURCE:
-        reasons.append("pommel_aux_source_mismatch")
+        reasons.append(f"{prefix}_aux_source_mismatch")
     if aux.get("complete") is not True:
-        reasons.append("pommel_aux_incomplete")
+        reasons.append(f"{prefix}_aux_incomplete")
 
     expected_ints = {
         "turn": 1,
         "cards_played_this_turn": 1,
-        "attacks_played_this_turn": 1,
-        "skills_played_this_turn": 0,
+        "attacks_played_this_turn": attacks,
+        "skills_played_this_turn": skills,
         "cards_discarded_this_turn": 0,
     }
     for key, expected in expected_ints.items():
         value = aux.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value != expected:
-            reasons.append(f"pommel_aux_{key}_mismatch:{value!r}!={expected}")
+            reasons.append(f"{prefix}_aux_{key}_mismatch:{value!r}!={expected}")
+    return reasons
 
+
+def _draw_slice_common_reasons(
+    state: Mapping[str, Any],
+    *,
+    prefix: str,
+    expected_counts: Counter[str],
+    played_card_id: str,
+    expected_block: int,
+) -> list[str]:
+    reasons: list[str] = []
     enemies = _sequence(state.get("enemies"))
     if enemies is None or len(enemies) != 1 or not isinstance(enemies[0], Mapping):
-        reasons.append("pommel_turn1_requires_single_enemy")
+        reasons.append(f"{prefix}_turn1_requires_single_enemy")
     elif _norm(enemies[0].get("name")) != "JAW_WORM":
-        reasons.append("pommel_turn1_requires_jaw_worm")
+        reasons.append(f"{prefix}_turn1_requires_jaw_worm")
 
     hand = _sequence(state.get("hand"))
     draw = _sequence(state.get("draw_pile"))
     discard = _sequence(state.get("discard_pile"))
     exhaust = _sequence(state.get("exhaust_pile"))
     if hand is None or draw is None or discard is None or exhaust is None:
-        reasons.append("pommel_turn1_card_piles_not_sequences")
+        reasons.append(f"{prefix}_turn1_card_piles_not_sequences")
         return reasons
 
     if len(hand) != 5 or len(draw) != 0 or len(discard) != 6 or len(exhaust) != 0:
         reasons.append(
-            f"pommel_turn1_pile_shape:hand={len(hand)}:draw={len(draw)}:discard={len(discard)}:exhaust={len(exhaust)}"
+            f"{prefix}_turn1_pile_shape:hand={len(hand)}:draw={len(draw)}:discard={len(discard)}:exhaust={len(exhaust)}"
         )
 
     ids: list[str] = []
     for index, card in enumerate([*hand, *draw, *discard, *exhaust]):
         if not isinstance(card, Mapping):
-            reasons.append(f"pommel_turn1_card_not_mapping:{index}")
+            reasons.append(f"{prefix}_turn1_card_not_mapping:{index}")
             continue
         ids.append(_card_id(card.get("id")))
         upgrades = card.get("upgrades")
         if upgrades != 0 or isinstance(upgrades, bool):
-            reasons.append(f"pommel_turn1_requires_unupgraded_cards:{index}:{upgrades!r}")
-    if Counter(ids) != _EXPECTED_POMMEL_COUNTS_V1:
-        reasons.append("pommel_turn1_deck_composition_mismatch")
-    if sum(1 for card in discard if isinstance(card, Mapping) and _card_id(card.get("id")) == "POMMEL_STRIKE") != 1:
-        reasons.append("pommel_turn1_pommel_not_in_discard")
+            reasons.append(f"{prefix}_turn1_requires_unupgraded_cards:{index}:{upgrades!r}")
+    if Counter(ids) != expected_counts:
+        reasons.append(f"{prefix}_turn1_deck_composition_mismatch")
+    if sum(1 for card in discard if isinstance(card, Mapping) and _card_id(card.get("id")) == played_card_id) != 1:
+        reasons.append(f"{prefix}_turn1_played_card_not_in_discard")
 
     if state.get("energy") != 2 or isinstance(state.get("energy"), bool):
-        reasons.append(f"pommel_turn1_energy_mismatch:{state.get('energy')!r}")
-    if state.get("block") != 0 or isinstance(state.get("block"), bool):
-        reasons.append(f"pommel_turn1_block_mismatch:{state.get('block')!r}")
+        reasons.append(f"{prefix}_turn1_energy_mismatch:{state.get('energy')!r}")
+    if state.get("block") != expected_block or isinstance(state.get("block"), bool):
+        reasons.append(f"{prefix}_turn1_block_mismatch:{state.get('block')!r}")
 
     powers = _sequence(state.get("powers"))
     if powers is None:
-        reasons.append("pommel_turn1_powers_not_sequence")
+        reasons.append(f"{prefix}_turn1_powers_not_sequence")
     elif len(powers) != 0:
-        reasons.append("pommel_turn1_requires_no_player_powers")
+        reasons.append(f"{prefix}_turn1_requires_no_player_powers")
+    return reasons
+
+
+def _pommel_turn_one_reasons(state: Mapping[str, Any], aux: Mapping[str, Any]) -> list[str]:
+    """Prove exactly one normal Pommel Strike play using public state + bounded trace."""
+
+    reasons = _validate_aux(aux, prefix="pommel", attacks=1, skills=0)
+    common = _draw_slice_common_reasons(
+        state,
+        prefix="pommel",
+        expected_counts=_EXPECTED_POMMEL_COUNTS_V1,
+        played_card_id="POMMEL_STRIKE",
+        expected_block=0,
+    )
+    # Preserve the established externally-visible reason for this check.
+    common = [
+        "pommel_turn1_pommel_not_in_discard" if item == "pommel_turn1_played_card_not_in_discard" else item
+        for item in common
+    ]
+    reasons.extend(common)
+    return reasons
+
+
+def _shrug_turn_one_reasons(state: Mapping[str, Any], aux: Mapping[str, Any]) -> list[str]:
+    """Prove exactly one normal Shrug It Off play using public state + bounded trace."""
+
+    reasons = _validate_aux(aux, prefix="shrug", attacks=0, skills=1)
+    reasons.extend(
+        _draw_slice_common_reasons(
+            state,
+            prefix="shrug",
+            expected_counts=_EXPECTED_SHRUG_COUNTS_V1,
+            played_card_id="SHRUG_IT_OFF",
+            expected_block=8,
+        )
+    )
     return reasons
 
 
@@ -217,7 +270,14 @@ def assess_public_player(
         elif not isinstance(reconstruction_aux, MappingABC):
             reasons.append("reconstruction_aux_not_mapping")
         else:
-            reasons.extend(_pommel_turn_one_reasons(state, reconstruction_aux))
+            attacks = reconstruction_aux.get("attacks_played_this_turn")
+            skills = reconstruction_aux.get("skills_played_this_turn")
+            if type(attacks) is int and type(skills) is int and attacks == 1 and skills == 0:
+                reasons.extend(_pommel_turn_one_reasons(state, reconstruction_aux))
+            elif type(attacks) is int and type(skills) is int and attacks == 0 and skills == 1:
+                reasons.extend(_shrug_turn_one_reasons(state, reconstruction_aux))
+            else:
+                reasons.append(f"draw_aux_slice_unsupported:attacks={attacks!r}:skills={skills!r}")
     elif turn != 0:
         reasons.append(f"turn_unsupported_v1:{turn}")
 

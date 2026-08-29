@@ -4,8 +4,8 @@
 This overlay is applied after the base public BattleContext constructor. It
 keeps Jaw Worm's sampled prior history fail-closed and extends the same
 public-only constructor to Cultist. Cultist is admitted only on the opening
-player turn by the Python reconstruction gate, where previous history is
-necessarily INVALID.
+player turn, where its public intent must be INCANTATION and previous history
+is necessarily INVALID.
 """
 from __future__ import annotations
 
@@ -32,8 +32,6 @@ HISTORY_REPLACEMENT = '''              // phase1_public_history_turn_guard_v1:
                                     : historyChoice == 1 ? MMID::JAW_WORM_THRASH
                                                          : MMID::JAW_WORM_BELLOW;
               } else {
-                  // phase1_public_cultist_opening_v1: Python admission currently
-                  // rejects turn > 0. Keep the native boundary fail-closed too.
                   throw std::runtime_error("cultist_later_turn_unsupported_v1");
               }'''
 
@@ -53,12 +51,14 @@ ENEMY_MOVE_ANCHOR = '''              mo.moveHistory[0] = jaw_worm_move(get_s(ene
 ENEMY_MOVE_REPLACEMENT = '''              const auto publicIntent = normalized(get_s(enemy, "intent"));
               if (enemyName == "JAW_WORM") {
                   mo.moveHistory[0] = jaw_worm_move(publicIntent);
-              } else if (publicIntent == "INCANTATION" || publicIntent == "CULTIST_INCANTATION") {
-                  mo.moveHistory[0] = MMID::CULTIST_INCANTATION;
-              } else if (publicIntent == "DARK_STRIKE" || publicIntent == "CULTIST_DARK_STRIKE") {
-                  mo.moveHistory[0] = MMID::CULTIST_DARK_STRIKE;
               } else {
-                  throw std::runtime_error("unsupported_cultist_intent_v1:" + publicIntent);
+                  // Cultist V1 is opening-turn only. The pinned simulator maps
+                  // INVALID prior history deterministically to INCANTATION.
+                  if (bc.turn != 0) throw std::runtime_error("cultist_later_turn_unsupported_v1");
+                  if (publicIntent != "INCANTATION" && publicIntent != "CULTIST_INCANTATION") {
+                      throw std::runtime_error("cultist_opening_intent_mismatch_v1:" + publicIntent);
+                  }
+                  mo.moveHistory[0] = MMID::CULTIST_INCANTATION;
               }'''
 
 
@@ -76,7 +76,6 @@ def main() -> None:
     if MARKER in text or CULTIST_MARKER in text:
         raise SystemExit("public history/cultist overlay already applied")
 
-    # Define enemyName before the history replacement refers to it.
     text = replace_once(text, ENEMY_NAME_ANCHOR, ENEMY_NAME_REPLACEMENT, "enemy-name")
     text = replace_once(text, ENEMY_ID_ANCHOR, ENEMY_ID_REPLACEMENT, "enemy-id")
     text = replace_once(text, ENEMY_MOVE_ANCHOR, ENEMY_MOVE_REPLACEMENT, "enemy-move")
@@ -86,7 +85,7 @@ def main() -> None:
     print(f"patched={TARGET}")
     print("opening_turn_zero_previous_history=INVALID")
     print("later_jaw_worm_previous_history=PUBLIC_SAMPLE")
-    print("cultist_opening_intent=PUBLIC_ONLY")
+    print("cultist_opening_incantation_only=1")
     print("cultist_later_turn=FAIL_CLOSED")
     print("source_move_history_access=0")
 

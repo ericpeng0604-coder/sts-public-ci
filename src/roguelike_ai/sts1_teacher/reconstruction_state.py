@@ -1,8 +1,9 @@
 """Attach reconstruction capability evidence without changing policy identity."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any, Mapping
+from typing import Any
 
 from .card_reconstruction import assess_public_cards
 from .contract import DecisionContext
@@ -16,12 +17,13 @@ def attach_reconstruction_capabilities(
     public_state: Mapping[str, Any],
     *,
     run_state: Mapping[str, Any] | None = None,
+    reconstruction_aux: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = deepcopy(dict(public_state))
     source_marker = (run_state or {}).get("reconstruction", {})
     source = dict(source_marker) if isinstance(source_marker, Mapping) else {}
 
-    player_admission = assess_public_player(result)
+    player_admission = assess_public_player(result, reconstruction_aux=reconstruction_aux)
     card_admission = assess_public_cards(result)
     enemy_admission = assess_public_enemies(result)
     run_admission = assess_public_run_state(result)

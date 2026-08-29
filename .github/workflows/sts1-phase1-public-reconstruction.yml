@@ -20,6 +20,8 @@ on:
       - 'tests/test_sts1_reconstruction_state.py'
       - 'tests/test_sts1_public_reconstruction_smoke.py'
       - 'scripts/sts1/apply_phase1_public_state_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/verify_phase1_public_reconstruction_native.py'
   workflow_dispatch:
 
 permissions:
@@ -62,11 +64,13 @@ jobs:
           src/roguelike_ai/sts1_teacher/enemy_reconstruction.py
           src/roguelike_ai/sts1_teacher/reconstruction_state.py
           scripts/sts1/apply_phase1_public_state_overlay.py
+          scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          scripts/sts1/verify_phase1_public_reconstruction_native.py
 
       - name: Diff whitespace gate
         run: git diff --check origin/main...HEAD
 
-  public-potion-binding:
+  public-native-reconstruction:
     needs: reconstruction-gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -91,6 +95,9 @@ jobs:
       - name: Apply read-only public-state overlay
         run: python scripts/sts1/apply_phase1_public_state_overlay.py
 
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
       - name: Build native Python binding
         run: python scripts/sts1/build_probe.py
 
@@ -113,9 +120,13 @@ jobs:
           print('VISIBLE_SLOTS = 3')
           PY
 
-      - name: Prove overlay changed no non-target simulator file
+      - name: Native reconstruction roundtrip and executable action proof
+        run: python scripts/sts1/verify_phase1_public_reconstruction_native.py
+
+      - name: Prove overlays changed no non-target simulator file
         run: |
           git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
           cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
           git -C external/sts_lightspeed/source diff --check
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_potion_belt_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_reconstruction_v1'

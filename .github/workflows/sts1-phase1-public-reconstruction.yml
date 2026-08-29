@@ -14,6 +14,7 @@ on:
       - 'src/roguelike_ai/sts1_teacher/player_reconstruction.py'
       - 'src/roguelike_ai/sts1_teacher/run_reconstruction.py'
       - 'src/roguelike_ai/sts1_teacher/reconstruction_state.py'
+      - 'src/roguelike_ai/sts1_teacher/native_rollout.py'
       - 'tests/test_sts1_public_reconstruction.py'
       - 'tests/test_sts1_public_run_state.py'
       - 'tests/test_sts1_public_redeterminization.py'
@@ -26,6 +27,7 @@ on:
       - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
       - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
       - 'scripts/sts1/verify_phase1_public_reconstruction_native.py'
+      - 'scripts/sts1/verify_phase1_public_search_native.py'
   workflow_dispatch:
 
 permissions:
@@ -70,10 +72,12 @@ jobs:
           src/roguelike_ai/sts1_teacher/player_reconstruction.py
           src/roguelike_ai/sts1_teacher/run_reconstruction.py
           src/roguelike_ai/sts1_teacher/reconstruction_state.py
+          src/roguelike_ai/sts1_teacher/native_rollout.py
           scripts/sts1/apply_phase1_public_state_overlay.py
           scripts/sts1/apply_phase1_public_reconstruction_overlay.py
           scripts/sts1/apply_phase1_public_history_guard_overlay.py
           scripts/sts1/verify_phase1_public_reconstruction_native.py
+          scripts/sts1/verify_phase1_public_search_native.py
 
       - name: Diff whitespace gate
         run: git diff --check origin/main...HEAD
@@ -133,6 +137,9 @@ jobs:
 
       - name: Native reconstruction roundtrip and executable action proof
         run: python scripts/sts1/verify_phase1_public_reconstruction_native.py
+
+      - name: Native PublicStateSearch paired-rollout proof
+        run: python scripts/sts1/verify_phase1_public_search_native.py
 
       - name: Prove overlays changed no non-target simulator file
         run: |

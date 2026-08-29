@@ -8,6 +8,7 @@ from typing import Any
 from .card_reconstruction import assess_public_cards
 from .contract import DecisionContext
 from .enemy_reconstruction import assess_public_enemies
+from .finesse_reconstruction import assess_public_finesse_player, is_finesse_slice_candidate
 from .player_reconstruction import assess_public_player
 from .reconstruction import PUBLIC_RECONSTRUCTION_SCHEMA
 from .run_reconstruction import assess_public_run_state
@@ -24,6 +25,15 @@ def attach_reconstruction_capabilities(
     source = dict(source_marker) if isinstance(source_marker, Mapping) else {}
 
     player_admission = assess_public_player(result, reconstruction_aux=reconstruction_aux)
+    if (
+        not player_admission.allowed
+        and isinstance(reconstruction_aux, Mapping)
+        and is_finesse_slice_candidate(result, reconstruction_aux)
+    ):
+        player_admission = assess_public_finesse_player(
+            result,
+            reconstruction_aux=reconstruction_aux,
+        )
     card_admission = assess_public_cards(result)
     enemy_admission = assess_public_enemies(result)
     run_admission = assess_public_run_state(result)

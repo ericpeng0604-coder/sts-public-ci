@@ -1,0 +1,102 @@
+"""STS1 Phase 1 public-state Teacher/Search foundation."""
+
+from .baselines import deterministic_random_legal, simple_public_heuristic
+from .contract import (
+    ACCEPTED_SCHEMA_NAMES,
+    ActionSpec,
+    DecisionContext,
+    LEGACY_REAL_GAME_SCHEMA,
+    PUBLIC_STATE_SCHEMA,
+    PublicStateContractError,
+    canonical_json,
+    sha256_json,
+)
+from .jialeiv_armb import (
+    ArmBPolicyScores,
+    JialeivArmBContractError,
+    JialeivArmBPolicy,
+    encode_candidate,
+    encode_public_battle,
+)
+from .phase0_parity import (
+    PHASE0_PARITY_CHECKPOINTS,
+    PHASE0_REAL_TRAJECTORY_SHA256,
+    PHASE0_SIM_TRAJECTORY_SHA256,
+    Phase0TeacherCheckpoint,
+    Phase0TeacherParityError,
+    Phase0TeacherParityReport,
+    run_phase0_teacher_parity,
+    sha256_file,
+)
+from .provenance import (
+    JIALEIV_ARMB_WEIGHT_BLOB_SHA,
+    JIALEIV_ARMG_WEIGHT_BLOB_SHA,
+    JIALEIV_BATTLE_POLICY_ROLE,
+    JIALEIV_BATTLE_SEARCH_HIDDEN_INFORMATION,
+    JIALEIV_BATTLE_SEARCH_ROLE,
+    JIALEIV_CARD_VOCAB_BLOB_SHA,
+    JIALEIV_NONCOMBAT_MODEL_ROLE,
+    JIALEIV_STS_RL_AGENT_SHA,
+    STS_LIGHTSPEED_SHA,
+)
+from .sampling import (
+    PairedPublicSampleEvaluator,
+    PublicSample,
+    PublicSampleRolloutBackend,
+    public_sample,
+)
+from .search import (
+    CandidateScore,
+    HiddenInformationError,
+    PublicRolloutEvaluator,
+    PublicStateSearch,
+    SearchConfig,
+    SearchResult,
+)
+from .simulator import SimulatorCombatAdapter
+
+__all__ = [
+    "ACCEPTED_SCHEMA_NAMES",
+    "ActionSpec",
+    "ArmBPolicyScores",
+    "CandidateScore",
+    "DecisionContext",
+    "HiddenInformationError",
+    "JIALEIV_ARMB_WEIGHT_BLOB_SHA",
+    "JIALEIV_ARMG_WEIGHT_BLOB_SHA",
+    "JIALEIV_BATTLE_POLICY_ROLE",
+    "JIALEIV_BATTLE_SEARCH_HIDDEN_INFORMATION",
+    "JIALEIV_BATTLE_SEARCH_ROLE",
+    "JIALEIV_CARD_VOCAB_BLOB_SHA",
+    "JIALEIV_NONCOMBAT_MODEL_ROLE",
+    "JIALEIV_STS_RL_AGENT_SHA",
+    "JialeivArmBContractError",
+    "JialeivArmBPolicy",
+    "LEGACY_REAL_GAME_SCHEMA",
+    "PHASE0_PARITY_CHECKPOINTS",
+    "PHASE0_REAL_TRAJECTORY_SHA256",
+    "PHASE0_SIM_TRAJECTORY_SHA256",
+    "PUBLIC_STATE_SCHEMA",
+    "PairedPublicSampleEvaluator",
+    "Phase0TeacherCheckpoint",
+    "Phase0TeacherParityError",
+    "Phase0TeacherParityReport",
+    "PublicRolloutEvaluator",
+    "PublicSample",
+    "PublicSampleRolloutBackend",
+    "PublicStateContractError",
+    "PublicStateSearch",
+    "STS_LIGHTSPEED_SHA",
+    "SearchConfig",
+    "SearchResult",
+    "SimulatorCombatAdapter",
+    "canonical_json",
+    "deterministic_random_legal",
+    "encode_candidate",
+    "encode_public_battle",
+    "public_sample",
+    "run_phase0_teacher_parity",
+    "sha256_file",
+    "sha256_json",
+    "simple_public_heuristic",
+]

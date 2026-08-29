@@ -1,0 +1,94 @@
+name: STS1 Phase 1 Jaw Worm Two-Card Midturn V2 Discovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-two-card-midturn-v2-discovery
+    paths:
+      - '.github/workflows/sts1-phase1-jaw-worm-turn-one-two-card-midturn-v2-discovery.yml'
+      - 'scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery.py'
+      - 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery_seeds_64.txt'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'scripts/sts1/apply_phase1_public_state_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_midturn_counter_overlay.py'
+      - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
+      - 'scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py'
+      - 'tests/test_sts1_midturn_nonstarter_failclosed.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jaw-worm-two-card-midturn-v2-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+
+      - name: Discovery isolation, fail-closed, and syntax
+        run: |
+          python -m py_compile \
+            scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery.py \
+            scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py
+          python -m pytest -q tests/test_sts1_midturn_nonstarter_failclosed.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          def read(path):
+              return [int(x.strip()) for x in path.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          current_path = Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery_seeds_64.txt')
+          current = read(current_path)
+          assert len(current) == 64 and len(set(current)) == 64
+          assert min(current) == 460001 and max(current) == 460064
+          old_paths = [
+              Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_midturn_source_seeds_64.txt'),
+              Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery_seeds_64.txt'),
+              Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout_seeds_64.txt'),
+              Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_source_seeds_64.txt'),
+          ]
+          for path in old_paths:
+              assert set(current).isdisjoint(read(path)), path
+          print('TWO_CARD_MIDTURN_V2_DISCOVERY_SEED_CONTRACT = PASS')
+          print('DISCOVERY_SEED_DISJOINT_FROM_420_430_440_450 = PASS')
+          print('DISCOVERY_SEED_FILE_SHA256=' + hashlib.sha256(current_path.read_bytes()).hexdigest())
+          print('FROZEN_450XXX_QUALITY_ROWS_READ = 0')
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Apply public-derived midturn counter overlay
+        run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Prove richer card effects remain fail-closed
+        run: python scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py
+
+      - name: Run two-repeat isolated V2 discovery
+        run: python scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery.py

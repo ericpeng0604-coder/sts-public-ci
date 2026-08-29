@@ -143,17 +143,24 @@ class NativePublicJawWormRolloutV1:
 
 
 class NativePublicCultistRolloutV1(NativePublicJawWormRolloutV1):
-    """Same public-only rollout policy, with a distinct Cultist evidence identity.
-
-    The shared native constructor is guarded by reconstruction admission and the
-    native boundary, so Cultist V1 is still opening-turn INCANTATION only.
-    """
+    """Same public-only rollout policy, with a distinct Cultist evidence identity."""
 
     backend_id = "sts1-public-native-cultist-rollout-v1"
+
+
+class NativePublicGremlinNobRolloutV1(NativePublicJawWormRolloutV1):
+    """Same public-only rollout policy, with a distinct Gremlin Nob identity.
+
+    Admission/native construction restrict the source observation to opening
+    turn BELLOW. Subsequent moves are generated only from the fresh rollout RNG.
+    """
+
+    backend_id = "sts1-public-native-gremlin-nob-rollout-v1"
 
 
 __all__ = [
     "NativePublicJawWormRolloutV1",
     "NativePublicCultistRolloutV1",
+    "NativePublicGremlinNobRolloutV1",
     "NativePublicRolloutError",
 ]

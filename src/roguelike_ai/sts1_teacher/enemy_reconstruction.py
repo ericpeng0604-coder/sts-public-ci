@@ -1,23 +1,18 @@
 """Conservative public enemy admission for Phase-1 rollout reconstruction.
 
-V1 intentionally supports only a tiny audited surface. It is better to mark a
-combat unsupported than to reconstruct hidden monster state from guesses.
-Hidden previous move history is never an input here; the rollout backend must
-sample it from the candidate-independent redeterminization plan.
+V1 intentionally supports only tiny audited opening surfaces. It is better to
+mark a combat unsupported than to reconstruct hidden monster state from guesses.
+Hidden previous move history is never accepted as a source input.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-# V1 currently admits only audited single-enemy Act-1 opening surfaces.
-# Jaw Worm has hidden previous-move history after the opening turn, so that
-# history is sampled rather than copied. Cultist is especially suitable for the
-# next slice because its opening move is deterministically INCANTATION and its
-# later move is DARK_STRIKE; no hidden per-instance setup value is required.
-_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST"})
+_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST", "GREMLIN_NOB"})
 _ALLOWED_POWER_NAMES = frozenset({"STRENGTH", "VULNERABLE", "WEAK", "POISON"})
 _CULTIST_OPENING_INTENTS = frozenset({"INCANTATION", "CULTIST_INCANTATION"})
+_NOB_OPENING_INTENTS = frozenset({"BELLOW", "GREMLIN_NOB_BELLOW"})
 
 
 def _canonical_name(value: Any) -> str:
@@ -62,12 +57,14 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
             reasons.append(f"missing_public_intent:{path}")
         else:
             normalized_intent = _canonical_name(intent)
-            # Player reconstruction V1 admits only turn 0. On that exact public
-            # surface Cultist's current move is fixed by the pinned simulator:
-            # INVALID prior history -> INCANTATION. Reject impossible opening
-            # states rather than silently constructing a different timeline.
+            # Player reconstruction V1 currently admits only turn 0. Cultist
+            # and Gremlin Nob both have deterministic opening moves in the
+            # pinned simulator. Reject impossible opening timelines rather than
+            # silently reconstructing a different hidden history.
             if name == "CULTIST" and turn == 0 and normalized_intent not in _CULTIST_OPENING_INTENTS:
                 reasons.append(f"cultist_opening_intent_mismatch_v1:{normalized_intent}")
+            if name == "GREMLIN_NOB" and turn == 0 and normalized_intent not in _NOB_OPENING_INTENTS:
+                reasons.append(f"gremlin_nob_opening_intent_mismatch_v1:{normalized_intent}")
 
         if raw_enemy.get("is_gone") is True:
             reasons.append(f"gone_enemy_unsupported_v1:{path}")

@@ -20,6 +20,25 @@ def jaw_worm_state() -> dict:
     }
 
 
+def cultist_state() -> dict:
+    return {
+        "enemies": [
+            {
+                "index": 0,
+                "name": "Cultist",
+                "hp": 48,
+                "max_hp": 48,
+                "block": 0,
+                "intent": "CULTIST_INCANTATION",
+                "intent_damage": 0,
+                "intent_hits": 0,
+                "is_gone": False,
+                "powers": [],
+            }
+        ]
+    }
+
+
 def test_single_jaw_worm_public_surface_is_admitted() -> None:
     result = assess_public_enemies(jaw_worm_state())
     assert result.allowed is True
@@ -27,12 +46,19 @@ def test_single_jaw_worm_public_surface_is_admitted() -> None:
     assert result.enemy_count == 1
 
 
+def test_single_cultist_opening_public_surface_is_admitted() -> None:
+    result = assess_public_enemies(cultist_state())
+    assert result.allowed is True
+    assert result.reasons == ()
+    assert result.enemy_count == 1
+
+
 def test_unknown_monster_fails_closed() -> None:
     state = jaw_worm_state()
-    state["enemies"][0]["name"] = "Cultist"
+    state["enemies"][0]["name"] = "Fungi Beast"
     result = assess_public_enemies(state)
     assert result.allowed is False
-    assert "enemy_unsupported_v1:CULTIST" in result.reasons
+    assert "enemy_unsupported_v1:FUNGI_BEAST" in result.reasons
 
 
 def test_missing_current_public_intent_fails_closed() -> None:
@@ -44,7 +70,7 @@ def test_missing_current_public_intent_fails_closed() -> None:
 
 
 def test_unmodelled_enemy_power_fails_closed() -> None:
-    state = jaw_worm_state()
+    state = cultist_state()
     state["enemies"][0]["powers"] = [{"name": "Ritual", "amount": 3}]
     result = assess_public_enemies(state)
     assert result.allowed is False

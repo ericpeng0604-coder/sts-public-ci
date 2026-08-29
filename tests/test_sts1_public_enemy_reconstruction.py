@@ -22,6 +22,13 @@ def gremlin_nob_state() -> dict:
     }
 
 
+def blue_slaver_state(intent: str = "BLUE_SLAVER_STAB") -> dict:
+    return {
+        "turn": 0,
+        "enemies": [{"index": 0, "name": "Blue Slaver", "hp": 46, "max_hp": 46, "block": 0, "intent": intent, "intent_damage": 12, "intent_hits": 1, "is_gone": False, "powers": []}],
+    }
+
+
 def test_single_jaw_worm_public_surface_is_admitted() -> None:
     result = assess_public_enemies(jaw_worm_state())
     assert result.allowed is True
@@ -43,6 +50,14 @@ def test_single_gremlin_nob_opening_public_surface_is_admitted() -> None:
     assert result.enemy_count == 1
 
 
+def test_blue_slaver_opening_stab_and_rake_are_publicly_admitted() -> None:
+    for intent in ("BLUE_SLAVER_STAB", "BLUE_SLAVER_RAKE"):
+        result = assess_public_enemies(blue_slaver_state(intent))
+        assert result.allowed is True
+        assert result.reasons == ()
+        assert result.enemy_count == 1
+
+
 def test_impossible_cultist_opening_dark_strike_fails_closed() -> None:
     state = cultist_state()
     state["enemies"][0]["intent"] = "CULTIST_DARK_STRIKE"
@@ -57,6 +72,13 @@ def test_impossible_gremlin_nob_opening_rush_fails_closed() -> None:
     result = assess_public_enemies(state)
     assert result.allowed is False
     assert "gremlin_nob_opening_intent_mismatch_v1:GREMLIN_NOB_RUSH" in result.reasons
+
+
+def test_impossible_blue_slaver_opening_intent_fails_closed() -> None:
+    state = blue_slaver_state("BLUE_SLAVER_UNKNOWN")
+    result = assess_public_enemies(state)
+    assert result.allowed is False
+    assert "blue_slaver_opening_intent_mismatch_v1:BLUE_SLAVER_UNKNOWN" in result.reasons
 
 
 def test_unknown_monster_fails_closed() -> None:

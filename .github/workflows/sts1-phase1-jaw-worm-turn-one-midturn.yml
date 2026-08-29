@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gpt/sts1-phase1-jaw-worm-turn-one-midturn
+      - gpt/sts1-phase1-public-reconstruction
     paths:
       - '.github/workflows/sts1-phase1-jaw-worm-turn-one-midturn.yml'
       - 'src/roguelike_ai/sts1_teacher/player_reconstruction.py'

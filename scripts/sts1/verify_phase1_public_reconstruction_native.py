@@ -33,8 +33,8 @@ def public_state() -> dict:
         "block": 0,
         "energy": 3,
         "hand": [
-            {"position": 1, "id": "STRIKE_RED", "name": "Strike", "type": "ATTACK", "cost": 1, "upgrades": 0, "has_target": True},
-            {"position": 2, "id": "DEFEND_RED", "name": "Defend", "type": "SKILL", "cost": 1, "upgrades": 0, "has_target": False},
+            {"position": 1, "id": "STRIKE_RED", "name": "Strike", "type": "ATTACK", "cost": 1, "upgrades": 0, "has_target": True, "is_playable": True},
+            {"position": 2, "id": "DEFEND_RED", "name": "Defend", "type": "SKILL", "cost": 1, "upgrades": 0, "has_target": False, "is_playable": True},
         ],
         "draw_pile": [
             {"id": "BASH", "name": "Bash", "type": "ATTACK", "cost": 2, "upgrades": 0, "has_target": True},
@@ -116,6 +116,21 @@ def card_sequence(bc) -> list[tuple[str, int, int]]:
     ]
 
 
+def context_diff(original: DecisionContext, rebuilt: DecisionContext) -> dict:
+    state_diff = {
+        key: {"original": original.state.get(key), "rebuilt": rebuilt.state.get(key)}
+        for key in sorted(set(original.state) | set(rebuilt.state))
+        if original.state.get(key) != rebuilt.state.get(key)
+    }
+    original_actions = [action.payload for action in original.legal_actions]
+    rebuilt_actions = [action.payload for action in rebuilt.legal_actions]
+    return {
+        "state": state_diff,
+        "original_actions": original_actions,
+        "rebuilt_actions": rebuilt_actions,
+    }
+
+
 def main() -> None:
     state = public_state()
     original = DecisionContext.from_public_state(state)
@@ -141,9 +156,6 @@ def main() -> None:
     assert bc.monsters[0].name == "JAW_WORM"
     assert bc.monsters[0].intent == "JAW_WORM_CHOMP"
 
-    # Incoming draw order is forbidden future information. Reverse it while
-    # preserving composition and prove the same sample creates the same native
-    # draw order after canonicalization + seeded re-determinization.
     reversed_state = deepcopy(state)
     reversed_state["draw_pile"] = list(reversed(reversed_state["draw_pile"]))
     assert DecisionContext.from_public_state(reversed_state).decision_signature == original.decision_signature
@@ -163,7 +175,8 @@ def main() -> None:
     if rebuilt.decision_signature != original.decision_signature:
         raise RuntimeError(
             "PUBLIC_RECONSTRUCTION_ROUNDTRIP_SIGNATURE_MISMATCH:"
-            f"{original.decision_signature}!={rebuilt.decision_signature}"
+            f"{original.decision_signature}!={rebuilt.decision_signature}:"
+            f"diff={context_diff(original, rebuilt)!r}"
         )
 
     strike = next(

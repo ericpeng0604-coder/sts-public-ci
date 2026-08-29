@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Native proof for the first generated-card midturn reconstruction slice."""
+"""Native proof + deterministic Search smoke for generated-card midturn reconstruction."""
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 import sys
 
@@ -15,11 +16,12 @@ for path in (SRC, BUILD):
 import slaythespire as sts
 
 from roguelike_ai.sts1_teacher.contract import DecisionContext, PUBLIC_STATE_SCHEMA
+from roguelike_ai.sts1_teacher.native_rollout import NativePublicJawWormRolloutV1
 from roguelike_ai.sts1_teacher.reconstruction import require_public_reconstruction
 from roguelike_ai.sts1_teacher.reconstruction_state import attach_reconstruction_capabilities
 from roguelike_ai.sts1_teacher.redeterminization import build_redeterminization_plan
-from roguelike_ai.sts1_teacher.sampling import public_sample
-from roguelike_ai.sts1_teacher.search import SearchConfig
+from roguelike_ai.sts1_teacher.sampling import PairedPublicSampleEvaluator, public_sample
+from roguelike_ai.sts1_teacher.search import PublicStateSearch, SearchConfig
 
 
 def card(card_id: str, name: str, card_type: str, cost: int, *, target: bool) -> dict:
@@ -148,6 +150,73 @@ def admitted_context_and_seeds(state: dict, aux: dict) -> tuple[DecisionContext,
     return admitted, admitted_state, native_seeds
 
 
+def verify_search_smoke(aux: dict) -> None:
+    """Run the same paired public Search twice on five distinct Anger states."""
+
+    cases = (
+        (70, 34),
+        (64, 30),
+        (56, 24),
+        (43, 18),
+        (29, 12),
+    )
+    config = SearchConfig(
+        samples_per_semantic_action=2,
+        rollout_budget=64,
+        node_budget=1024,
+        max_depth=4,
+        timeout_ms=30_000,
+        sampling_seed=20260829,
+    )
+    signatures: set[str] = set()
+    evidence_hashes: list[str] = []
+    total_rollouts = 0
+
+    for player_hp, enemy_hp in cases:
+        state = deepcopy(public_state())
+        state["hp"] = player_hp
+        state["enemies"][0]["hp"] = enemy_hp
+        admitted_state = attach_reconstruction_capabilities(
+            state,
+            run_state=run_state(state),
+            reconstruction_aux=aux,
+        )
+        context = require_public_reconstruction(admitted_state)
+        assert context.decision_signature not in signatures
+        signatures.add(context.decision_signature)
+
+        backend = NativePublicJawWormRolloutV1(
+            admitted_state,
+            sts,
+            reconstruction_aux=aux,
+        )
+        evaluator = PairedPublicSampleEvaluator(backend)
+        search = PublicStateSearch(evaluator, config)
+        first = search.run(context)
+        second = search.run(context)
+
+        assert first.evidence_hash == second.evidence_hash
+        assert first.candidate_scores == second.candidate_scores
+        assert first.tie_action_ids == second.tie_action_ids
+        assert first.unique_best_action_id == second.unique_best_action_id
+        assert first.unresolved_action_ids == ()
+        assert first.timed_out is False
+        assert first.rollout_count > 0
+        assert all(item.score is not None and item.unresolved is False for item in first.candidate_scores)
+        evidence_hashes.append(first.evidence_hash)
+        total_rollouts += first.rollout_count
+
+    assert len(signatures) == 5
+    assert len(evidence_hashes) == 5
+    print("ANGER_SEARCH_SMOKE_STATES = 5")
+    print("ANGER_SEARCH_SMOKE_REPEATS_PER_STATE = 2")
+    print(f"ANGER_SEARCH_SMOKE_TOTAL_FIRST_REPEAT_ROLLOUTS = {total_rollouts}")
+    print("ANGER_SEARCH_SMOKE_DETERMINISM = PASS")
+    print("ANGER_SEARCH_SMOKE_ILLEGAL = 0")
+    print("ANGER_SEARCH_SMOKE_UNRESOLVED = 0")
+    print("ANGER_SEARCH_SMOKE_HIDDEN_INFORMATION = 0")
+
+
 def main() -> None:
     state = public_state()
     aux = reconstruction_aux()
@@ -203,6 +272,8 @@ def main() -> None:
         assert "anger_aux_incomplete" in str(exc), str(exc)
     else:
         raise AssertionError("incomplete Anger reconstruction aux unexpectedly admitted")
+
+    verify_search_smoke(aux)
 
     print("ANGER_MIDTURN_NATIVE = PASS")
     print("ANGER_GENERATED_COPY_PUBLIC_PILES = PASS")

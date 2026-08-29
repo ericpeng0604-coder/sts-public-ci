@@ -3,8 +3,8 @@
 V1 supports the small Ironclad slice whose base cost is fully determined by
 public card id + upgrade count. CommunicationMod's Strike_R / Defend_R names
 are explicit aliases for sts_lightspeed's STRIKE_RED / DEFEND_RED. Pommel
-Strike is the first draw-card expansion; richer draw/discard/energy effects
-remain outside the audited midturn slice.
+Strike and Shrug It Off are the first two audited draw-card identities; richer
+draw/discard/energy effects remain outside the admitted midturn slices.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ _SUPPORTED_V1_COSTS = {
     "DEFEND_RED": {0: 1, 1: 1},
     "BASH": {0: 2, 1: 2},
     "POMMEL_STRIKE": {0: 1, 1: 1},
+    "SHRUG_IT_OFF": {0: 1, 1: 1},
 }
 
 

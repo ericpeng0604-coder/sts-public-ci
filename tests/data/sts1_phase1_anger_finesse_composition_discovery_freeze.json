@@ -1,0 +1,46 @@
+{
+  "schema_version": "sts1-phase1-anger-finesse-composition-discovery-freeze-v1",
+  "purpose": "DISCOVERY_ONLY_NOT_HOLDOUT",
+  "base_native_ready_head": "ad8d2c4d1a15698e1f5a80b537f7cba30525331e",
+  "public_state_contract": "sts1-public-state-v1",
+  "public_fields_added": 0,
+  "candidate_policy_id": "jaw-worm-turn1-anger-finesse-search-top-set-v1",
+  "sampler_contract": "anger-finesse-composition-discovery-fixed-256-first24-v1",
+  "source_seed_range": [530001, 530256],
+  "source_seed_count": 256,
+  "source_seed_file_sha256": "d365110cff47ce160558382b98a1369156423da272ce537f110a7401bcb3f98d",
+  "target_unique_admitted_cases": 24,
+  "order_requirement": "Anger->Finesse and Finesse->Anger must have identical formal DecisionContext state, legal actions, and decision_signature or source seed fails closed",
+  "search": {
+    "samples_per_semantic_action": 8,
+    "rollout_budget": 256,
+    "node_budget": 16384,
+    "max_depth": 30,
+    "timeout_ms": 60000,
+    "tie_tolerance": 1e-9,
+    "sampling_seed": 20260830
+  },
+  "oracle": {
+    "type": "diagnostic_native_judge_branch_action",
+    "public_samples": 4,
+    "mcts_sims_per_action_per_sample": 2000,
+    "formal_teacher_access": false
+  },
+  "baselines": ["raw_search", "simple_public_heuristic", "deterministic_random_legal"],
+  "discovery_gate_id": "anger-finesse-discovery-candidate-ge-raw-gt-simple-random-v1",
+  "discovery_gate": "case_count>=24 && unresolved=0 && illegal=0 && candidate>=raw_search && candidate>simple && candidate>random",
+  "prior_quality_rows_read": {
+    "500xxx": 0,
+    "510xxx": 0,
+    "520xxx": 0
+  },
+  "hidden_generation_state_exported": {
+    "source_battle_context": 0,
+    "source_hidden_rng": 0,
+    "source_move_history": 0,
+    "source_counter_history": 0
+  },
+  "phase1_status": "IN_PROGRESS",
+  "phase1_gate_claimed": false,
+  "phase2_locked": true
+}

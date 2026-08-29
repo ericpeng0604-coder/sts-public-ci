@@ -1,10 +1,4 @@
-"""Fail-closed admission gate for STS1 public-state rollout reconstruction.
-
-The formal Phase-1 Teacher must never create a simulator rollout from a public
-state unless the adapter explicitly proves that all public information needed
-for reconstruction is present.  Missing capability markers are rejected rather
-than guessed from the original hidden simulator state.
-"""
+"""Fail-closed admission gate for STS1 public-state rollout reconstruction."""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -15,30 +9,18 @@ from .contract import DecisionContext, PublicStateContractError
 
 PUBLIC_RECONSTRUCTION_SCHEMA = "sts1-public-reconstruction-v1"
 _REQUIRED_CAPABILITIES = (
+    "public_player_state_complete",
     "public_card_instance_state_complete",
     "public_relic_state_complete",
     "public_potion_state_complete",
     "public_enemy_state_complete",
 )
 _REQUIRED_FIELDS = (
-    "hp",
-    "max_hp",
-    "block",
-    "energy",
-    "hand",
-    "draw_pile",
-    "discard_pile",
-    "exhaust_pile",
-    "powers",
-    "enemies",
-    "turn",
-    "combat_active",
-    "relics",
-    "potions",
-    "character",
-    "ascension_level",
-    "room",
-    "legal_actions",
+    "hp", "max_hp", "block", "energy",
+    "hand", "draw_pile", "discard_pile", "exhaust_pile",
+    "powers", "enemies", "turn", "combat_active",
+    "relics", "potions", "gold", "floor", "act", "character",
+    "ascension_level", "room", "legal_actions",
 )
 
 
@@ -54,15 +36,6 @@ def _is_sequence(value: Any) -> bool:
 
 
 def assess_public_reconstruction(state: Mapping[str, Any]) -> ReconstructionAdmission:
-    """Return whether *state* may be used to create a fresh rollout sample.
-
-    This gate is intentionally stricter than ``DecisionContext``.  The normal
-    policy contract can safely omit fields that a policy does not use, while a
-    forward simulator must know that reconstruction-relevant public state is
-    complete.  The adapter therefore has to opt in with explicit capability
-    markers after those surfaces have been verified.
-    """
-
     reasons: list[str] = []
     for field in _REQUIRED_FIELDS:
         if field not in state:
@@ -102,13 +75,9 @@ def assess_public_reconstruction(state: Mapping[str, Any]) -> ReconstructionAdmi
 
 
 def require_public_reconstruction(state: Mapping[str, Any]) -> DecisionContext:
-    """Return a validated DecisionContext or fail closed for reconstruction."""
-
     admission = assess_public_reconstruction(state)
     if not admission.allowed:
-        raise PublicStateContractError(
-            "reconstruction_not_admitted:" + ",".join(admission.reasons)
-        )
+        raise PublicStateContractError("reconstruction_not_admitted:" + ",".join(admission.reasons))
     return DecisionContext.from_public_state(state)
 
 

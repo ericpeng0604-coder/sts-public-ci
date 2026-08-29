@@ -1,27 +1,21 @@
 """Fail-closed card admission for public-state STS1 reconstruction.
 
-Most STS1 card instances can be rebuilt from public card identity, upgrade
-count, and currently displayed cost.  A small set carries extra combat/run
-history in ``CardInstance.specialData`` or persistent damage-driven cost state;
-those cards are deliberately unsupported until an equally public source for
-that state is verified.
+V1 deliberately supports only the tiny Ironclad starter-card slice whose base
+cost is fully determined by public card id + upgrade count.  This avoids
+pretending that a temporarily modified displayed cost is also the persistent
+base cost that future turns would reset to.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-_UNSUPPORTED_HISTORY_CARD_IDS = frozenset(
-    {
-        "SEARING_BLOW",
-        "RAMPAGE",
-        "GENETIC_ALGORITHM",
-        "RITUAL_DAGGER",
-        "BLOOD_FOR_BLOOD",
-        "MASTERFUL_STAB",
-    }
-)
 _CARD_PILES = ("hand", "draw_pile", "discard_pile", "exhaust_pile")
+_SUPPORTED_V1_COSTS = {
+    "STRIKE_RED": {0: 1, 1: 1},
+    "DEFEND_RED": {0: 1, 1: 1},
+    "BASH": {0: 2, 1: 2},
+}
 
 
 def _canonical_card_id(value: Any) -> str:
@@ -56,16 +50,26 @@ def assess_public_cards(state: Mapping[str, Any]) -> PublicCardAdmission:
             card_id = _canonical_card_id(raw_card.get("id"))
             if not card_id:
                 reasons.append(f"missing_card_id:{path}")
-            elif card_id in _UNSUPPORTED_HISTORY_CARD_IDS:
-                reasons.append(f"history_card_unsupported:{card_id}")
+                continue
+            if card_id not in _SUPPORTED_V1_COSTS:
+                reasons.append(f"card_unsupported_v1:{card_id}")
+                continue
 
             upgrades = raw_card.get("upgrades")
-            if isinstance(upgrades, bool) or not isinstance(upgrades, int) or upgrades < 0:
+            if isinstance(upgrades, bool) or not isinstance(upgrades, int) or upgrades not in (0, 1):
                 reasons.append(f"invalid_card_upgrades:{path}")
+                continue
 
             cost = raw_card.get("cost")
             if isinstance(cost, bool) or not isinstance(cost, int):
                 reasons.append(f"invalid_card_cost:{path}")
+                continue
+
+            expected_cost = _SUPPORTED_V1_COSTS[card_id][upgrades]
+            if cost != expected_cost:
+                reasons.append(
+                    f"temporary_or_unknown_card_cost_unsupported:{path}:{card_id}:{cost}!={expected_cost}"
+                )
 
     return PublicCardAdmission(
         allowed=not reasons,

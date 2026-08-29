@@ -1,4 +1,9 @@
-"""Narrow V1 admission for public player combat state."""
+"""Narrow V1 admission for public player combat state.
+
+V1 only reconstructs the first player turn. Mid-combat turn counters (cards
+played/discarded this turn and other history-sensitive surfaces) are not yet
+part of the frozen public reconstruction contract, so later turns fail closed.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,6 +28,9 @@ def assess_public_player(state: Mapping[str, Any]) -> PublicPlayerAdmission:
         value = state.get(field)
         if isinstance(value, bool) or not isinstance(value, int):
             reasons.append(f"invalid_player_scalar:{field}")
+
+    if state.get("turn") != 1:
+        reasons.append(f"turn_unsupported_v1:{state.get('turn')}")
 
     powers = state.get("powers")
     if not isinstance(powers, Sequence) or isinstance(powers, str | bytes | bytearray):

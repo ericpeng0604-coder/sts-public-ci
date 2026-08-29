@@ -44,7 +44,7 @@ def public_state() -> dict:
         "enemies": [
             {
                 "index": 0,
-                "name": "Jaw Worm",
+                "name": "JAW_WORM",
                 "hp": 40,
                 "max_hp": 40,
                 "block": 0,
@@ -97,6 +97,7 @@ def run_state(state: dict) -> dict:
         "map_choices": [],
         "reconstruction": {
             "schema_version": "sts1-public-reconstruction-v1",
+            "public_player_state_complete": False,
             "public_card_instance_state_complete": False,
             "public_relic_state_complete": True,
             "public_potion_state_complete": True,

@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from .card_reconstruction import assess_public_cards
 from .contract import DecisionContext
+from .enemy_reconstruction import assess_public_enemies
 from .reconstruction import PUBLIC_RECONSTRUCTION_SCHEMA
 
 
@@ -29,12 +30,15 @@ def attach_reconstruction_capabilities(
     marker["schema_version"] = PUBLIC_RECONSTRUCTION_SCHEMA
 
     card_admission = assess_public_cards(result)
+    enemy_admission = assess_public_enemies(result)
     marker["public_card_instance_state_complete"] = card_admission.allowed
     marker.setdefault("public_relic_state_complete", False)
     marker.setdefault("public_potion_state_complete", False)
-    marker.setdefault("public_enemy_state_complete", False)
+    marker["public_enemy_state_complete"] = enemy_admission.allowed
     marker["card_admission_reasons"] = list(card_admission.reasons)
     marker["card_count"] = card_admission.card_count
+    marker["enemy_admission_reasons"] = list(enemy_admission.reasons)
+    marker["enemy_count"] = enemy_admission.enemy_count
     result["reconstruction"] = marker
 
     # Prove reconstruction metadata is policy-identity neutral.

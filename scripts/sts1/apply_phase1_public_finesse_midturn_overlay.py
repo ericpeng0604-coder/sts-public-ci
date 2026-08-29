@@ -46,13 +46,15 @@ def main() -> None:
                   const char *prefix = pommelSlice ? "pommel" : "shrug";''',
         '''                  // phase1_public_finesse_midturn_aux_v1:
                   // counters prove the card type only; exact identity is resolved
-                  // from the current public deck composition below.
+                  // from the current public deck composition below. Keep the
+                  // established Shrug error prefix for the shared skill trace so
+                  // existing native negative proofs remain byte-for-byte stable.
                   const bool pommelTrace = played == 1 && attacks == 1 && skills == 0 && discarded == 0;
                   const bool skillTrace = played == 1 && attacks == 0 && skills == 1 && discarded == 0;
                   if (!pommelTrace && !skillTrace) {
                       throw std::runtime_error("draw_aux_counter_slice_unsupported");
                   }
-                  const char *prefix = pommelTrace ? "pommel" : "draw_skill";''',
+                  const char *prefix = pommelTrace ? "pommel" : "shrug";''',
         "counter classifier",
     )
 

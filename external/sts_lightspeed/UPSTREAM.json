@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/gamerpuppy/sts_lightspeed",
+  "commit": "7476a81954020087da31d41d16fddf475746ec2d",
+  "short_commit": "7476a81",
+  "license": "MIT",
+  "license_blob_sha": "22bea4658cad5825eab12868602a93eac2d17a75",
+  "role": "Pinned simulator for Jialeiv A0 Ironclad baseline reproduction",
+  "patch_source": "external/sts-rl-agent/source/sim_patch/sim_rl_hooks.patch",
+  "pybind11_build_compat": {
+    "upstream_submodule_commit": "787d2c88cafa4d07fb38c9519c485a86323cfcf4",
+    "upstream_version": "2.7.1",
+    "override_repository": "https://github.com/pybind/pybind11",
+    "override_commit": "3e9dfa2866941655c56877882565e7577de6fc7b",
+    "override_tag": "v2.12.0",
+    "reason": "The pinned 2021 pybind11 2.7.1 submodule does not compile against the upstream-required Python 3.12; v2.12.0 adds Python 3.12 API support. Gameplay source remains pinned at sts_lightspeed 7476a81."
+  }
+}

@@ -9,10 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST", "GREMLIN_NOB"})
+_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST", "GREMLIN_NOB", "BLUE_SLAVER"})
 _ALLOWED_POWER_NAMES = frozenset({"STRENGTH", "VULNERABLE", "WEAK", "POISON"})
 _CULTIST_OPENING_INTENTS = frozenset({"INCANTATION", "CULTIST_INCANTATION"})
 _NOB_OPENING_INTENTS = frozenset({"BELLOW", "GREMLIN_NOB_BELLOW"})
+_BLUE_SLAVER_OPENING_INTENTS = frozenset({"STAB", "BLUE_SLAVER_STAB", "RAKE", "BLUE_SLAVER_RAKE"})
 
 
 def _canonical_name(value: Any) -> str:
@@ -57,14 +58,15 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
             reasons.append(f"missing_public_intent:{path}")
         else:
             normalized_intent = _canonical_name(intent)
-            # Player reconstruction V1 currently admits only turn 0. Cultist
-            # and Gremlin Nob both have deterministic opening moves in the
-            # pinned simulator. Reject impossible opening timelines rather than
-            # silently reconstructing a different hidden history.
             if name == "CULTIST" and turn == 0 and normalized_intent not in _CULTIST_OPENING_INTENTS:
                 reasons.append(f"cultist_opening_intent_mismatch_v1:{normalized_intent}")
             if name == "GREMLIN_NOB" and turn == 0 and normalized_intent not in _NOB_OPENING_INTENTS:
                 reasons.append(f"gremlin_nob_opening_intent_mismatch_v1:{normalized_intent}")
+            # Blue Slaver's first intent is stochastic upstream, but the current
+            # intent is public information. V1 accepts only its two legal
+            # opening intents; source RNG is never copied or queried.
+            if name == "BLUE_SLAVER" and turn == 0 and normalized_intent not in _BLUE_SLAVER_OPENING_INTENTS:
+                reasons.append(f"blue_slaver_opening_intent_mismatch_v1:{normalized_intent}")
 
         if raw_enemy.get("is_gone") is True:
             reasons.append(f"gone_enemy_unsupported_v1:{path}")

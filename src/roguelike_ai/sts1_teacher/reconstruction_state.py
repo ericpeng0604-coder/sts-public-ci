@@ -7,7 +7,9 @@ from typing import Any, Mapping
 from .card_reconstruction import assess_public_cards
 from .contract import DecisionContext
 from .enemy_reconstruction import assess_public_enemies
+from .player_reconstruction import assess_public_player
 from .reconstruction import PUBLIC_RECONSTRUCTION_SCHEMA
+from .run_reconstruction import assess_public_run_state
 
 
 def attach_reconstruction_capabilities(
@@ -15,33 +17,31 @@ def attach_reconstruction_capabilities(
     *,
     run_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return a public state with fail-closed reconstruction metadata.
-
-    The top-level ``reconstruction`` field is intentionally outside the frozen
-    policy field set.  ``DecisionContext`` still validates it for forbidden
-    hidden keys, but does not include it in policy features or the decision
-    signature.  This lets reconstruction get stricter without silently changing
-    Teacher observations.
-    """
-
     result = deepcopy(dict(public_state))
     source_marker = (run_state or {}).get("reconstruction", {})
-    marker = dict(source_marker) if isinstance(source_marker, Mapping) else {}
-    marker["schema_version"] = PUBLIC_RECONSTRUCTION_SCHEMA
+    source = dict(source_marker) if isinstance(source_marker, Mapping) else {}
 
+    player_admission = assess_public_player(result)
     card_admission = assess_public_cards(result)
     enemy_admission = assess_public_enemies(result)
-    marker["public_card_instance_state_complete"] = card_admission.allowed
-    marker.setdefault("public_relic_state_complete", False)
-    marker.setdefault("public_potion_state_complete", False)
-    marker["public_enemy_state_complete"] = enemy_admission.allowed
-    marker["card_admission_reasons"] = list(card_admission.reasons)
-    marker["card_count"] = card_admission.card_count
-    marker["enemy_admission_reasons"] = list(enemy_admission.reasons)
-    marker["enemy_count"] = enemy_admission.enemy_count
+    run_admission = assess_public_run_state(result)
+
+    marker: dict[str, Any] = {
+        "schema_version": PUBLIC_RECONSTRUCTION_SCHEMA,
+        "public_player_state_complete": player_admission.allowed,
+        "public_card_instance_state_complete": card_admission.allowed,
+        "public_relic_state_complete": bool(source.get("public_relic_state_complete")) and run_admission.relics_allowed,
+        "public_potion_state_complete": bool(source.get("public_potion_state_complete")) and run_admission.potions_allowed,
+        "public_enemy_state_complete": enemy_admission.allowed,
+        "player_admission_reasons": list(player_admission.reasons),
+        "card_admission_reasons": list(card_admission.reasons),
+        "card_count": card_admission.card_count,
+        "enemy_admission_reasons": list(enemy_admission.reasons),
+        "enemy_count": enemy_admission.enemy_count,
+        "run_admission_reasons": list(run_admission.reasons),
+    }
     result["reconstruction"] = marker
 
-    # Prove reconstruction metadata is policy-identity neutral.
     before = DecisionContext.from_public_state(public_state)
     after = DecisionContext.from_public_state(result)
     if before.decision_signature != after.decision_signature:

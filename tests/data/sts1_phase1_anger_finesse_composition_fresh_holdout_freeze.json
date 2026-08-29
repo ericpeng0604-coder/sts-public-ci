@@ -1,0 +1,56 @@
+{
+  "schema_version": "sts1-phase1-anger-finesse-composition-fresh-holdout-freeze-v1",
+  "purpose": "FRESH_HOLDOUT_ONLY",
+  "base_discovery_head": "242b65fa6cf86074b0e1de517f0a1d81fe09adbd",
+  "native_ready_head": "ad8d2c4d1a15698e1f5a80b537f7cba30525331e",
+  "public_state_contract": "sts1-public-state-v1",
+  "public_fields_added": 0,
+  "candidate_policy_path": "src/roguelike_ai/sts1_teacher/anger_finesse_composition_policy_v1.py",
+  "candidate_policy_id": "jaw-worm-turn1-anger-finesse-search-top-set-v1",
+  "candidate_frozen_from_discovery": true,
+  "sampler_contract": "anger-finesse-composition-fresh-holdout-fixed-256-first24-v1",
+  "source_seed_range": [540001, 540256],
+  "source_seed_count": 256,
+  "source_seed_file_sha256": "afb63f12861abc7621026ca75af15539f7559e78dc3ebd4a40450f84b319eb72",
+  "target_unique_admitted_cases": 24,
+  "selection_uses_quality_labels": false,
+  "discovery_decision_rows_read_during_selection": 0,
+  "prior_530xxx_quality_rows_read_during_selection": 0,
+  "order_requirement": "Anger->Finesse and Finesse->Anger must have identical formal DecisionContext state, legal actions, and decision_signature or source seed fails closed",
+  "search": {
+    "samples_per_semantic_action": 8,
+    "rollout_budget": 256,
+    "node_budget": 16384,
+    "max_depth": 30,
+    "timeout_ms": 60000,
+    "tie_tolerance": 1e-9,
+    "sampling_seed": 20260830
+  },
+  "oracle": {
+    "type": "diagnostic_native_judge_branch_action",
+    "public_samples": 4,
+    "mcts_sims_per_action_per_sample": 2000,
+    "formal_teacher_access": false,
+    "implementation_reused_byte_identical_from_discovery": true
+  },
+  "baselines": ["raw_search", "simple_public_heuristic", "deterministic_random_legal"],
+  "holdout_gate_id": "anger-finesse-fresh-holdout-candidate-ge-raw-gt-simple-random-v1",
+  "holdout_gate": "case_count>=24 && unresolved=0 && illegal=0 && candidate>=raw_search && candidate>simple && candidate>random",
+  "frozen_discovery_paths_must_be_byte_identical": [
+    "src/roguelike_ai/sts1_teacher/anger_finesse_composition_policy_v1.py",
+    "scripts/sts1/generate_phase1_anger_finesse_composition_discovery.py",
+    "scripts/sts1/run_phase1_anger_finesse_composition_discovery.py",
+    "tests/data/sts1_phase1_anger_finesse_composition_discovery_seeds_256.txt",
+    "tests/data/sts1_phase1_anger_finesse_composition_discovery_freeze.json",
+    ".github/workflows/sts1-phase1-anger-finesse-composition-discovery.yml"
+  ],
+  "hidden_generation_state_exported": {
+    "source_battle_context": 0,
+    "source_hidden_rng": 0,
+    "source_move_history": 0,
+    "source_counter_history": 0
+  },
+  "phase1_status": "IN_PROGRESS",
+  "phase1_gate_claimed": false,
+  "phase2_locked": true
+}

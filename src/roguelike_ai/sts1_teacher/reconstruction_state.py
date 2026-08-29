@@ -9,6 +9,7 @@ from .anger_reconstruction import assess_public_anger_midturn
 from .card_reconstruction import assess_public_cards
 from .contract import DecisionContext
 from .enemy_reconstruction import assess_public_enemies
+from .finesse_reconstruction import assess_public_finesse_player, is_finesse_slice_candidate
 from .player_reconstruction import assess_public_player
 from .reconstruction import PUBLIC_RECONSTRUCTION_SCHEMA
 from .run_reconstruction import assess_public_run_state
@@ -24,17 +25,28 @@ def attach_reconstruction_capabilities(
     source_marker = (run_state or {}).get("reconstruction", {})
     source = dict(source_marker) if isinstance(source_marker, Mapping) else {}
 
-    player_admission = assess_public_player(result, reconstruction_aux=reconstruction_aux)
+    base_player_admission = assess_public_player(result, reconstruction_aux=reconstruction_aux)
+    finesse_candidate = (
+        not base_player_admission.allowed
+        and isinstance(reconstruction_aux, Mapping)
+        and is_finesse_slice_candidate(result, reconstruction_aux)
+    )
+    finesse_admission = (
+        assess_public_finesse_player(result, reconstruction_aux=reconstruction_aux)
+        if finesse_candidate
+        else base_player_admission
+    )
+    player_admission = finesse_admission if finesse_candidate else base_player_admission
     card_admission = assess_public_cards(result)
     anger_admission = assess_public_anger_midturn(result, reconstruction_aux)
     enemy_admission = assess_public_enemies(result)
     run_admission = assess_public_run_state(result)
 
-    # Anger is deliberately isolated from the established V1 player/card
-    # admission paths.  Its generated-copy proof comes from the current public
-    # piles plus bounded turn-local command counters.  This keeps every frozen
-    # V1/V2 slice unchanged while allowing the one audited rich-effect state.
+    # Anger remains isolated from the established V1 player/card admission
+    # paths. Finesse composes only with the player path and still needs normal
+    # card admission, so neither slice widens the other.
     anger_override = anger_admission.allowed
+    finesse_override = finesse_candidate and finesse_admission.allowed
     player_complete = player_admission.allowed or anger_override
     card_complete = card_admission.allowed or anger_override
 
@@ -49,6 +61,7 @@ def attach_reconstruction_capabilities(
         "card_admission_reasons": [] if anger_override else list(card_admission.reasons),
         "anger_midturn_complete": anger_override,
         "anger_admission_reasons": list(anger_admission.reasons),
+        "finesse_midturn_complete": finesse_override,
         "card_count": card_admission.card_count,
         "enemy_admission_reasons": list(enemy_admission.reasons),
         "enemy_count": enemy_admission.enemy_count,

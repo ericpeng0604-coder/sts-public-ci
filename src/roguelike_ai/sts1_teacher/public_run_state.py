@@ -1,9 +1,7 @@
 """Public run-level projection helpers for the STS1 simulator.
 
 Only player-visible run information is read here.  In particular this module
-must never inspect GameContext.seed or any RNG object/counter.  The returned
-shape intentionally matches the run-level fields consumed by the shared
-``SimulatorCombatAdapter`` / real-game public-state contract.
+must never inspect GameContext.seed or any RNG object/counter.
 """
 from __future__ import annotations
 
@@ -73,15 +71,6 @@ def _public_potion(raw: Any, *, index: int) -> dict[str, Any]:
 
 
 def simulator_public_run_state(game_context: Any) -> dict[str, Any]:
-    """Project public GameContext run state without touching seed/RNG surfaces.
-
-    Relic and potion surfaces are marked complete because the pinned native
-    binding exposes the whole visible relic container and potion belt.  Card
-    instance and enemy reconstruction remain deliberately unproven here, so
-    the reconstruction admission gate still fails closed until those surfaces
-    receive their own verified adapters.
-    """
-
     relics = [_public_relic(item) for item in _sequence(_value(game_context, "relics", default=[]))]
     potions = [
         _public_potion(item, index=index)
@@ -89,7 +78,7 @@ def simulator_public_run_state(game_context: Any) -> dict[str, Any]:
     ]
 
     character = _enum_name(_value(game_context, "cc", "character"))
-    state: dict[str, Any] = {
+    return {
         "gold": _value(game_context, "gold"),
         "floor": _value(game_context, "floor_num", "floorNum", "floor"),
         "act": _value(game_context, "act"),
@@ -101,13 +90,13 @@ def simulator_public_run_state(game_context: Any) -> dict[str, Any]:
         "screen_type": "NONE",
         "reconstruction": {
             "schema_version": PUBLIC_RECONSTRUCTION_SCHEMA,
+            "public_player_state_complete": False,
             "public_card_instance_state_complete": False,
             "public_relic_state_complete": True,
             "public_potion_state_complete": True,
             "public_enemy_state_complete": False,
         },
     }
-    return state
 
 
 __all__ = ["simulator_public_run_state"]

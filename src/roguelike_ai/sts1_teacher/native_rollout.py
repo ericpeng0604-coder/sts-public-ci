@@ -149,18 +149,25 @@ class NativePublicCultistRolloutV1(NativePublicJawWormRolloutV1):
 
 
 class NativePublicGremlinNobRolloutV1(NativePublicJawWormRolloutV1):
-    """Same public-only rollout policy, with a distinct Gremlin Nob identity.
-
-    Admission/native construction restrict the source observation to opening
-    turn BELLOW. Subsequent moves are generated only from the fresh rollout RNG.
-    """
+    """Same public-only rollout policy, with a distinct Gremlin Nob identity."""
 
     backend_id = "sts1-public-native-gremlin-nob-rollout-v1"
+
+
+class NativePublicBlueSlaverRolloutV1(NativePublicJawWormRolloutV1):
+    """Public-only rollout identity for the audited Blue Slaver opening slice.
+
+    The reconstructed current opening intent comes only from public state.
+    Subsequent move rolls use the fresh action-independent rollout RNG.
+    """
+
+    backend_id = "sts1-public-native-blue-slaver-rollout-v1"
 
 
 __all__ = [
     "NativePublicJawWormRolloutV1",
     "NativePublicCultistRolloutV1",
     "NativePublicGremlinNobRolloutV1",
+    "NativePublicBlueSlaverRolloutV1",
     "NativePublicRolloutError",
 ]

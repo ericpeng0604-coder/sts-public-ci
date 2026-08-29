@@ -24,6 +24,7 @@ on:
       - 'tests/test_sts1_public_reconstruction_smoke.py'
       - 'scripts/sts1/apply_phase1_public_state_overlay.py'
       - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
       - 'scripts/sts1/verify_phase1_public_reconstruction_native.py'
   workflow_dispatch:
 
@@ -71,6 +72,7 @@ jobs:
           src/roguelike_ai/sts1_teacher/reconstruction_state.py
           scripts/sts1/apply_phase1_public_state_overlay.py
           scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          scripts/sts1/apply_phase1_public_history_guard_overlay.py
           scripts/sts1/verify_phase1_public_reconstruction_native.py
 
       - name: Diff whitespace gate
@@ -104,6 +106,9 @@ jobs:
       - name: Apply public BattleContext reconstruction overlay
         run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
 
+      - name: Apply turn-aware monster history guard
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
       - name: Build native Python binding
         run: python scripts/sts1/build_probe.py
 
@@ -136,3 +141,4 @@ jobs:
           git -C external/sts_lightspeed/source diff --check
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_potion_belt_v1'
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_reconstruction_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_history_turn_guard_v1'

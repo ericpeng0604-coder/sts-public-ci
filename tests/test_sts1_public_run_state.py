@@ -40,7 +40,7 @@ def test_simulator_public_run_state_projects_visible_relics_and_potions_only() -
     assert all("rng" not in key.lower() for key in projected)
 
 
-def test_run_state_marks_only_verified_reconstruction_surfaces_complete() -> None:
+def test_run_state_marks_only_source_verified_surfaces_complete() -> None:
     gc = SimpleNamespace(
         gold=0,
         floor_num=1,
@@ -50,11 +50,11 @@ def test_run_state_marks_only_verified_reconstruction_surfaces_complete() -> Non
         relics=[],
         potions=[],
     )
-    projected = simulator_public_run_state(gc)
-    marker = projected["reconstruction"]
+    marker = simulator_public_run_state(gc)["reconstruction"]
 
     assert marker == {
         "schema_version": PUBLIC_RECONSTRUCTION_SCHEMA,
+        "public_player_state_complete": False,
         "public_card_instance_state_complete": False,
         "public_relic_state_complete": True,
         "public_potion_state_complete": True,
@@ -95,5 +95,6 @@ def test_partial_run_state_can_never_unlock_reconstruction_by_itself() -> None:
 
     admission = assess_public_reconstruction(state)
     assert admission.allowed is False
+    assert "capability_not_proven:public_player_state_complete" in admission.reasons
     assert "capability_not_proven:public_card_instance_state_complete" in admission.reasons
     assert "capability_not_proven:public_enemy_state_complete" in admission.reasons

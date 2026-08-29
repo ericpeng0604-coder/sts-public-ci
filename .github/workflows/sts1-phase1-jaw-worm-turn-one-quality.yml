@@ -1,0 +1,96 @@
+name: STS1 Phase 1 Jaw Worm Turn-One Frozen Quality
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-jaw-worm-later-turn-start
+    paths:
+      - '.github/workflows/sts1-phase1-jaw-worm-turn-one-quality.yml'
+      - 'tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_source_seeds_64.txt'
+      - 'scripts/sts1/generate_phase1_public_search_v1_jaw_worm_turn_one_suite.py'
+      - 'scripts/sts1/run_phase1_public_search_v1_jaw_worm_turn_one_quality.py'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'scripts/sts1/apply_phase1_public_state_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+      - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jaw-worm-turn-one-v1-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Freeze contract and syntax
+        run: |
+          python -m py_compile \
+            scripts/sts1/generate_phase1_public_search_v1_jaw_worm_turn_one_suite.py \
+            scripts/sts1/run_phase1_public_search_v1_jaw_worm_turn_one_quality.py \
+            src/roguelike_ai/sts1_teacher/player_reconstruction.py \
+            scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p = Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_source_seeds_64.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert len(seeds) == 64 and len(set(seeds)) == 64
+          assert min(seeds) == 410001 and max(seeds) == 410064
+          print('JAW_WORM_TURN_ONE_SOURCE_SEED_FREEZE = PASS')
+          print('SOURCE_SEED_FILE_SHA256=' + hashlib.sha256(p.read_bytes()).hexdigest())
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate frozen Jaw Worm turn-one suite twice
+        run: |
+          python scripts/sts1/generate_phase1_public_search_v1_jaw_worm_turn_one_suite.py --output evidence/jaw-turn-one-freeze-a.json
+          python scripts/sts1/generate_phase1_public_search_v1_jaw_worm_turn_one_suite.py --output evidence/jaw-turn-one-freeze-b.json
+          cmp evidence/jaw-turn-one-freeze-a.json evidence/jaw-turn-one-freeze-b.json
+          cp evidence/jaw-turn-one-freeze-a.json evidence/jaw-turn-one-suite.json
+
+      - name: Run two-repeat Jaw Worm turn-one quality benchmark
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v1_jaw_worm_turn_one_quality.py
+          --suite evidence/jaw-turn-one-suite.json
+          --output-dir evidence/sts1/phase1_public_search_v1_jaw_worm_turn_one_quality
+
+      - name: Show quality summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_public_search_v1_jaw_worm_turn_one_quality/summary.json && cat evidence/sts1/phase1_public_search_v1_jaw_worm_turn_one_quality/summary.json || true
+
+      - name: Upload quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-public-search-v1-jaw-worm-turn-one-quality-evidence
+          path: evidence/sts1/phase1_public_search_v1_jaw_worm_turn_one_quality/
+          if-no-files-found: warn
+          retention-days: 90

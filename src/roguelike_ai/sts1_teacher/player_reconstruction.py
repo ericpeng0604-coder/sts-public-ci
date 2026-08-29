@@ -9,8 +9,8 @@ Draw-card expansions use a bounded CommunicationMod command trace only for
 turn-local counters that cannot be recovered from one snapshot. The trace is
 reconstruction metadata only; it is never merged into policy state or decision
 identity. Audited draw slices are deliberately tiny: exactly one normal Pommel
-Strike or exactly one normal Shrug It Off on Jaw Worm turn 1. Any other richer
-midturn still fails closed.
+Strike, or exactly one Shrug It Off (normal or one upgrade), on Jaw Worm turn 1.
+Any other richer midturn still fails closed.
 """
 from __future__ import annotations
 
@@ -155,12 +155,31 @@ def _validate_aux(
     return reasons
 
 
+def _played_card_upgrade(state: Mapping[str, Any], played_card_id: str) -> int | None:
+    found: list[int] = []
+    for pile_name in ("hand", "draw_pile", "discard_pile", "exhaust_pile"):
+        pile = _sequence(state.get(pile_name))
+        if pile is None:
+            return None
+        for card in pile:
+            if not isinstance(card, Mapping) or _card_id(card.get("id")) != played_card_id:
+                continue
+            upgrades = card.get("upgrades")
+            if isinstance(upgrades, bool) or not isinstance(upgrades, int):
+                return None
+            found.append(upgrades)
+    if len(found) != 1 or found[0] not in (0, 1):
+        return None
+    return found[0]
+
+
 def _draw_slice_common_reasons(
     state: Mapping[str, Any],
     *,
     prefix: str,
     expected_counts: Counter[str],
     played_card_id: str,
+    expected_played_upgrade: int,
     expected_block: int,
 ) -> list[str]:
     reasons: list[str] = []
@@ -188,10 +207,17 @@ def _draw_slice_common_reasons(
         if not isinstance(card, Mapping):
             reasons.append(f"{prefix}_turn1_card_not_mapping:{index}")
             continue
-        ids.append(_card_id(card.get("id")))
+        card_id = _card_id(card.get("id"))
+        ids.append(card_id)
         upgrades = card.get("upgrades")
-        if upgrades != 0 or isinstance(upgrades, bool):
-            reasons.append(f"{prefix}_turn1_requires_unupgraded_cards:{index}:{upgrades!r}")
+        expected_upgrade = expected_played_upgrade if card_id == played_card_id else 0
+        if isinstance(upgrades, bool) or not isinstance(upgrades, int) or upgrades != expected_upgrade:
+            if expected_played_upgrade == 0:
+                reasons.append(f"{prefix}_turn1_requires_unupgraded_cards:{index}:{upgrades!r}")
+            else:
+                reasons.append(
+                    f"{prefix}_turn1_upgrade_mismatch:{index}:{card_id}:{upgrades!r}!={expected_upgrade}"
+                )
     if Counter(ids) != expected_counts:
         reasons.append(f"{prefix}_turn1_deck_composition_mismatch")
     if sum(1 for card in discard if isinstance(card, Mapping) and _card_id(card.get("id")) == played_card_id) != 1:
@@ -219,9 +245,9 @@ def _pommel_turn_one_reasons(state: Mapping[str, Any], aux: Mapping[str, Any]) -
         prefix="pommel",
         expected_counts=_EXPECTED_POMMEL_COUNTS_V1,
         played_card_id="POMMEL_STRIKE",
+        expected_played_upgrade=0,
         expected_block=0,
     )
-    # Preserve the established externally-visible reason for this check.
     common = [
         "pommel_turn1_pommel_not_in_discard" if item == "pommel_turn1_played_card_not_in_discard" else item
         for item in common
@@ -231,16 +257,21 @@ def _pommel_turn_one_reasons(state: Mapping[str, Any], aux: Mapping[str, Any]) -
 
 
 def _shrug_turn_one_reasons(state: Mapping[str, Any], aux: Mapping[str, Any]) -> list[str]:
-    """Prove exactly one normal Shrug It Off play using public state + bounded trace."""
+    """Prove exactly one normal or once-upgraded Shrug It Off play."""
 
     reasons = _validate_aux(aux, prefix="shrug", attacks=0, skills=1)
+    shrug_upgrade = _played_card_upgrade(state, "SHRUG_IT_OFF")
+    if shrug_upgrade is None:
+        reasons.append("shrug_turn1_upgrade_surface_unreachable")
+        shrug_upgrade = 0
     reasons.extend(
         _draw_slice_common_reasons(
             state,
             prefix="shrug",
             expected_counts=_EXPECTED_SHRUG_COUNTS_V1,
             played_card_id="SHRUG_IT_OFF",
-            expected_block=8,
+            expected_played_upgrade=shrug_upgrade,
+            expected_block=11 if shrug_upgrade == 1 else 8,
         )
     )
     return reasons

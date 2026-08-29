@@ -4,6 +4,7 @@ from roguelike_ai.sts1_teacher.run_reconstruction import assess_public_run_state
 
 def base_state() -> dict:
     return {
+        "source": "simulator",
         "hp": 70,
         "max_hp": 80,
         "block": 0,
@@ -31,6 +32,15 @@ def test_v1_player_and_run_slice_is_admitted() -> None:
     assert run.relics_allowed is True
     assert run.potions_allowed is True
     assert run.reasons == ()
+
+
+def test_non_simulator_source_fails_closed() -> None:
+    state = base_state()
+    state["source"] = "real_game"
+    result = assess_public_run_state(state)
+    assert result.relics_allowed is False
+    assert result.potions_allowed is False
+    assert "source_unsupported_v1" in result.reasons
 
 
 def test_second_simulator_turn_fails_closed() -> None:

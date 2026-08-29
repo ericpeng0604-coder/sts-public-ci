@@ -277,15 +277,35 @@ def _run_seed(
                     if set(armb_scores.action_ids) != expected_ids or not armb_scores.tie_action_ids:
                         raise BenchmarkContractError("armb_did_not_score_every_legal_action")
 
+                    semantic_groups: dict[str, list[str]] = {}
+                    for action in context.legal_actions:
+                        semantic_groups.setdefault(action.semantic_key, []).append(action.action_id)
+
+                    # Score one deterministic executable representative per public
+                    # semantic action.  Slot/target identity must not create fake
+                    # oracle differences for actions the frozen public contract
+                    # considers equivalent.  Copy the representative score to all
+                    # executable members, matching formal PublicStateSearch.
                     oracle_scores: dict[str, float] = {}
-                    for action_id in sorted(expected_ids):
+                    for semantic_key in sorted(semantic_groups):
+                        member_ids = sorted(semantic_groups[semantic_key])
+                        representative_id = member_ids[0]
                         try:
-                            judged = sts.judge_branch_action(bc, native_by_id[action_id], ORACLE_MCTS_SIMS)
+                            judged = sts.judge_branch_action(
+                                bc,
+                                native_by_id[representative_id],
+                                ORACLE_MCTS_SIMS,
+                            )
                         except Exception as exc:
                             if "judge_first_action_not_legal" in str(exc):
                                 counters["illegal"] += 1
                             raise
-                        oracle_scores[action_id] = float(judged["score"])
+                        group_score = float(judged["score"])
+                        for action_id in member_ids:
+                            oracle_scores[action_id] = group_score
+
+                    if set(oracle_scores) != expected_ids:
+                        raise BenchmarkContractError("semantic_group_oracle_score_coverage_mismatch")
                     if not semantic_score_consistent(context, oracle_scores):
                         raise BenchmarkContractError("semantic_duplicate_oracle_score_drift")
                     oracle_tie_ids = oracle_ties(oracle_scores)

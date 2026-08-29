@@ -1,0 +1,40 @@
+name: STS1 Phase 1 Anger Finesse Formal Integration Dispatch
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-anger-finesse-formal-integration-dispatch
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-formal-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REF: gpt/sts1-phase1-anger-finesse-formal-integration-v2
+    steps:
+      - name: Dispatch exact formal regression/native suite to clean integration ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflows=(
+            345238416
+            345277947
+            345228275
+            345214663
+            345298845
+            345182389
+            345294256
+            345134739
+            345374237
+            345459107
+          )
+          for workflow in "${workflows[@]}"; do
+            echo "dispatch workflow=${workflow} ref=${TARGET_REF}"
+            gh api --method POST "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/dispatches" -f ref="${TARGET_REF}"
+          done
+          echo 'FORMAL_SUITE_DISPATCH_COUNT=10'

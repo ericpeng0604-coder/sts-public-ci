@@ -23,8 +23,8 @@ RECONSTRUCTION_AUX_SOURCE = "communicationmod_command_trace_v1"
 
 # V1 is deliberately narrow. Cards outside this set still play normally, but
 # the reconstruction trace becomes incomplete so Phase 1 must fail closed.
-# Pommel Strike is the first draw-card expansion because it draws without
-# auto-playing or discarding another card.
+# Pommel Strike and Shrug It Off are the first audited draw-card expansions;
+# neither auto-plays nor discards another card.
 _TRACE_SAFE_CARD_IDS = frozenset(
     {
         "STRIKE_R",
@@ -33,6 +33,7 @@ _TRACE_SAFE_CARD_IDS = frozenset(
         "DEFEND_RED",
         "BASH",
         "POMMEL_STRIKE",
+        "SHRUG_IT_OFF",
     }
 )
 
@@ -163,22 +164,16 @@ class CommunicationBridge:
             "cards_played_this_turn": self._trace_cards_played if active else 0,
             "attacks_played_this_turn": self._trace_attacks_played if active else 0,
             "skills_played_this_turn": self._trace_skills_played if active else 0,
-            # Every card admitted by V1 has no discard side effect. Anything
-            # outside the allowlist marks the trace incomplete before use.
             "cards_discarded_this_turn": 0,
         }
 
     def signal_ready(self) -> None:
-        """Perform the one-time CommunicationMod handshake."""
-
         if self._ready_signaled:
             raise BridgeProtocolError("ready_already_signaled")
         self._write_line("ready")
         self._ready_signaled = True
 
     def read_state(self) -> CommunicationState:
-        """Read and validate exactly one inbound JSON state line."""
-
         line = self.input_stream.readline()
         if line == "":
             raise EOFError("communicationmod_closed_input")
@@ -199,8 +194,6 @@ class CommunicationBridge:
         return state
 
     def wait_for_decision(self, *, max_messages: int = 100) -> CommunicationState:
-        """Read until a fresh decision state is ready, or fail closed."""
-
         if max_messages < 1:
             raise ValueError("max_messages_must_be_positive")
         for _ in range(max_messages):
@@ -212,8 +205,6 @@ class CommunicationBridge:
         raise BridgeProtocolError("decision_state_not_reached_within_message_bound")
 
     def send_command(self, command: str) -> None:
-        """Send one command only when the latest state explicitly permits it."""
-
         if not isinstance(command, str) or not command.strip():
             raise BridgeProtocolError("command_must_be_nonempty_string")
         if self.last_state is None:
@@ -247,7 +238,6 @@ class CommunicationBridge:
         if verb == "end":
             return
         if verb != "play":
-            # Potion/other combat commands are outside the first audited slice.
             self._pending_invalidates_trace = True
             return
 
@@ -281,8 +271,6 @@ class CommunicationBridge:
         previous_turn = self._trace_turn
         current_turn = _combat_turn(state)
 
-        # A staged command counts only after CommunicationMod returns a fresh,
-        # non-error state. Rejected commands therefore never become history.
         if self._pending_play is not None:
             card_type, safe = self._pending_play
             if state.error is None and previous_turn is not None and current_turn == previous_turn:
@@ -305,15 +293,11 @@ class CommunicationBridge:
             return
 
         if previous_turn is None:
-            # Starting from a menu/reward screen proves we saw the beginning of
-            # this combat. Attaching directly to a mid-combat state does not.
             complete = self.last_state is not None and _combat_turn(self.last_state) is None
             self._reset_trace(current_turn, complete=complete)
             return
 
         if current_turn != previous_turn:
-            # A new player turn has no earlier player actions yet, even when the
-            # bridge attached mid-combat during the previous turn.
             self._reset_trace(current_turn, complete=True)
 
     def _reset_trace(self, turn: int | None, *, complete: bool) -> None:

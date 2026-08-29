@@ -2,6 +2,7 @@
 """Native smoke proof for the first public-state BattleContext reconstruction slice."""
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 import sys
 
@@ -37,6 +38,8 @@ def public_state() -> dict:
         ],
         "draw_pile": [
             {"id": "BASH", "name": "Bash", "type": "ATTACK", "cost": 2, "upgrades": 0, "has_target": True},
+            {"id": "DEFEND_RED", "name": "Defend", "type": "SKILL", "cost": 1, "upgrades": 0, "has_target": False},
+            {"id": "STRIKE_RED", "name": "Strike", "type": "ATTACK", "cost": 1, "upgrades": 0, "has_target": True},
         ],
         "discard_pile": [],
         "exhaust_pile": [],
@@ -106,6 +109,13 @@ def run_state(state: dict) -> dict:
     }
 
 
+def card_sequence(bc) -> list[tuple[str, int, int]]:
+    return [
+        (card.name, int(card.upgraded), int(card.cost_for_turn))
+        for card in bc.draw_pile
+    ]
+
+
 def main() -> None:
     state = public_state()
     original = DecisionContext.from_public_state(state)
@@ -116,9 +126,8 @@ def main() -> None:
     config = SearchConfig(sampling_seed=20260829)
     sample = public_sample(admitted, sample_index=0, config=config)
     plan = build_redeterminization_plan(admitted, sample)
-    previous_history = plan.monster_history[0].previous_history_seed
-    native_seeds = {name: value for name, value in plan.rng_seeds if name != "draw_order"}
-    native_seeds["previous_history"] = previous_history
+    native_seeds = dict(plan.rng_seeds)
+    native_seeds["previous_history"] = plan.monster_history[0].previous_history_seed
 
     bc = sts.build_public_jaw_worm_context_v1(admitted_state, native_seeds)
     assert bc.turn == 1
@@ -127,10 +136,26 @@ def main() -> None:
     assert bc.player.block == 0
     assert bc.player.energy == 3
     assert [card.name for card in bc.hand] == ["Strike", "Defend"]
-    assert [card.name for card in bc.draw_pile] == ["Bash"]
+    assert sorted(card.name for card in bc.draw_pile) == ["Bash", "Defend", "Strike"]
     assert len(bc.monsters) == 1
     assert bc.monsters[0].name == "JAW_WORM"
     assert bc.monsters[0].intent == "JAW_WORM_CHOMP"
+
+    # Incoming draw order is forbidden future information. Reverse it while
+    # preserving composition and prove the same sample creates the same native
+    # draw order after canonicalization + seeded re-determinization.
+    reversed_state = deepcopy(state)
+    reversed_state["draw_pile"] = list(reversed(reversed_state["draw_pile"]))
+    assert DecisionContext.from_public_state(reversed_state).decision_signature == original.decision_signature
+    reversed_admitted = attach_reconstruction_capabilities(
+        reversed_state,
+        run_state=run_state(reversed_state),
+    )
+    bc_reversed = sts.build_public_jaw_worm_context_v1(reversed_admitted, native_seeds)
+    assert card_sequence(bc_reversed) == card_sequence(bc), (
+        card_sequence(bc),
+        card_sequence(bc_reversed),
+    )
 
     legal = sts.get_legal_actions(bc)
     projected = SimulatorCombatAdapter().adapt(bc, legal_actions=legal, run_state=run_state(state))
@@ -157,9 +182,11 @@ def main() -> None:
     print("ROUNDTRIP_SIGNATURE = PASS")
     print("LEGAL_ACTIONS = PASS")
     print("EXECUTABLE_STRIKE = PASS")
+    print("DRAW_ORDER_REDETERMINIZATION = PASS")
     print(f"ENEMY_HP = {hp_before}->{hp_after}")
     print("SOURCE_BATTLE_CONTEXT_INPUT = 0")
     print("SOURCE_HIDDEN_RNG_ACCESS = 0")
+    print("SOURCE_DRAW_ORDER_ACCESS = 0")
 
 
 if __name__ == "__main__":

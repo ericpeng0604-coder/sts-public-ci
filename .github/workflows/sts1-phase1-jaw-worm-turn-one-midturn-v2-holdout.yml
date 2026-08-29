@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gpt/sts1-phase1-jaw-worm-turn-one-midturn-v2-holdout
+      - gpt/sts1-phase1-public-reconstruction
     paths:
       - '.github/workflows/sts1-phase1-jaw-worm-turn-one-midturn-v2-holdout.yml'
       - 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout_seeds_64.txt'

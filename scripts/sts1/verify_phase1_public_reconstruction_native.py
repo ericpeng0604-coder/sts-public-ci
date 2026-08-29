@@ -58,7 +58,7 @@ def public_state() -> dict:
                 "powers": [],
             }
         ],
-        "turn": 1,
+        "turn": 0,
         "combat_active": True,
         "relics": [{"id": "BURNING_BLOOD", "counter": -1}],
         "potions": [
@@ -110,10 +110,7 @@ def run_state(state: dict) -> dict:
 
 
 def card_sequence(bc) -> list[tuple[str, int, int]]:
-    return [
-        (card.name, int(card.upgraded), int(card.cost_for_turn))
-        for card in bc.draw_pile
-    ]
+    return [(card.name, int(card.upgraded), int(card.cost_for_turn)) for card in bc.draw_pile]
 
 
 def context_diff(original: DecisionContext, rebuilt: DecisionContext) -> dict:
@@ -122,12 +119,10 @@ def context_diff(original: DecisionContext, rebuilt: DecisionContext) -> dict:
         for key in sorted(set(original.state) | set(rebuilt.state))
         if original.state.get(key) != rebuilt.state.get(key)
     }
-    original_actions = [action.payload for action in original.legal_actions]
-    rebuilt_actions = [action.payload for action in rebuilt.legal_actions]
     return {
         "state": state_diff,
-        "original_actions": original_actions,
-        "rebuilt_actions": rebuilt_actions,
+        "original_actions": [action.payload for action in original.legal_actions],
+        "rebuilt_actions": [action.payload for action in rebuilt.legal_actions],
     }
 
 
@@ -145,7 +140,7 @@ def main() -> None:
     native_seeds["previous_history"] = plan.monster_history[0].previous_history_seed
 
     bc = sts.build_public_jaw_worm_context_v1(admitted_state, native_seeds)
-    assert bc.turn == 1
+    assert bc.turn == 0
     assert bc.player.cur_hp == 70
     assert bc.player.max_hp == 80
     assert bc.player.block == 0
@@ -159,15 +154,9 @@ def main() -> None:
     reversed_state = deepcopy(state)
     reversed_state["draw_pile"] = list(reversed(reversed_state["draw_pile"]))
     assert DecisionContext.from_public_state(reversed_state).decision_signature == original.decision_signature
-    reversed_admitted = attach_reconstruction_capabilities(
-        reversed_state,
-        run_state=run_state(reversed_state),
-    )
+    reversed_admitted = attach_reconstruction_capabilities(reversed_state, run_state=run_state(reversed_state))
     bc_reversed = sts.build_public_jaw_worm_context_v1(reversed_admitted, native_seeds)
-    assert card_sequence(bc_reversed) == card_sequence(bc), (
-        card_sequence(bc),
-        card_sequence(bc_reversed),
-    )
+    assert card_sequence(bc_reversed) == card_sequence(bc)
 
     legal = sts.get_legal_actions(bc)
     projected = SimulatorCombatAdapter().adapt(bc, legal_actions=legal, run_state=run_state(state))
@@ -188,7 +177,7 @@ def main() -> None:
     hp_before = bc.monsters[0].cur_hp
     strike.execute(bc)
     hp_after = bc.monsters[0].cur_hp
-    assert hp_after < hp_before, (hp_before, hp_after)
+    assert hp_after < hp_before
     assert bc.player.energy == 2
 
     print("PUBLIC_RECONSTRUCTION_NATIVE = PASS")
@@ -196,6 +185,7 @@ def main() -> None:
     print("LEGAL_ACTIONS = PASS")
     print("EXECUTABLE_STRIKE = PASS")
     print("DRAW_ORDER_REDETERMINIZATION = PASS")
+    print("ZERO_BASED_OPENING_TURN = PASS")
     print(f"ENEMY_HP = {hp_before}->{hp_after}")
     print("SOURCE_BATTLE_CONTEXT_INPUT = 0")
     print("SOURCE_HIDDEN_RNG_ACCESS = 0")

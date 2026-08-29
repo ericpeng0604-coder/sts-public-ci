@@ -17,7 +17,7 @@ def public_state() -> dict:
         "exhaust_pile": [],
         "powers": [],
         "enemies": [{"index": 0, "name": "Cultist", "hp": 48, "max_hp": 48, "block": 0, "intent": "DARK_STRIKE", "powers": []}],
-        "turn": 1,
+        "turn": 0,
         "combat_active": True,
         "relics": [],
         "potions": [],
@@ -39,6 +39,7 @@ def run_state() -> dict:
     return {
         "reconstruction": {
             "schema_version": "sts1-public-reconstruction-v1",
+            "public_player_state_complete": False,
             "public_card_instance_state_complete": False,
             "public_relic_state_complete": True,
             "public_potion_state_complete": True,
@@ -52,8 +53,8 @@ def test_reconstruction_metadata_does_not_change_decision_signature() -> None:
     before = DecisionContext.from_public_state(state)
     after_state = attach_reconstruction_capabilities(state, run_state=run_state())
     after = DecisionContext.from_public_state(after_state)
-
     assert before.decision_signature == after.decision_signature
+    assert after_state["reconstruction"]["public_player_state_complete"] is True
     assert after_state["reconstruction"]["public_card_instance_state_complete"] is True
     assert after_state["reconstruction"]["public_relic_state_complete"] is True
     assert after_state["reconstruction"]["public_potion_state_complete"] is True
@@ -65,6 +66,7 @@ def test_enemy_gap_still_blocks_full_reconstruction() -> None:
     admission = assess_public_reconstruction(state)
     assert admission.allowed is False
     assert "capability_not_proven:public_enemy_state_complete" in admission.reasons
+    assert "capability_not_proven:public_player_state_complete" not in admission.reasons
     assert "capability_not_proven:public_card_instance_state_complete" not in admission.reasons
 
 
@@ -73,6 +75,5 @@ def test_unsupported_card_keeps_card_capability_false() -> None:
     state["hand"][0]["id"] = "RAMPAGE"
     attached = attach_reconstruction_capabilities(state, run_state=run_state())
     marker = attached["reconstruction"]
-
     assert marker["public_card_instance_state_complete"] is False
     assert "card_unsupported_v1:RAMPAGE" in marker["card_admission_reasons"]

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from roguelike_ai.sts1_teacher.benchmark import (
+    BenchmarkContractError,
     BenchmarkDecision,
     conservative_tie_agreement,
     exact_native_action_map,
+    load_heldout_seeds,
     oracle_ties,
     phase1_baseline_gate,
     semantic_score_consistent,
@@ -23,6 +27,25 @@ def _context(actions: list[dict], *, hand: list[dict] | None = None) -> Decision
             "legal_actions": actions,
         }
     )
+
+
+def test_load_heldout_seeds_allows_full_line_comments(tmp_path) -> None:
+    path = tmp_path / "seeds.txt"
+    path.write_text(
+        "# held-out benchmark seeds\n\n" + "\n".join(str(seed) for seed in range(50)) + "\n",
+        encoding="utf-8",
+    )
+    assert load_heldout_seeds(path) == tuple(range(50))
+
+
+def test_load_heldout_seeds_rejects_non_comment_garbage(tmp_path) -> None:
+    path = tmp_path / "seeds.txt"
+    path.write_text(
+        "not-a-seed\n" + "\n".join(str(seed) for seed in range(50)) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(BenchmarkContractError, match="heldout_seed_not_integer"):
+        load_heldout_seeds(path)
 
 
 def test_oracle_ties_are_tolerance_aware_and_sorted() -> None:

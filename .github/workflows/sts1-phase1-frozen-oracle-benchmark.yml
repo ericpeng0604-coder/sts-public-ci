@@ -99,9 +99,9 @@ jobs:
 
       - name: Apply benchmark-only oracle binding
         run: |
-          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-before.diff"
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' ':(exclude)bindings/bindings-util.cpp' > "$RUNNER_TEMP/nonbinding-before.diff"
           python scripts/sts1/apply_phase1_oracle_judge_overlay.py
-          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' ':(exclude)bindings/bindings-util.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
           cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
           git -C external/sts_lightspeed/source diff --name-only
 

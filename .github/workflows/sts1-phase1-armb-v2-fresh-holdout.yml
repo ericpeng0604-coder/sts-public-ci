@@ -1,0 +1,168 @@
+name: STS1 Phase 1 Arm B v2 Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-teacher-345
+    paths:
+      - '.github/workflows/sts1-phase1-armb-v2-fresh-holdout.yml'
+      - 'src/roguelike_ai/sts1_teacher/armb_v2.py'
+      - 'scripts/sts1/run_phase1_armb_v2_fresh_holdout.py'
+      - 'scripts/sts1/aggregate_phase1_armb_v2_fresh_holdout.py'
+      - 'tests/test_sts1_phase1_armb_v2.py'
+      - 'tests/data/sts1_phase1_armb_v2_fresh_seeds_50.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+
+      - name: Focused tests
+        run: >-
+          python -m pytest -q
+          tests/test_sts1_phase1_armb_v2.py
+          tests/test_sts1_phase1_frozen_oracle_benchmark.py
+
+      - name: Syntax gate
+        run: >-
+          python -m py_compile
+          src/roguelike_ai/sts1_teacher/armb_v2.py
+          scripts/sts1/run_phase1_armb_v2_fresh_holdout.py
+          scripts/sts1/aggregate_phase1_armb_v2_fresh_holdout.py
+
+      - name: Fresh seed contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p = Path('tests/data/sts1_phase1_armb_v2_fresh_seeds_50.txt')
+          fresh = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert len(fresh) == 50 and len(set(fresh)) == 50
+          print('fresh_seed_count=50')
+          print('fresh_seed_sha256=' + hashlib.sha256(p.read_bytes()).hexdigest())
+          PY
+
+      - name: Diff whitespace gate
+        run: git diff --check origin/main...HEAD
+
+  benchmark:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat: [1, 2]
+        shard: [0, 1, 2, 3, 4]
+    env:
+      PYTHONUNBUFFERED: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install frozen runtime dependency
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.11.0
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply benchmark-only oracle binding
+        run: |
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' ':(exclude)bindings/bindings-util.cpp' > "$RUNNER_TEMP/nonbinding-before.diff"
+          python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' ':(exclude)bindings/bindings-util.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
+          cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Run fresh holdout shard
+        id: run_benchmark
+        continue-on-error: true
+        run: >-
+          python scripts/sts1/run_phase1_armb_v2_fresh_holdout.py
+          --repeat ${{ matrix.repeat }}
+          --shard-index ${{ matrix.shard }}
+          --shard-count 5
+          --output-dir "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}"
+
+      - name: Require raw evidence
+        run: |
+          test -f "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/benchmark_summary.json"
+          test -f "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/benchmark_decisions.ndjson"
+          test -f "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/benchmark_errors.ndjson"
+          test -f "artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/provenance.json"
+
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}
+          path: artifact-out/repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download all fresh-holdout shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: repeat-*-shard-*
+          path: downloaded
+
+      - name: Aggregate and enforce frozen Arm B v2 reference gate
+        run: >-
+          python scripts/sts1/aggregate_phase1_armb_v2_fresh_holdout.py
+          --input-root downloaded
+          --output-dir evidence/sts1/phase1_armb_v2_fresh_holdout
+
+      - name: Show final evidence
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_armb_v2_fresh_holdout/summary.json && cat evidence/sts1/phase1_armb_v2_fresh_holdout/summary.json || true
+          test -f evidence/sts1/phase1_armb_v2_fresh_holdout/determinism.json && cat evidence/sts1/phase1_armb_v2_fresh_holdout/determinism.json || true
+
+      - name: Upload final fresh-holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-armb-v2-fresh-holdout-evidence
+          path: evidence/sts1/phase1_armb_v2_fresh_holdout/
+          if-no-files-found: warn
+          retention-days: 90

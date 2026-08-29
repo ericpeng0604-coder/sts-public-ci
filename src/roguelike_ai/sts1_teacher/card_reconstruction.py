@@ -1,9 +1,10 @@
 """Fail-closed card admission for public-state STS1 reconstruction.
 
-V1 deliberately supports only the tiny Ironclad starter-card slice whose base
-cost is fully determined by public card id + upgrade count.  This avoids
-pretending that a temporarily modified displayed cost is also the persistent
-base cost that future turns would reset to.
+V1 supports the small Ironclad slice whose base cost is fully determined by
+public card id + upgrade count. CommunicationMod's Strike_R / Defend_R names
+are explicit aliases for sts_lightspeed's STRIKE_RED / DEFEND_RED. Pommel
+Strike is the first draw-card expansion; richer draw/discard/energy effects
+remain outside the audited midturn slice.
 """
 from __future__ import annotations
 
@@ -11,16 +12,21 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 _CARD_PILES = ("hand", "draw_pile", "discard_pile", "exhaust_pile")
+_CARD_ID_ALIASES = {
+    "STRIKE_R": "STRIKE_RED",
+    "DEFEND_R": "DEFEND_RED",
+}
 _SUPPORTED_V1_COSTS = {
     "STRIKE_RED": {0: 1, 1: 1},
     "DEFEND_RED": {0: 1, 1: 1},
     "BASH": {0: 2, 1: 2},
+    "POMMEL_STRIKE": {0: 1, 1: 1},
 }
 
 
 def _canonical_card_id(value: Any) -> str:
-    text = str(value or "").strip().upper()
-    return text.replace(" ", "_").replace("-", "_")
+    text = str(value or "").strip().upper().replace(" ", "_").replace("-", "_")
+    return _CARD_ID_ALIASES.get(text, text)
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ on:
       - 'scripts/sts1/run_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_quality.py'
       - 'scripts/sts1/apply_phase1_public_midturn_counter_overlay.py'
       - 'scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py'
+      - 'tests/test_sts1_public_native_v1_admission.py'
       - 'tests/test_sts1_midturn_nonstarter_failclosed.py'
       - 'src/roguelike_ai/sts1_teacher/**'
       - 'scripts/sts1/apply_phase1_public_state_overlay.py'

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native smoke proof for the first public-state BattleContext reconstruction slice."""
+"""Native smoke proof for the audited public-state BattleContext reconstruction slice."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -126,20 +126,35 @@ def context_diff(original: DecisionContext, rebuilt: DecisionContext) -> dict:
     }
 
 
-def main() -> None:
-    state = public_state()
+def admitted_context_and_seeds(state: dict) -> tuple[DecisionContext, dict]:
     original = DecisionContext.from_public_state(state)
     admitted_state = attach_reconstruction_capabilities(state, run_state=run_state(state))
     admitted = require_public_reconstruction(admitted_state)
     assert admitted.decision_signature == original.decision_signature
-
     config = SearchConfig(sampling_seed=20260829)
     sample = public_sample(admitted, sample_index=0, config=config)
     plan = build_redeterminization_plan(admitted, sample)
     native_seeds = dict(plan.rng_seeds)
     native_seeds["previous_history"] = plan.monster_history[0].previous_history_seed
+    return admitted, native_seeds
 
-    bc = sts.build_public_jaw_worm_context_v1(admitted_state, native_seeds)
+
+def assert_roundtrip(state: dict, admitted: DecisionContext, bc) -> None:
+    legal = sts.get_legal_actions(bc)
+    projected = SimulatorCombatAdapter().adapt(bc, legal_actions=legal, run_state=run_state(state))
+    rebuilt = DecisionContext.from_public_state(projected)
+    if rebuilt.decision_signature != admitted.decision_signature:
+        raise RuntimeError(
+            "PUBLIC_RECONSTRUCTION_ROUNDTRIP_SIGNATURE_MISMATCH:"
+            f"{admitted.decision_signature}!={rebuilt.decision_signature}:"
+            f"diff={context_diff(admitted, rebuilt)!r}"
+        )
+
+
+def main() -> None:
+    state = public_state()
+    admitted, native_seeds = admitted_context_and_seeds(state)
+    bc = sts.build_public_jaw_worm_context_v1(state, native_seeds)
     assert bc.turn == 0
     assert bc.player.cur_hp == 70
     assert bc.player.max_hp == 80
@@ -153,21 +168,13 @@ def main() -> None:
 
     reversed_state = deepcopy(state)
     reversed_state["draw_pile"] = list(reversed(reversed_state["draw_pile"]))
-    assert DecisionContext.from_public_state(reversed_state).decision_signature == original.decision_signature
-    reversed_admitted = attach_reconstruction_capabilities(reversed_state, run_state=run_state(reversed_state))
-    bc_reversed = sts.build_public_jaw_worm_context_v1(reversed_admitted, native_seeds)
+    assert DecisionContext.from_public_state(reversed_state).decision_signature == admitted.decision_signature
+    reversed_admitted_state = attach_reconstruction_capabilities(reversed_state, run_state=run_state(reversed_state))
+    bc_reversed = sts.build_public_jaw_worm_context_v1(reversed_admitted_state, native_seeds)
     assert card_sequence(bc_reversed) == card_sequence(bc)
 
+    assert_roundtrip(state, admitted, bc)
     legal = sts.get_legal_actions(bc)
-    projected = SimulatorCombatAdapter().adapt(bc, legal_actions=legal, run_state=run_state(state))
-    rebuilt = DecisionContext.from_public_state(projected)
-    if rebuilt.decision_signature != original.decision_signature:
-        raise RuntimeError(
-            "PUBLIC_RECONSTRUCTION_ROUNDTRIP_SIGNATURE_MISMATCH:"
-            f"{original.decision_signature}!={rebuilt.decision_signature}:"
-            f"diff={context_diff(original, rebuilt)!r}"
-        )
-
     strike = next(
         action for action in legal
         if action.action_type == sts.SearchActionType.CARD
@@ -180,13 +187,46 @@ def main() -> None:
     assert hp_after < hp_before
     assert bc.player.energy == 2
 
+    # Second audited enemy surface: Cultist opening turn. The pinned simulator
+    # defines first move as INCANTATION, then DARK_STRIKE. No source BattleContext
+    # or hidden move history is passed into reconstruction.
+    cultist_state = deepcopy(state)
+    cultist_enemy = cultist_state["enemies"][0]
+    cultist_enemy.update(
+        {
+            "name": "CULTIST",
+            "hp": 48,
+            "max_hp": 48,
+            "intent": "CULTIST_INCANTATION",
+            "intent_damage": 0,
+            "intent_hits": 0,
+            "powers": [],
+        }
+    )
+    cultist_admitted, cultist_seeds = admitted_context_and_seeds(cultist_state)
+    cultist_bc = sts.build_public_jaw_worm_context_v1(cultist_state, cultist_seeds)
+    assert cultist_bc.turn == 0
+    assert len(cultist_bc.monsters) == 1
+    assert cultist_bc.monsters[0].name == "CULTIST"
+    assert cultist_bc.monsters[0].intent == "CULTIST_INCANTATION"
+    assert_roundtrip(cultist_state, cultist_admitted, cultist_bc)
+
+    cultist_hp_before = cultist_bc.player.cur_hp
+    cultist_legal = sts.get_legal_actions(cultist_bc)
+    end_turn = next(action for action in cultist_legal if action.action_type == sts.SearchActionType.END_TURN)
+    end_turn.execute(cultist_bc)
+    assert cultist_bc.player.cur_hp == cultist_hp_before
+    assert cultist_bc.monsters[0].intent == "CULTIST_DARK_STRIKE"
+
     print("PUBLIC_RECONSTRUCTION_NATIVE = PASS")
     print("ROUNDTRIP_SIGNATURE = PASS")
     print("LEGAL_ACTIONS = PASS")
     print("EXECUTABLE_STRIKE = PASS")
     print("DRAW_ORDER_REDETERMINIZATION = PASS")
     print("ZERO_BASED_OPENING_TURN = PASS")
-    print(f"ENEMY_HP = {hp_before}->{hp_after}")
+    print("CULTIST_OPENING_RECONSTRUCTION = PASS")
+    print("CULTIST_INCANTATION_TO_DARK_STRIKE = PASS")
+    print(f"JAW_WORM_ENEMY_HP = {hp_before}->{hp_after}")
     print("SOURCE_BATTLE_CONTEXT_INPUT = 0")
     print("SOURCE_HIDDEN_RNG_ACCESS = 0")
     print("SOURCE_DRAW_ORDER_ACCESS = 0")

@@ -1,0 +1,113 @@
+name: STS1 Phase 1 Anger Midturn Fresh Holdout V2
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-anger-midturn
+    paths:
+      - '.github/workflows/sts1-phase1-anger-midturn-fresh-holdout-v2.yml'
+      - 'tests/data/sts1_phase1_anger_midturn_fresh_holdout_v2_seeds_128.txt'
+      - 'scripts/sts1/generate_phase1_anger_midturn_fresh_holdout_v2.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  anger-midturn-fresh-quality-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Freeze V2 sampling contract and syntax
+        run: |
+          python -m py_compile \
+            scripts/sts1/generate_phase1_anger_midturn_fresh_holdout_v2.py \
+            scripts/sts1/run_phase1_anger_midturn_fresh_quality.py \
+            src/roguelike_ai/sts1_teacher/anger_midturn_policy_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p = Path('tests/data/sts1_phase1_anger_midturn_fresh_holdout_v2_seeds_128.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert seeds == list(range(490001, 490129))
+          print('ANGER_MIDTURN_FRESH_V2_SOURCE_SEED_FREEZE = PASS')
+          print('SOURCE_SEED_COUNT=128')
+          print('SOURCE_SEED_FILE_SHA256=' + hashlib.sha256(p.read_bytes()).hexdigest())
+          PY
+          git diff --check HEAD^
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Apply established starter midturn counters
+        run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Apply CommunicationMod card aliases
+        run: python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
+
+      - name: Apply audited rich-card auxiliary path
+        run: python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate blind V2 reachable Anger suite twice
+        run: |
+          python scripts/sts1/generate_phase1_anger_midturn_fresh_holdout_v2.py --output evidence/anger-midturn-v2-freeze-a.json
+          python scripts/sts1/generate_phase1_anger_midturn_fresh_holdout_v2.py --output evidence/anger-midturn-v2-freeze-b.json
+          cmp evidence/anger-midturn-v2-freeze-a.json evidence/anger-midturn-v2-freeze-b.json
+          cp evidence/anger-midturn-v2-freeze-a.json evidence/anger-midturn-v2-suite.json
+
+      - name: Run unchanged predeclared two-repeat Anger quality gate
+        run: >-
+          python scripts/sts1/run_phase1_anger_midturn_fresh_quality.py
+          --suite evidence/anger-midturn-v2-suite.json
+          --output-dir evidence/sts1/phase1_anger_midturn_fresh_quality_v2
+
+      - name: Show V2 quality summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_anger_midturn_fresh_quality_v2/summary.json && cat evidence/sts1/phase1_anger_midturn_fresh_quality_v2/summary.json || true
+          test -f evidence/anger-midturn-v2-suite.json && python - <<'PY'
+          from pathlib import Path
+          import json
+          p = Path('evidence/anger-midturn-v2-suite.json')
+          if p.exists():
+              s = json.loads(p.read_text())
+              print('SAMPLING_CONTRACT=' + s['sampling_contract_version'])
+              print('SUITE_DIGEST=' + s['suite_digest'])
+              print('CASE_COUNT=' + str(s['case_count']))
+              print('REJECTED_COUNTS=' + str(s['rejected_counts']))
+              print('PRIOR_480XXX_QUALITY_ROWS_READ=' + str(s['prior_480xxx_quality_rows_read']))
+          PY
+
+      - name: Upload V2 fresh holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-anger-midturn-fresh-quality-v2-evidence
+          path: |
+            evidence/anger-midturn-v2-suite.json
+            evidence/sts1/phase1_anger_midturn_fresh_quality_v2/
+          if-no-files-found: warn
+          retention-days: 90

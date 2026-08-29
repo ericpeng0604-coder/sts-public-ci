@@ -1,0 +1,154 @@
+name: STS1 Phase 1 Jaw Worm Two-Card Midturn V2 Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-two-card-midturn-v2-holdout
+    paths:
+      - '.github/workflows/sts1-phase1-jaw-worm-turn-one-two-card-midturn-v2-fresh-holdout.yml'
+      - 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_holdout_seeds_64.txt'
+      - 'scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_holdout.py'
+      - 'src/roguelike_ai/sts1_teacher/two_card_midturn_policy_v2.py'
+      - 'tests/test_sts1_midturn_nonstarter_failclosed.py'
+      - 'scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  two-card-midturn-v2-fresh-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+
+      - name: Fresh holdout freeze, policy, syntax, and fail-closed contract
+        run: |
+          python -m py_compile \
+            src/roguelike_ai/sts1_teacher/two_card_midturn_policy_v2.py \
+            scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_holdout.py \
+            scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py
+          python -m pytest -q tests/test_sts1_midturn_nonstarter_failclosed.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import sys
+          sys.path.insert(0, 'src')
+
+          def read(path):
+              return [int(x.strip()) for x in Path(path).read_text().splitlines()
+                      if x.strip() and not x.lstrip().startswith('#')]
+
+          paths = {
+              '420': 'tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_midturn_source_seeds_64.txt',
+              '430': 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery_seeds_64.txt',
+              '440': 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout_seeds_64.txt',
+              '450': 'tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_source_seeds_64.txt',
+              '460': 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_discovery_seeds_64.txt',
+              '470': 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_holdout_seeds_64.txt',
+          }
+          values = {k: read(v) for k, v in paths.items()}
+          hold = values['470']
+          assert len(hold) == 64
+          assert len(set(hold)) == 64
+          assert min(hold) == 470001
+          assert max(hold) == 470064
+          for old in ('420', '430', '440', '450', '460'):
+              assert set(hold).isdisjoint(values[old]), f'470 overlaps {old}'
+
+          from roguelike_ai.sts1_teacher.two_card_midturn_policy_v2 import MARGIN_THRESHOLD, POLICY_ID
+          assert POLICY_ID == 'jaw-worm-turn1-two-card-midturn-margin0-else-simple-v1'
+          assert MARGIN_THRESHOLD == 0.0
+
+          seed_sha = hashlib.sha256(Path(paths['470']).read_bytes()).hexdigest()
+          print('TWO_CARD_MIDTURN_V2_FRESH_HOLDOUT_SEED_CONTRACT = PASS')
+          print('HOLDOUT_SEED_COUNT = 64')
+          print('HOLDOUT_SEED_MIN = 470001')
+          print('HOLDOUT_SEED_MAX = 470064')
+          print('HOLDOUT_420_430_440_450_460_OVERLAP = 0')
+          print('HOLDOUT_RESULTS_OBSERVED_BEFORE_FREEZE = 0')
+          print(f'HOLDOUT_SEED_SHA256 = {seed_sha}')
+          print(f'TWO_CARD_MIDTURN_V2_POLICY_ID = {POLICY_ID}')
+          print('TWO_CARD_MIDTURN_V2_MARGIN = 0.0')
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply public-state reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Prove richer card effects remain fail-closed
+        run: python scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py
+
+      - name: Run frozen V2 on 470xxx twice
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_two_card_midturn_holdout.py
+          --output-dir evidence/sts1/phase1_jaw_worm_two_card_midturn_v2_holdout
+
+      - name: Verify final evidence gates
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('evidence/sts1/phase1_jaw_worm_two_card_midturn_v2_holdout/summary.json')
+          s = json.loads(p.read_text())
+          assert s['candidate_policy_id'] == 'jaw-worm-turn1-two-card-midturn-margin0-else-simple-v1'
+          assert s['candidate_margin_threshold'] == 0.0
+          assert s['case_count'] == 24
+          assert s['full_repeats'] >= 2
+          assert s['deterministic'] is True
+          assert s['search_unresolved'] == 0
+          assert s['frozen_450xxx_overlap'] == 0
+          assert s['discovery_460xxx_overlap'] == 0
+          assert s['frozen_450xxx_quality_rows_read'] == 0
+          assert s['discovery_460xxx_quality_rows_read'] == 0
+          assert s['hand_size_shortcut_generalized'] is False
+          assert s['nonstarter_cards_admitted'] == 0
+          assert s['phase1_gate_claimed'] is False
+          verdict = s['quality_verdict']
+          print(f"TWO_CARD_MIDTURN_V2_FRESH_HOLDOUT = {verdict}")
+          print(f"V2_SCORE = {s['agreement_counts']['v2']}/{s['case_count']}")
+          print(f"RAW_SEARCH_SCORE = {s['agreement_counts']['search']}/{s['case_count']}")
+          print(f"SIMPLE_SCORE = {s['agreement_counts']['simple']}/{s['case_count']}")
+          print(f"RANDOM_SCORE = {s['agreement_counts']['random']}/{s['case_count']}")
+          print(f"SUITE_DIGEST = {s['suite_digest']}")
+          print(f"ROWS_DIGEST = {s['rows_digest']}")
+          print(f"UNRESOLVED = {s['search_unresolved']}")
+          print('PHASE1_GATE_CLAIMED = 0')
+          print('PHASE1_STATUS = IN_PROGRESS')
+          print('PHASE2 = LOCKED')
+          PY
+
+      - name: Show fresh holdout summary
+        if: always()
+        run: test -f evidence/sts1/phase1_jaw_worm_two_card_midturn_v2_holdout/summary.json && cat evidence/sts1/phase1_jaw_worm_two_card_midturn_v2_holdout/summary.json || true
+
+      - name: Upload fresh holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-jaw-worm-two-card-midturn-v2-fresh-holdout-evidence
+          path: evidence/sts1/phase1_jaw_worm_two_card_midturn_v2_holdout/
+          if-no-files-found: warn
+          retention-days: 90

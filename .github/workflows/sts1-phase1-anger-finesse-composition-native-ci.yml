@@ -1,0 +1,116 @@
+name: STS1 Phase 1 Anger Finesse Composition Native CI
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-anger-finesse-composition-native-ready
+      - gpt/sts1-phase1-anger-finesse-formal-integration-v2
+      - gpt/sts1-phase1-public-reconstruction
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+      - name: Syntax gate
+        run: >-
+          python -m py_compile
+          src/roguelike_ai/sts1_teacher/anger_finesse_composition_reconstruction.py
+          src/roguelike_ai/sts1_teacher/anger_finesse_composition_policy_v1.py
+          src/roguelike_ai/sts1_teacher/reconstruction_state.py
+          scripts/sts1/apply_phase1_public_anger_finesse_composition_overlay.py
+          scripts/sts1/verify_phase1_public_anger_finesse_composition_native.py
+          tests/test_sts1_anger_finesse_composition_reconstruction.py
+      - name: New slice plus established rich-slice regressions
+        run: >-
+          python -m pytest -q
+          tests/test_sts1_anger_finesse_composition_reconstruction.py
+          tests/test_sts1_anger_midturn_reconstruction.py
+          tests/test_sts1_anger_pommel_composition_reconstruction.py
+          tests/test_sts1_pommel_midturn_reconstruction.py
+          tests/test_sts1_shrug_midturn_reconstruction.py
+          tests/test_sts1_shrug_upgraded_midturn_reconstruction.py
+          tests/test_sts1_finesse_midturn_reconstruction.py
+          tests/test_sts1_public_card_reconstruction.py
+          tests/test_sts1_public_native_v1_admission.py
+          tests/test_sts1_reconstruction_state.py
+      - name: Frozen public contract remains unchanged
+        shell: bash
+        run: |
+          git diff --name-only 15b32c24451a0823cbd7a51d1c6ad78ba85175e3...HEAD > "$RUNNER_TEMP/changed.txt"
+          ! grep -Fx 'src/roguelike_ai/sts1_teacher/contract.py' "$RUNNER_TEMP/changed.txt"
+          ! grep -Fx 'docs/sts1/STS1_PUBLIC_STATE_CONTRACT_V1.md' "$RUNNER_TEMP/changed.txt"
+          echo 'FROZEN_PUBLIC_CONTRACT_UNCHANGED = PASS'
+      - name: Scope gate
+        shell: bash
+        run: |
+          git diff --name-only 15b32c24451a0823cbd7a51d1c6ad78ba85175e3...HEAD
+          test "$(git diff --name-only 15b32c24451a0823cbd7a51d1c6ad78ba85175e3...HEAD | grep -Ev '^(src/roguelike_ai/sts1_teacher/anger_finesse_composition_reconstruction.py|src/roguelike_ai/sts1_teacher/anger_finesse_composition_policy_v1.py|src/roguelike_ai/sts1_teacher/reconstruction_state.py|scripts/sts1/apply_phase1_public_anger_finesse_composition_overlay.py|scripts/sts1/verify_phase1_public_anger_finesse_composition_native.py|tests/test_sts1_anger_finesse_composition_reconstruction.py|.github/workflows/sts1-phase1-anger-finesse-composition-native-ci.yml)$' | wc -l)" -eq 0
+          echo 'NARROW_WRITE_SCOPE = PASS'
+      - name: Diff whitespace gate
+        run: git diff --check 15b32c24451a0823cbd7a51d1c6ad78ba85175e3...HEAD
+
+  native-proof:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 1}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - name: Snapshot pre-overlay non-target diff
+        run: git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-before.diff"
+      - name: Apply established public overlays plus exact Anger Finesse composition
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+          python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
+          python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
+          python scripts/sts1/apply_phase1_public_finesse_midturn_overlay.py
+          python scripts/sts1/apply_phase1_public_anger_finesse_composition_overlay.py
+      - name: Build real native Python binding
+        run: python scripts/sts1/build_probe.py
+      - name: Re-run opening proof
+        run: python scripts/sts1/verify_phase1_public_reconstruction_native.py
+      - name: Re-run Pommel proof
+        run: python scripts/sts1/verify_phase1_public_pommel_midturn_native.py
+      - name: Re-run normal Shrug proof
+        run: python scripts/sts1/verify_phase1_public_shrug_midturn_native.py
+      - name: Re-run upgraded Shrug proof
+        run: python scripts/sts1/verify_phase1_public_shrug_upgraded_midturn_native.py
+      - name: Re-run Anger proof
+        run: python scripts/sts1/verify_phase1_public_anger_midturn_native.py
+      - name: Re-run Anger plus Pommel composition proof
+        run: python scripts/sts1/verify_phase1_public_anger_pommel_composition_native.py
+      - name: Re-run Finesse proof
+        run: python scripts/sts1/verify_phase1_public_finesse_midturn_native.py
+      - name: Run exact Anger plus Finesse composition proof
+        run: python scripts/sts1/verify_phase1_public_anger_finesse_composition_native.py
+      - name: Prove native overlay scope
+        shell: bash
+        run: |
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
+          cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
+          git -C external/sts_lightspeed/source diff --check
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_anger_midturn_aux_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_anger_pommel_composition_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_finesse_midturn_aux_v2'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_anger_finesse_composition_v1'
+          echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+          echo 'FRESH_HOLDOUT_TOUCHED = 0'

@@ -1,3 +1,4 @@
+# Public CI trigger; benchmark logic is unchanged.
 name: STS1 Phase 1 Frozen Oracle Benchmark
 
 on:

@@ -11,12 +11,15 @@ on:
       - 'src/roguelike_ai/sts1_teacher/redeterminization.py'
       - 'src/roguelike_ai/sts1_teacher/card_reconstruction.py'
       - 'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py'
+      - 'src/roguelike_ai/sts1_teacher/player_reconstruction.py'
+      - 'src/roguelike_ai/sts1_teacher/run_reconstruction.py'
       - 'src/roguelike_ai/sts1_teacher/reconstruction_state.py'
       - 'tests/test_sts1_public_reconstruction.py'
       - 'tests/test_sts1_public_run_state.py'
       - 'tests/test_sts1_public_redeterminization.py'
       - 'tests/test_sts1_public_card_reconstruction.py'
       - 'tests/test_sts1_public_enemy_reconstruction.py'
+      - 'tests/test_sts1_public_native_v1_admission.py'
       - 'tests/test_sts1_reconstruction_state.py'
       - 'tests/test_sts1_public_reconstruction_smoke.py'
       - 'scripts/sts1/apply_phase1_public_state_overlay.py'
@@ -51,6 +54,7 @@ jobs:
           tests/test_sts1_public_redeterminization.py
           tests/test_sts1_public_card_reconstruction.py
           tests/test_sts1_public_enemy_reconstruction.py
+          tests/test_sts1_public_native_v1_admission.py
           tests/test_sts1_reconstruction_state.py
           tests/test_sts1_public_reconstruction_smoke.py
 
@@ -62,6 +66,8 @@ jobs:
           src/roguelike_ai/sts1_teacher/redeterminization.py
           src/roguelike_ai/sts1_teacher/card_reconstruction.py
           src/roguelike_ai/sts1_teacher/enemy_reconstruction.py
+          src/roguelike_ai/sts1_teacher/player_reconstruction.py
+          src/roguelike_ai/sts1_teacher/run_reconstruction.py
           src/roguelike_ai/sts1_teacher/reconstruction_state.py
           scripts/sts1/apply_phase1_public_state_overlay.py
           scripts/sts1/apply_phase1_public_reconstruction_overlay.py

@@ -77,6 +77,9 @@ def main() -> None:
     projected = adapter.adapt(fresh, legal_actions=list(sts.get_legal_actions(fresh)), run_state=run)
     assert require_public_reconstruction(attach_reconstruction_capabilities(projected, run_state=run)).decision_signature == context.decision_signature
 
+    # Execute the opening Bellow. It deals no damage and then rolls the next
+    # move using the fresh native rollout RNG. ENRAGE itself is intentionally
+    # not projected by public-state V1 because later-turn Nob is not admitted.
     hp_before = fresh.player.cur_hp
     end_turn = next(
         action for action in sts.get_legal_actions(fresh)
@@ -86,14 +89,11 @@ def main() -> None:
     assert fresh.player.cur_hp == hp_before
     assert fresh.monsters[0].intent in {"GREMLIN_NOB_RUSH", "GREMLIN_NOB_SKULL_BASH"}
 
-    after = adapter.adapt(fresh, legal_actions=list(sts.get_legal_actions(fresh)), run_state=run)
-    powers = {item["name"]: item["amount"] for item in after["enemies"][0]["powers"]}
-    assert powers.get("ENRAGE") == 2
-
     print("GREMLIN_NOB_PUBLIC_RECONSTRUCTION_NATIVE = PASS")
     print("GREMLIN_NOB_OPENING_BELLOW = PASS")
-    print("GREMLIN_NOB_BELLOW_ENRAGE_A0 = 2")
+    print("GREMLIN_NOB_BELLOW_DEALS_NO_DAMAGE = PASS")
     print("GREMLIN_NOB_NEXT_MOVE_USES_FRESH_ROLLOUT_RNG = PASS")
+    print("GREMLIN_NOB_LATER_TURN_PUBLIC_POWER_PROJECTION = NOT_ADMITTED")
     print("SOURCE_BATTLE_CONTEXT_INPUT = 0")
     print("SOURCE_HIDDEN_MOVE_HISTORY_ACCESS = 0")
     print("PHASE1_GATE_CLAIMED = 0")

@@ -61,9 +61,18 @@ def test_v1_player_and_run_slice_is_admitted() -> None:
     assert run.reasons == ()
 
 
-def test_non_simulator_source_fails_closed() -> None:
+def test_real_game_source_is_admitted_for_same_public_run_surface() -> None:
     state = base_state()
     state["source"] = "real_game"
+    result = assess_public_run_state(state)
+    assert result.relics_allowed is True
+    assert result.potions_allowed is True
+    assert result.reasons == ()
+
+
+def test_unknown_source_still_fails_closed() -> None:
+    state = base_state()
+    state["source"] = "replay_file"
     result = assess_public_run_state(state)
     assert result.relics_allowed is False
     assert result.potions_allowed is False

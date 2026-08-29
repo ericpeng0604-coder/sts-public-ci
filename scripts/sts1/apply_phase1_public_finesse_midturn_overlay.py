@@ -68,20 +68,24 @@ def main() -> None:
         '''                  const bool pommelSlice = attackCounterSlice && pommels == 1 && shrugs == 0 && angers == 0;
                   const bool angerSlice = attackCounterSlice && pommels == 0 && shrugs == 0 && angers == 2;
                   const bool shrugSlice = skillCounterSlice && pommels == 0 && shrugs == 1 && angers == 0;
-                  if (!pommelSlice && !shrugSlice && !angerSlice) {
+                  const bool angerPommelSlice = attackCompositionSlice && pommels == 1 && shrugs == 0 && angers == 2;
+                  if (!pommelSlice && !shrugSlice && !angerSlice && !angerPommelSlice) {
                       throw std::runtime_error("draw_aux_public_card_identity_unsupported");
                   }
-                  const char *prefix = pommelSlice ? "pommel" : (shrugSlice ? "shrug" : "anger");''',
+                  const char *prefix = pommelSlice ? "pommel"
+                      : (shrugSlice ? "shrug" : (angerSlice ? "anger" : "anger_pommel"));''',
         '''                  // phase1_public_finesse_midturn_aux_v2: identity stays
-                  // public-state-derived and cannot overlap the Anger/Pommel/Shrug slices.
+                  // public-state-derived and cannot overlap the Anger/Pommel/Shrug/Anger+Pommel slices.
                   const bool pommelSlice = attackCounterSlice && pommels == 1 && shrugs == 0 && angers == 0 && finesses == 0;
                   const bool angerSlice = attackCounterSlice && pommels == 0 && shrugs == 0 && angers == 2 && finesses == 0;
                   const bool shrugSlice = skillCounterSlice && pommels == 0 && shrugs == 1 && angers == 0 && finesses == 0;
+                  const bool angerPommelSlice = attackCompositionSlice && pommels == 1 && shrugs == 0 && angers == 2 && finesses == 0;
                   const bool finesseSlice = skillCounterSlice && pommels == 0 && shrugs == 0 && angers == 0 && finesses == 1;
-                  if (!pommelSlice && !shrugSlice && !angerSlice && !finesseSlice) {
+                  if (!pommelSlice && !shrugSlice && !angerSlice && !angerPommelSlice && !finesseSlice) {
                       throw std::runtime_error("draw_aux_public_card_identity_unsupported");
                   }
-                  const char *prefix = pommelSlice ? "pommel" : (shrugSlice ? "shrug" : (angerSlice ? "anger" : "finesse"));''',
+                  const char *prefix = pommelSlice ? "pommel"
+                      : (shrugSlice ? "shrug" : (angerSlice ? "anger" : (angerPommelSlice ? "anger_pommel" : "finesse")));''',
         "identity slices",
     )
 
@@ -97,10 +101,10 @@ def main() -> None:
     text = replace_once(
         text,
         '''                      || shrugs != (shrugSlice ? 1 : 0)
-                      || angers != (angerSlice ? 2 : 0)
+                      || angers != ((angerSlice || angerPommelSlice) ? 2 : 0)
                       || unsupported != 0 || upgradedOther != 0''',
         '''                      || shrugs != (shrugSlice ? 1 : 0)
-                      || angers != (angerSlice ? 2 : 0)
+                      || angers != ((angerSlice || angerPommelSlice) ? 2 : 0)
                       || finesses != (finesseSlice ? 1 : 0)
                       || unsupported != 0 || upgradedOther != 0''',
         "deck composition",
@@ -108,9 +112,11 @@ def main() -> None:
 
     text = replace_once(
         text,
-        '''                  const int expectedBlock = pommelSlice || angerSlice ? 0 : (upgradedShrugs == 1 ? 11 : 8);
+        '''                  const int expectedBlock = (pommelSlice || angerSlice || angerPommelSlice)
+                      ? 0
+                      : (upgradedShrugs == 1 ? 11 : 8);
                   if (bc.player.block != expectedBlock) {''',
-        '''                  const int expectedBlock = (pommelSlice || angerSlice)
+        '''                  const int expectedBlock = (pommelSlice || angerSlice || angerPommelSlice)
                       ? 0
                       : (finesseSlice ? 2 : (upgradedShrugs == 1 ? 11 : 8));
                   if (bc.player.block != expectedBlock) {''',
@@ -119,11 +125,11 @@ def main() -> None:
 
     text = replace_once(
         text,
-        '''                      if ((pommelSlice && c.id == CardId::POMMEL_STRIKE)
+        '''                      if (((pommelSlice || angerPommelSlice) && c.id == CardId::POMMEL_STRIKE)
                           || (shrugSlice && c.id == CardId::SHRUG_IT_OFF)) {
                           ++discardPlayedCard;
                       }''',
-        '''                      if ((pommelSlice && c.id == CardId::POMMEL_STRIKE)
+        '''                      if (((pommelSlice || angerPommelSlice) && c.id == CardId::POMMEL_STRIKE)
                           || (shrugSlice && c.id == CardId::SHRUG_IT_OFF)
                           || (finesseSlice && c.id == CardId::FINESSE)) {
                           ++discardPlayedCard;
@@ -136,6 +142,7 @@ def main() -> None:
     print(f"patched={TARGET}")
     print("finesse_midturn=NORMAL_ONLY")
     print("composes_with_anger=1")
+    print("composes_with_anger_pommel=1")
     print("expected_energy=3")
     print("expected_block=2")
     print("expected_draw=1")

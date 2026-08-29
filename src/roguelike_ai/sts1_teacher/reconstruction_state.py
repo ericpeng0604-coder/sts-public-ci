@@ -7,6 +7,7 @@ from typing import Any
 
 from .anger_reconstruction import assess_public_anger_midturn
 from .card_reconstruction import assess_public_cards
+from .composition_reconstruction import assess_public_anger_pommel_composition
 from .contract import DecisionContext
 from .enemy_reconstruction import assess_public_enemies
 from .finesse_reconstruction import assess_public_finesse_player, is_finesse_slice_candidate
@@ -39,16 +40,21 @@ def attach_reconstruction_capabilities(
     player_admission = finesse_admission if finesse_candidate else base_player_admission
     card_admission = assess_public_cards(result)
     anger_admission = assess_public_anger_midturn(result, reconstruction_aux)
+    anger_pommel_admission = assess_public_anger_pommel_composition(result, reconstruction_aux)
     enemy_admission = assess_public_enemies(result)
     run_admission = assess_public_run_state(result)
 
-    # Anger remains isolated from the established V1 player/card admission
-    # paths. Finesse composes only with the player path and still needs normal
-    # card admission, so neither slice widens the other.
+    # Rich generated-card slices stay deliberately isolated from the established
+    # V1 player/card admission paths. Finesse composes only with the player path
+    # and still needs normal card admission, so it cannot widen the rich slices.
+    # Anger and Anger+Pommel may override both player/card admission only when
+    # their own audited public-state + bounded auxiliary proofs pass.
     anger_override = anger_admission.allowed
+    anger_pommel_override = anger_pommel_admission.allowed
+    rich_override = anger_override or anger_pommel_override
     finesse_override = finesse_candidate and finesse_admission.allowed
-    player_complete = player_admission.allowed or anger_override
-    card_complete = card_admission.allowed or anger_override
+    player_complete = player_admission.allowed or rich_override
+    card_complete = card_admission.allowed or rich_override
 
     marker: dict[str, Any] = {
         "schema_version": PUBLIC_RECONSTRUCTION_SCHEMA,
@@ -57,11 +63,13 @@ def attach_reconstruction_capabilities(
         "public_relic_state_complete": bool(source.get("public_relic_state_complete")) and run_admission.relics_allowed,
         "public_potion_state_complete": bool(source.get("public_potion_state_complete")) and run_admission.potions_allowed,
         "public_enemy_state_complete": enemy_admission.allowed,
-        "player_admission_reasons": [] if anger_override else list(player_admission.reasons),
-        "card_admission_reasons": [] if anger_override else list(card_admission.reasons),
+        "player_admission_reasons": [] if rich_override else list(player_admission.reasons),
+        "card_admission_reasons": [] if rich_override else list(card_admission.reasons),
         "anger_midturn_complete": anger_override,
         "anger_admission_reasons": list(anger_admission.reasons),
         "finesse_midturn_complete": finesse_override,
+        "anger_pommel_composition_complete": anger_pommel_override,
+        "anger_pommel_composition_admission_reasons": list(anger_pommel_admission.reasons),
         "card_count": card_admission.card_count,
         "enemy_admission_reasons": list(enemy_admission.reasons),
         "enemy_count": enemy_admission.enemy_count,

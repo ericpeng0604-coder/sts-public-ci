@@ -5,8 +5,8 @@ This overlay is intentionally additive and runs *after* the existing public
 reconstruction + history + starter-midturn overlays. Existing two-argument
 calls keep the old behavior. A third reconstruction-aux argument unlocks only
 audited Jaw Worm turn=1 slices: one normal Pommel Strike, one Shrug It Off at
-upgrade count 0 or 1, or one normal Anger whose generated copy is visible in
-the current discard pile.
+upgrade count 0 or 1, one normal Anger whose generated copy is visible in the
+current discard pile, or the exact two-attack Anger + Pommel composition.
 
 The auxiliary data contains controller-observed turn counters only. It is not
 part of sts1-public-state-v1 and never contains RNG state, draw order, UUIDs,
@@ -44,6 +44,7 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
               // phase1_public_shrug_midturn_aux_v1:
               // phase1_public_shrug_upgraded_midturn_aux_v1:
               // phase1_public_anger_midturn_aux_v1:
+              // phase1_public_anger_pommel_composition_v1:
               // phase1_public_draw_midturn_aux_v2: an optional, separate
               // controller trace can prove counters that snapshot arithmetic
               // cannot recover after draw/generated-card effects.
@@ -74,7 +75,8 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                   const int discarded = aux_int("cards_discarded_this_turn");
                   const bool attackCounterSlice = played == 1 && attacks == 1 && skills == 0 && discarded == 0;
                   const bool skillCounterSlice = played == 1 && attacks == 0 && skills == 1 && discarded == 0;
-                  if (!attackCounterSlice && !skillCounterSlice) {
+                  const bool attackCompositionSlice = played == 2 && attacks == 2 && skills == 0 && discarded == 0;
+                  if (!attackCounterSlice && !skillCounterSlice && !attackCompositionSlice) {
                       throw std::runtime_error("draw_aux_counter_slice_unsupported");
                   }
 
@@ -108,10 +110,12 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                   const bool pommelSlice = attackCounterSlice && pommels == 1 && shrugs == 0 && angers == 0;
                   const bool angerSlice = attackCounterSlice && pommels == 0 && shrugs == 0 && angers == 2;
                   const bool shrugSlice = skillCounterSlice && pommels == 0 && shrugs == 1 && angers == 0;
-                  if (!pommelSlice && !shrugSlice && !angerSlice) {
+                  const bool angerPommelSlice = attackCompositionSlice && pommels == 1 && shrugs == 0 && angers == 2;
+                  if (!pommelSlice && !shrugSlice && !angerSlice && !angerPommelSlice) {
                       throw std::runtime_error("draw_aux_public_card_identity_unsupported");
                   }
-                  const char *prefix = pommelSlice ? "pommel" : (shrugSlice ? "shrug" : "anger");
+                  const char *prefix = pommelSlice ? "pommel"
+                      : (shrugSlice ? "shrug" : (angerSlice ? "anger" : "anger_pommel"));
                   auto slice_error = [&](const char *suffix) -> std::runtime_error {
                       return std::runtime_error(std::string(prefix) + suffix);
                   };
@@ -131,9 +135,9 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                       throw slice_error("_aux_turn_mismatch");
                   }
 
-                  const int expectedHand = angerSlice ? 4 : 5;
-                  const int expectedDraw = angerSlice ? 1 : 0;
-                  const int expectedDiscard = angerSlice ? 7 : 6;
+                  const int expectedHand = (angerSlice || angerPommelSlice) ? 4 : 5;
+                  const int expectedDraw = (angerSlice || angerPommelSlice) ? 1 : 0;
+                  const int expectedDiscard = angerPommelSlice ? 8 : (angerSlice ? 7 : 6);
                   if (bc.cards.cardsInHand != expectedHand
                       || static_cast<int>(bc.cards.drawPile.size()) != expectedDraw
                       || static_cast<int>(bc.cards.discardPile.size()) != expectedDiscard
@@ -146,16 +150,18 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                   }
 
                   if (strikes != 5 || defends != 4 || bashes != 1
-                      || pommels != (pommelSlice ? 1 : 0)
+                      || pommels != ((pommelSlice || angerPommelSlice) ? 1 : 0)
                       || shrugs != (shrugSlice ? 1 : 0)
-                      || angers != (angerSlice ? 2 : 0)
+                      || angers != ((angerSlice || angerPommelSlice) ? 2 : 0)
                       || unsupported != 0 || upgradedOther != 0
                       || (pommelSlice && upgradedShrugs != 0)
                       || (shrugSlice && (upgradedShrugs < 0 || upgradedShrugs > 1))) {
                       throw slice_error("_midturn_deck_composition_mismatch");
                   }
 
-                  const int expectedBlock = pommelSlice || angerSlice ? 0 : (upgradedShrugs == 1 ? 11 : 8);
+                  const int expectedBlock = (pommelSlice || angerSlice || angerPommelSlice)
+                      ? 0
+                      : (upgradedShrugs == 1 ? 11 : 8);
                   if (bc.player.block != expectedBlock) {
                       throw slice_error("_midturn_player_shape_mismatch");
                   }
@@ -164,7 +170,7 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                   int discardUpgradedShrugs = 0;
                   int discardAngers = 0;
                   for (const auto &c : bc.cards.discardPile) {
-                      if ((pommelSlice && c.id == CardId::POMMEL_STRIKE)
+                      if (((pommelSlice || angerPommelSlice) && c.id == CardId::POMMEL_STRIKE)
                           || (shrugSlice && c.id == CardId::SHRUG_IT_OFF)) {
                           ++discardPlayedCard;
                       }
@@ -177,14 +183,14 @@ MIDTURN_NEW = r'''              // phase1_public_jaw_worm_turn_one_midturn_count
                   }
                   if ((!angerSlice && discardPlayedCard != 1)
                       || (shrugSlice && discardUpgradedShrugs != upgradedShrugs)
-                      || (angerSlice && discardAngers != 2)) {
+                      || ((angerSlice || angerPommelSlice) && discardAngers != 2)) {
                       throw slice_error("_midturn_play_not_publicly_reachable");
                   }
 
-                  bc.player.cardsPlayedThisTurn = 1;
-                  bc.player.attacksPlayedThisTurn = attackCounterSlice ? 1 : 0;
-                  bc.player.skillsPlayedThisTurn = skillCounterSlice ? 1 : 0;
-                  bc.player.cardsDiscardedThisTurn = 0;
+                  bc.player.cardsPlayedThisTurn = played;
+                  bc.player.attacksPlayedThisTurn = attacks;
+                  bc.player.skillsPlayedThisTurn = skills;
+                  bc.player.cardsDiscardedThisTurn = discarded;
               } else if (bc.turn == 1) {'''
 
 ARGS_OLD = '''          pybind11::arg("public_state"), pybind11::arg("sample_seeds"),
@@ -213,7 +219,7 @@ def main() -> None:
     text = replace_once(text, ARGS_OLD, ARGS_NEW, "argument")
     TARGET.write_text(text, encoding="utf-8")
     print(f"patched={TARGET}")
-    print("draw_midturn_aux=POMMEL_STRIKE_V1+SHRUG_IT_OFF_V1+SHRUG_IT_OFF_UPGRADED_V1+ANGER_V1")
+    print("draw_midturn_aux=POMMEL_STRIKE_V1+SHRUG_IT_OFF_V1+SHRUG_IT_OFF_UPGRADED_V1+ANGER_V1+ANGER_POMMEL_COMPOSITION_V1")
     print("existing_two_argument_behavior=PRESERVED")
     print("public_contract_fields_added=0")
     print("hidden_rng_access_added=0")

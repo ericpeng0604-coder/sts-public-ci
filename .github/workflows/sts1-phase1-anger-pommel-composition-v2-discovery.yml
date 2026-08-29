@@ -1,0 +1,118 @@
+name: STS1 Phase 1 Anger Pommel Composition V2 Discovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-anger-pommel-composition-v2-discovery
+    paths:
+      - '.github/workflows/sts1-phase1-anger-pommel-composition-v2-discovery.yml'
+      - 'tests/data/sts1_phase1_anger_pommel_composition_v2_discovery_seeds_256.txt'
+      - 'scripts/sts1/generate_phase1_anger_pommel_composition_v2_discovery.py'
+      - 'scripts/sts1/run_phase1_anger_pommel_composition_v2_discovery.py'
+      - 'src/roguelike_ai/sts1_teacher/anger_pommel_composition_policy_v2.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  composition-v2-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Freeze V2 and 510xxx discovery before labels
+        run: |
+          python -m py_compile \
+            scripts/sts1/generate_phase1_anger_pommel_composition_v2_discovery.py \
+            scripts/sts1/run_phase1_anger_pommel_composition_v2_discovery.py \
+            src/roguelike_ai/sts1_teacher/anger_pommel_composition_policy_v2.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p = Path('tests/data/sts1_phase1_anger_pommel_composition_v2_discovery_seeds_256.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert seeds == list(range(510001, 510257))
+          print('ANGER_POMMEL_V2_DISCOVERY_SEED_FREEZE = PASS')
+          print('SOURCE_SEED_COUNT=256')
+          print('SOURCE_SEED_FILE_SHA256=' + hashlib.sha256(p.read_bytes()).hexdigest())
+          print('V2_POLICY=jaw-worm-turn1-anger-pommel-search-top-set-v2')
+          print('DISCOVERY_GATE=anger-pommel-v2-discovery-ge-raw-v1-gt-simple-random')
+          print('PRIOR_500XXX_QUALITY_ROWS_READ=0')
+          PY
+          git diff --check HEAD^
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Apply established starter midturn counters
+        run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Apply CommunicationMod card aliases
+        run: python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
+
+      - name: Apply audited rich-card auxiliary path
+        run: python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate blind 510xxx discovery suite twice
+        run: |
+          python scripts/sts1/generate_phase1_anger_pommel_composition_v2_discovery.py --output evidence/anger-pommel-v2-discovery-a.json
+          python scripts/sts1/generate_phase1_anger_pommel_composition_v2_discovery.py --output evidence/anger-pommel-v2-discovery-b.json
+          cmp evidence/anger-pommel-v2-discovery-a.json evidence/anger-pommel-v2-discovery-b.json
+          cp evidence/anger-pommel-v2-discovery-a.json evidence/anger-pommel-v2-discovery-suite.json
+
+      - name: Run frozen V2 discovery comparison twice
+        run: >-
+          python scripts/sts1/run_phase1_anger_pommel_composition_v2_discovery.py
+          --suite evidence/anger-pommel-v2-discovery-suite.json
+          --output-dir evidence/sts1/phase1_anger_pommel_composition_v2_discovery
+
+      - name: Show V2 discovery summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_anger_pommel_composition_v2_discovery/summary.json && cat evidence/sts1/phase1_anger_pommel_composition_v2_discovery/summary.json || true
+          test -f evidence/anger-pommel-v2-discovery-suite.json && python - <<'PY'
+          from pathlib import Path
+          import json
+          p = Path('evidence/anger-pommel-v2-discovery-suite.json')
+          if p.exists():
+              s = json.loads(p.read_text())
+              print('SAMPLING_CONTRACT=' + s['sampling_contract_version'])
+              print('SUITE_DIGEST=' + s['suite_digest'])
+              print('CASE_COUNT=' + str(s['case_count']))
+              print('REJECTED_COUNTS=' + str(s['rejected_counts']))
+              print('PRIOR_500XXX_QUALITY_ROWS_READ=' + str(s['prior_500xxx_quality_rows_read']))
+          PY
+
+      - name: Upload V2 discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-anger-pommel-composition-v2-discovery-evidence
+          path: |
+            evidence/anger-pommel-v2-discovery-suite.json
+            evidence/sts1/phase1_anger_pommel_composition_v2_discovery/
+          if-no-files-found: warn
+          retention-days: 90

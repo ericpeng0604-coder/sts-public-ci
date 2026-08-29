@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gpt/sts1-phase1-finesse-draw-reconstruction-v2
+      - gpt/sts1-phase1-anger-pommel-v2-integration
       - gpt/sts1-phase1-public-reconstruction
   workflow_dispatch:
 
@@ -26,14 +27,21 @@ jobs:
           python -m py_compile
           src/roguelike_ai/sts1_teacher/card_reconstruction.py
           src/roguelike_ai/sts1_teacher/finesse_reconstruction.py
+          src/roguelike_ai/sts1_teacher/composition_reconstruction.py
+          src/roguelike_ai/sts1_teacher/anger_pommel_composition_policy_v2.py
           src/roguelike_ai/sts1_teacher/reconstruction_state.py
           scripts/sts1/apply_phase1_public_finesse_midturn_overlay.py
           scripts/sts1/verify_phase1_public_finesse_midturn_native.py
+          scripts/sts1/verify_phase1_public_anger_pommel_composition_native.py
+          scripts/sts1/generate_phase1_anger_pommel_composition_v2_holdout.py
+          scripts/sts1/run_phase1_anger_pommel_composition_v2_holdout_quality.py
           tests/test_sts1_finesse_midturn_reconstruction.py
+          tests/test_sts1_anger_pommel_composition_reconstruction.py
       - name: Finesse plus established rich-slice regressions
         run: >-
           python -m pytest -q
           tests/test_sts1_anger_midturn_reconstruction.py
+          tests/test_sts1_anger_pommel_composition_reconstruction.py
           tests/test_sts1_pommel_midturn_reconstruction.py
           tests/test_sts1_shrug_midturn_reconstruction.py
           tests/test_sts1_shrug_upgraded_midturn_reconstruction.py
@@ -85,6 +93,8 @@ jobs:
         run: python scripts/sts1/verify_phase1_public_shrug_upgraded_midturn_native.py
       - name: Re-run Anger proof
         run: python scripts/sts1/verify_phase1_public_anger_midturn_native.py
+      - name: Run Anger plus Pommel composition proof
+        run: python scripts/sts1/verify_phase1_public_anger_pommel_composition_native.py
       - name: Run Finesse proof
         run: python scripts/sts1/verify_phase1_public_finesse_midturn_native.py
       - name: Prove overlay scope
@@ -94,8 +104,57 @@ jobs:
           cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
           git -C external/sts_lightspeed/source diff --check
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_anger_midturn_aux_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_anger_pommel_composition_v1'
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_finesse_midturn_aux_v2'
           echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+
+  anger-pommel-v2-integration-regression-replay:
+    needs: native-proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 1}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Freeze integration replay identity
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/data/sts1_phase1_anger_pommel_composition_v2_holdout_seeds_256.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert seeds == list(range(520001, 520257))
+          print('ANGER_POMMEL_V2_INTEGRATION_REGRESSION_REPLAY = FROZEN')
+          print('SOURCE_SEED_COUNT=256')
+          print('FRESH_HOLDOUT_CLAIMED=0')
+          PY
+      - run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+      - run: python scripts/sts1/apply_phase1_public_state_overlay.py
+      - run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+      - run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+      - run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+      - run: python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
+      - run: python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
+      - run: python scripts/sts1/apply_phase1_public_finesse_midturn_overlay.py
+      - run: python scripts/sts1/build_probe.py
+      - name: Generate frozen 520xxx integration replay twice
+        run: |
+          python scripts/sts1/generate_phase1_anger_pommel_composition_v2_holdout.py --output evidence/anger-pommel-v2-integration-replay-a.json
+          python scripts/sts1/generate_phase1_anger_pommel_composition_v2_holdout.py --output evidence/anger-pommel-v2-integration-replay-b.json
+          cmp evidence/anger-pommel-v2-integration-replay-a.json evidence/anger-pommel-v2-integration-replay-b.json
+          cp evidence/anger-pommel-v2-integration-replay-a.json evidence/anger-pommel-v2-integration-replay-suite.json
+      - name: Replay unchanged predeclared V2 quality gate
+        run: >-
+          python scripts/sts1/run_phase1_anger_pommel_composition_v2_holdout_quality.py
+          --suite evidence/anger-pommel-v2-integration-replay-suite.json
+          --output-dir evidence/sts1/phase1_anger_pommel_composition_v2_integration_replay
+      - name: Show integration replay summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_anger_pommel_composition_v2_integration_replay/summary.json && cat evidence/sts1/phase1_anger_pommel_composition_v2_integration_replay/summary.json || true
+          echo 'INTEGRATION_REPLAY_ONLY=1'
+          echo 'FRESH_HOLDOUT_CLAIMED=0'
 
   jaw-worm-quality:
     needs: native-proof

@@ -22,20 +22,13 @@ def test_basic_public_cards_are_admitted() -> None:
     assert result.card_count == 3
 
 
-def test_special_history_cards_fail_closed() -> None:
-    for card_id in (
-        "SEARING_BLOW",
-        "RAMPAGE",
-        "GENETIC_ALGORITHM",
-        "RITUAL_DAGGER",
-        "BLOOD_FOR_BLOOD",
-        "MASTERFUL_STAB",
-    ):
+def test_any_card_outside_v1_slice_fails_closed() -> None:
+    for card_id in ("RAMPAGE", "ANGER", "POMMEL_STRIKE", "SEARING_BLOW"):
         state = base_state()
         state["hand"][0]["id"] = card_id
         result = assess_public_cards(state)
         assert result.allowed is False
-        assert f"history_card_unsupported:{card_id}" in result.reasons
+        assert f"card_unsupported_v1:{card_id}" in result.reasons
 
 
 def test_missing_public_cost_fails_closed() -> None:
@@ -44,6 +37,14 @@ def test_missing_public_cost_fails_closed() -> None:
     result = assess_public_cards(state)
     assert result.allowed is False
     assert "invalid_card_cost:hand[0]" in result.reasons
+
+
+def test_temporary_cost_change_fails_closed() -> None:
+    state = base_state()
+    state["hand"][0]["cost"] = 0
+    result = assess_public_cards(state)
+    assert result.allowed is False
+    assert "temporary_or_unknown_card_cost_unsupported:hand[0]:STRIKE_RED:0!=1" in result.reasons
 
 
 def test_missing_upgrade_count_fails_closed() -> None:
@@ -56,7 +57,6 @@ def test_missing_upgrade_count_fails_closed() -> None:
 
 def test_card_instance_identity_is_never_required() -> None:
     state = base_state()
-    # No UUID / uniqueId / simulator identity exists anywhere in the input.
     result = assess_public_cards(state)
     assert result.allowed is True
     assert all("unique" not in key.lower() and "uuid" not in key.lower() for pile in state.values() for card in pile for key in card)

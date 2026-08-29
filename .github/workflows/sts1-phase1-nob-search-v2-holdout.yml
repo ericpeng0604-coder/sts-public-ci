@@ -1,0 +1,97 @@
+name: STS1 Phase 1 Nob Search V2 Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-nob-search-v2-holdout
+    paths:
+      - '.github/workflows/sts1-phase1-nob-search-v2-holdout.yml'
+      - 'src/roguelike_ai/sts1_teacher/nob_search_v2.py'
+      - 'tests/data/sts1_phase1_public_search_v2_gremlin_nob_holdout_seeds_64.txt'
+      - 'scripts/sts1/generate_phase1_public_search_v2_gremlin_nob_holdout.py'
+      - 'scripts/sts1/run_phase1_public_search_v2_gremlin_nob_holdout.py'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'scripts/sts1/apply_phase1_public_state_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+      - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nob-search-v2-fresh-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Holdout freeze and syntax contract
+        run: |
+          python -m py_compile \
+            src/roguelike_ai/sts1_teacher/nob_search_v2.py \
+            scripts/sts1/generate_phase1_public_search_v2_gremlin_nob_holdout.py \
+            scripts/sts1/run_phase1_public_search_v2_gremlin_nob_holdout.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/data/sts1_phase1_public_search_v2_gremlin_nob_holdout_seeds_64.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert len(seeds) == 64 and len(set(seeds)) == 64
+          assert min(seeds) == 360001 and max(seeds) == 360064
+          assert not any(340001 <= seed <= 340064 for seed in seeds)
+          assert not any(350001 <= seed <= 350064 for seed in seeds)
+          print('NOB_V2_FRESH_HOLDOUT_SEED_CONTRACT = PASS')
+          print('PRIOR_340XXX_OVERLAP = 0')
+          print('DISCOVERY_350XXX_OVERLAP = 0')
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply zero-based monster history guard
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate fresh holdout twice
+        run: |
+          python scripts/sts1/generate_phase1_public_search_v2_gremlin_nob_holdout.py --output evidence/nob-v2-holdout-a.json
+          python scripts/sts1/generate_phase1_public_search_v2_gremlin_nob_holdout.py --output evidence/nob-v2-holdout-b.json
+          cmp evidence/nob-v2-holdout-a.json evidence/nob-v2-holdout-b.json
+          cp evidence/nob-v2-holdout-a.json evidence/nob-v2-holdout.json
+
+      - name: Run two-repeat V2 fresh holdout benchmark
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v2_gremlin_nob_holdout.py
+          --suite evidence/nob-v2-holdout.json
+          --output-dir evidence/sts1/phase1_nob_search_v2_holdout
+
+      - name: Show V2 holdout summary
+        if: always()
+        run: test -f evidence/sts1/phase1_nob_search_v2_holdout/summary.json && cat evidence/sts1/phase1_nob_search_v2_holdout/summary.json || true
+
+      - name: Upload V2 holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-nob-search-v2-fresh-holdout-evidence
+          path: evidence/sts1/phase1_nob_search_v2_holdout/
+          if-no-files-found: warn
+          retention-days: 90

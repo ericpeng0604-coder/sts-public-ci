@@ -14,9 +14,9 @@ ANCHOR = '''              const auto historyChoice = get_u64(seeds, "previous_hi
                                                      : MMID::JAW_WORM_BELLOW;'''
 
 REPLACEMENT = '''              // phase1_public_history_turn_guard_v1:
-              // On the first player turn there cannot be an older monster move.
-              // Later turns sample the unobserved older move from the paired public sample.
-              if (bc.turn <= 1) {
+              // The pinned simulator is zero-based: turn 0 is the first player turn,
+              // so no older monster move exists there. Later turns sample it.
+              if (bc.turn <= 0) {
                   mo.moveHistory[1] = MMID::INVALID;
               } else {
                   const auto historyChoice = get_u64(seeds, "previous_history") % 3ULL;
@@ -37,7 +37,7 @@ def main() -> None:
         raise SystemExit(f"unexpected history guard anchor count: {count}")
     TARGET.write_text(text.replace(ANCHOR, REPLACEMENT, 1), encoding="utf-8")
     print(f"patched={TARGET}")
-    print("first_turn_previous_history=INVALID")
+    print("opening_turn_zero_previous_history=INVALID")
     print("later_turn_previous_history=PUBLIC_SAMPLE")
     print("source_move_history_access=0")
 

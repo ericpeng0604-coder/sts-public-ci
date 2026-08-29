@@ -24,6 +24,8 @@ def assess_public_run_state(state: Mapping[str, Any]) -> PublicRunAdmission:
     relic_reasons: list[str] = []
     potion_reasons: list[str] = []
 
+    if _norm(state.get("source")) != "SIMULATOR":
+        reasons.append("source_unsupported_v1")
     if _norm(state.get("character")) != "IRONCLAD":
         reasons.append("character_unsupported_v1")
     if _norm(state.get("room")) != "COMBAT":
@@ -58,8 +60,8 @@ def assess_public_run_state(state: Mapping[str, Any]) -> PublicRunAdmission:
     reasons.extend(relic_reasons)
     reasons.extend(potion_reasons)
     return PublicRunAdmission(
-        relics_allowed=not relic_reasons,
-        potions_allowed=not potion_reasons,
+        relics_allowed=not relic_reasons and "source_unsupported_v1" not in reasons and "character_unsupported_v1" not in reasons and "room_unsupported_v1" not in reasons,
+        potions_allowed=not potion_reasons and "source_unsupported_v1" not in reasons and "character_unsupported_v1" not in reasons and "room_unsupported_v1" not in reasons,
         reasons=tuple(sorted(set(reasons))),
     )
 

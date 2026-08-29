@@ -1,0 +1,128 @@
+name: STS1 Phase 1 Jaw Worm Turn-One Two-Card Midturn Frozen Quality
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-two-card-midturn-quality
+      - gpt/sts1-phase1-public-reconstruction
+    paths:
+      - '.github/workflows/sts1-phase1-jaw-worm-turn-one-two-card-midturn-quality.yml'
+      - 'tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_source_seeds_64.txt'
+      - 'scripts/sts1/generate_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_suite.py'
+      - 'scripts/sts1/run_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_quality.py'
+      - 'scripts/sts1/apply_phase1_public_midturn_counter_overlay.py'
+      - 'scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py'
+      - 'tests/test_sts1_midturn_nonstarter_failclosed.py'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'scripts/sts1/apply_phase1_public_state_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+      - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jaw-worm-turn-one-two-card-midturn-v1-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+
+      - name: Freeze contract, disjointness, fail-closed tests, and syntax
+        run: |
+          python -m py_compile \
+            scripts/sts1/generate_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_suite.py \
+            scripts/sts1/run_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_quality.py \
+            scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py \
+            src/roguelike_ai/sts1_teacher/player_reconstruction.py \
+            scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+          python -m pytest -q \
+            tests/test_sts1_public_native_v1_admission.py \
+            tests/test_sts1_midturn_nonstarter_failclosed.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          paths = {
+              'one_card_v1': Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_midturn_source_seeds_64.txt'),
+              'one_card_discovery': Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery_seeds_64.txt'),
+              'one_card_holdout': Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_holdout_seeds_64.txt'),
+              'two_card_frozen': Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_source_seeds_64.txt'),
+          }
+          def read(path):
+              return [int(x.strip()) for x in path.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          groups = {name: read(path) for name, path in paths.items()}
+          current = groups['two_card_frozen']
+          assert len(current) == 64 and len(set(current)) == 64
+          assert min(current) == 450001 and max(current) == 450064
+          for name, seeds in groups.items():
+              if name == 'two_card_frozen':
+                  continue
+              assert set(current).isdisjoint(seeds), (name, sorted(set(current) & set(seeds)))
+          print('JAW_WORM_TWO_CARD_MIDTURN_SOURCE_SEED_FREEZE = PASS')
+          print('SOURCE_SEED_DISJOINT_FROM_420_430_440 = PASS')
+          print('SOURCE_SEED_FILE_SHA256=' + hashlib.sha256(paths['two_card_frozen'].read_bytes()).hexdigest())
+          print('QUALITY_RESULTS_OBSERVED_BEFORE_FREEZE = 0')
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Apply public-derived midturn counter overlay
+        run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Prove richer card effects remain fail-closed
+        run: python scripts/sts1/verify_phase1_public_midturn_nonstarter_reject_native.py
+
+      - name: Generate frozen two-card midturn suite twice
+        run: |
+          python scripts/sts1/generate_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_suite.py --output evidence/jaw-turn-one-two-card-midturn-freeze-a.json
+          python scripts/sts1/generate_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_suite.py --output evidence/jaw-turn-one-two-card-midturn-freeze-b.json
+          cmp evidence/jaw-turn-one-two-card-midturn-freeze-a.json evidence/jaw-turn-one-two-card-midturn-freeze-b.json
+          cp evidence/jaw-turn-one-two-card-midturn-freeze-a.json evidence/jaw-turn-one-two-card-midturn-suite.json
+
+      - name: Run two-repeat Jaw Worm two-card midturn quality benchmark
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_quality.py
+          --suite evidence/jaw-turn-one-two-card-midturn-suite.json
+          --output-dir evidence/sts1/phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_quality
+
+      - name: Show quality summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_quality/summary.json && cat evidence/sts1/phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_quality/summary.json || true
+
+      - name: Upload quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-public-search-v1-jaw-worm-turn-one-two-card-midturn-quality-evidence
+          path: evidence/sts1/phase1_public_search_v1_jaw_worm_turn_one_two_card_midturn_quality/
+          if-no-files-found: warn
+          retention-days: 90

@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from .anger_reconstruction import assess_public_anger_midturn
 from .card_reconstruction import assess_public_cards
 from .contract import DecisionContext
 from .enemy_reconstruction import assess_public_enemies
@@ -25,18 +26,29 @@ def attach_reconstruction_capabilities(
 
     player_admission = assess_public_player(result, reconstruction_aux=reconstruction_aux)
     card_admission = assess_public_cards(result)
+    anger_admission = assess_public_anger_midturn(result, reconstruction_aux)
     enemy_admission = assess_public_enemies(result)
     run_admission = assess_public_run_state(result)
 
+    # Anger is deliberately isolated from the established V1 player/card
+    # admission paths.  Its generated-copy proof comes from the current public
+    # piles plus bounded turn-local command counters.  This keeps every frozen
+    # V1/V2 slice unchanged while allowing the one audited rich-effect state.
+    anger_override = anger_admission.allowed
+    player_complete = player_admission.allowed or anger_override
+    card_complete = card_admission.allowed or anger_override
+
     marker: dict[str, Any] = {
         "schema_version": PUBLIC_RECONSTRUCTION_SCHEMA,
-        "public_player_state_complete": player_admission.allowed,
-        "public_card_instance_state_complete": card_admission.allowed,
+        "public_player_state_complete": player_complete,
+        "public_card_instance_state_complete": card_complete,
         "public_relic_state_complete": bool(source.get("public_relic_state_complete")) and run_admission.relics_allowed,
         "public_potion_state_complete": bool(source.get("public_potion_state_complete")) and run_admission.potions_allowed,
         "public_enemy_state_complete": enemy_admission.allowed,
-        "player_admission_reasons": list(player_admission.reasons),
-        "card_admission_reasons": list(card_admission.reasons),
+        "player_admission_reasons": [] if anger_override else list(player_admission.reasons),
+        "card_admission_reasons": [] if anger_override else list(card_admission.reasons),
+        "anger_midturn_complete": anger_override,
+        "anger_admission_reasons": list(anger_admission.reasons),
         "card_count": card_admission.card_count,
         "enemy_admission_reasons": list(enemy_admission.reasons),
         "enemy_count": enemy_admission.enemy_count,

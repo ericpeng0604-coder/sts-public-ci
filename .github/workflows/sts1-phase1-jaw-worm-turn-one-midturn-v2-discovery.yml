@@ -1,0 +1,86 @@
+name: STS1 Phase 1 Jaw Worm Turn-One Midturn V2 Discovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-jaw-worm-turn-one-midturn-v2-discovery
+    paths:
+      - '.github/workflows/sts1-phase1-jaw-worm-turn-one-midturn-v2-discovery.yml'
+      - 'scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery.py'
+      - 'tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery_seeds_64.txt'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'scripts/sts1/apply_phase1_public_state_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_reconstruction_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+      - 'scripts/sts1/apply_phase1_public_midturn_counter_overlay.py'
+      - 'scripts/sts1/apply_phase1_oracle_judge_overlay.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jaw-worm-turn-one-midturn-v2-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Discovery contract and syntax
+        run: |
+          python -m py_compile scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/data/sts1_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery_seeds_64.txt')
+          old = Path('tests/data/sts1_phase1_public_search_v1_jaw_worm_turn_one_midturn_source_seeds_64.txt')
+          seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          retired = [int(x.strip()) for x in old.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          assert len(seeds) == 64 and len(set(seeds)) == 64
+          assert min(seeds) == 430001 and max(seeds) == 430064
+          assert not set(seeds).intersection(retired)
+          print('MIDTURN_V2_DISCOVERY_SEED_CONTRACT = PASS')
+          print('RETIRED_420XXX_SEED_OVERLAP = 0')
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited turn-aware history overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Apply public-derived midturn counter overlay
+        run: python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Run two-repeat midturn V2 discovery
+        run: python scripts/sts1/run_phase1_public_search_v2_jaw_worm_turn_one_midturn_discovery.py
+
+      - name: Show discovery summary
+        if: always()
+        run: test -f evidence/sts1/phase1_jaw_worm_turn_one_midturn_v2_discovery/summary.json && cat evidence/sts1/phase1_jaw_worm_turn_one_midturn_v2_discovery/summary.json || true
+
+      - name: Upload discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-jaw-worm-turn-one-midturn-v2-discovery-evidence
+          path: evidence/sts1/phase1_jaw_worm_turn_one_midturn_v2_discovery/
+          if-no-files-found: warn
+          retention-days: 90

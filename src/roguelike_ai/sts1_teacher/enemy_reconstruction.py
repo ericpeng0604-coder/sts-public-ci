@@ -1,6 +1,6 @@
 """Conservative public enemy admission for Phase-1 rollout reconstruction.
 
-V1 intentionally supports only a tiny audited surface.  It is better to mark a
+V1 intentionally supports only a tiny audited surface. It is better to mark a
 combat unsupported than to reconstruct hidden monster state from guesses.
 Hidden previous move history is never an input here; the rollout backend must
 sample it from the candidate-independent redeterminization plan.
@@ -10,10 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-# Jaw Worm has no separate hidden per-instance setup value like Louse/Darkling.
-# Its visible HP/block/Strength + current public intent are enough for the V1
-# state surface; older move history remains sampled, never copied.
-_SUPPORTED_V1 = frozenset({"JAW_WORM"})
+# V1 currently admits only audited single-enemy Act-1 opening surfaces.
+# Jaw Worm has hidden previous-move history after the opening turn, so that
+# history is sampled rather than copied. Cultist is especially suitable for the
+# next slice because its opening move is deterministically INCANTATION and its
+# later move is DARK_STRIKE; no hidden per-instance setup value is required.
+_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST"})
 _ALLOWED_POWER_NAMES = frozenset({"STRENGTH", "VULNERABLE", "WEAK", "POISON"})
 
 

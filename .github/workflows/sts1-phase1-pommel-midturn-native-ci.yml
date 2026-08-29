@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gpt/sts1-phase1-pommel-midturn-native-ci
+      - gpt/sts1-phase1-public-reconstruction
   workflow_dispatch:
 
 permissions:
@@ -36,12 +37,14 @@ jobs:
           scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
           scripts/sts1/verify_phase1_public_pommel_midturn_native.py
           tests/test_sts1_pommel_midturn_reconstruction.py
+          tests/test_sts1_public_native_v1_admission.py
 
       - name: Focused Python reconstruction tests
         run: >-
           python -m pytest -q
           tests/test_sts1_pommel_midturn_reconstruction.py
           tests/test_sts1_public_card_reconstruction.py
+          tests/test_sts1_public_native_v1_admission.py
           tests/test_sts1_reconstruction_state.py
 
       - name: Frozen contract file was not changed

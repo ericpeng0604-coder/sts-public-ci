@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roguelike-ai-framework"
+version = "0.1.0"
+description = "Extensible local-adapter framework for roguelike game agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "polars>=1.0,<2",
+    "duckdb>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "hypothesis>=6,<7",
+]
+mlflow = ["mlflow>=2.0,<4"]
+
+[project.scripts]
+roguelike-ai = "roguelike_ai.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

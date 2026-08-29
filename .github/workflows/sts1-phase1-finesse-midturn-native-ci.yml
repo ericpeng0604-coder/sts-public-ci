@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gpt/sts1-phase1-finesse-draw-reconstruction
+      - gpt/sts1-phase1-public-reconstruction
   workflow_dispatch:
 
 permissions:
@@ -129,3 +130,120 @@ jobs:
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_shrug_upgraded_midturn_aux_v1'
           git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_finesse_midturn_aux_v1'
           echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+
+  jaw-worm-quality:
+    needs: native-proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+      - name: Apply zero-based monster history guard
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+      - name: Generate frozen suite twice
+        run: |
+          python scripts/sts1/generate_phase1_public_search_v1_suite.py --output evidence/freeze-a.json
+          python scripts/sts1/generate_phase1_public_search_v1_suite.py --output evidence/freeze-b.json
+          cmp evidence/freeze-a.json evidence/freeze-b.json
+          cp evidence/freeze-a.json evidence/suite.json
+      - name: Run two-repeat quality benchmark
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v1_quality.py
+          --suite evidence/suite.json
+          --output-dir evidence/sts1/phase1_public_search_v1_quality
+      - name: Show quality summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_public_search_v1_quality/summary.json && cat evidence/sts1/phase1_public_search_v1_quality/summary.json || true
+
+  cultist-quality:
+    needs: native-proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+      - name: Apply zero-based monster history guard
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+      - name: Generate frozen Cultist suite twice
+        run: |
+          python scripts/sts1/generate_phase1_public_search_v1_cultist_suite.py --output evidence/cultist-freeze-a.json
+          python scripts/sts1/generate_phase1_public_search_v1_cultist_suite.py --output evidence/cultist-freeze-b.json
+          cmp evidence/cultist-freeze-a.json evidence/cultist-freeze-b.json
+          cp evidence/cultist-freeze-a.json evidence/cultist-suite.json
+      - name: Run two-repeat Cultist quality benchmark
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v1_cultist_quality.py
+          --suite evidence/cultist-suite.json
+          --output-dir evidence/sts1/phase1_public_search_v1_cultist_quality
+      - name: Show Cultist quality summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_public_search_v1_cultist_quality/summary.json && cat evidence/sts1/phase1_public_search_v1_cultist_quality/summary.json || true
+
+  gremlin-nob-quality:
+    needs: native-proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+      - name: Apply zero-based monster history guard
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+      - name: Apply zero-based monster history guard
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+      - name: Generate frozen Gremlin Nob suite twice
+        run: |
+          python scripts/sts1/generate_phase1_public_search_v1_gremlin_nob_suite.py --output evidence/nob-freeze-a.json
+          python scripts/sts1/generate_phase1_public_search_v1_gremlin_nob_suite.py --output evidence/nob-freeze-b.json
+          cmp evidence/nob-freeze-a.json evidence/nob-freeze-b.json
+          cp evidence/nob-freeze-a.json evidence/nob-suite.json
+      - name: Run two-repeat Gremlin Nob quality benchmark
+        run: >-
+          python scripts/sts1/run_phase1_public_search_v1_gremlin_nob_quality.py
+          --suite evidence/nob-suite.json
+          --output-dir evidence/sts1/phase1_public_search_v1_gremlin_nob_quality
+      - name: Show Gremlin Nob quality summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_public_search_v1_gremlin_nob_quality/summary.json && cat evidence/sts1/phase1_public_search_v1_gremlin_nob_quality/summary.json || true

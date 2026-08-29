@@ -68,11 +68,11 @@ def test_enemy_gap_still_blocks_full_reconstruction() -> None:
     assert "capability_not_proven:public_card_instance_state_complete" not in admission.reasons
 
 
-def test_unsupported_history_card_keeps_card_capability_false() -> None:
+def test_unsupported_card_keeps_card_capability_false() -> None:
     state = public_state()
     state["hand"][0]["id"] = "RAMPAGE"
     attached = attach_reconstruction_capabilities(state, run_state=run_state())
     marker = attached["reconstruction"]
 
     assert marker["public_card_instance_state_complete"] is False
-    assert "history_card_unsupported:RAMPAGE" in marker["card_admission_reasons"]
+    assert "card_unsupported_v1:RAMPAGE" in marker["card_admission_reasons"]

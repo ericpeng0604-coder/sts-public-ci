@@ -1,0 +1,177 @@
+name: STS1 Phase 1 Anger Finesse Composition Discovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-anger-finesse-composition-discovery
+    paths:
+      - '.github/workflows/sts1-phase1-anger-finesse-composition-discovery.yml'
+      - 'tests/data/sts1_phase1_anger_finesse_composition_discovery_seeds_256.txt'
+      - 'tests/data/sts1_phase1_anger_finesse_composition_discovery_freeze.json'
+      - 'scripts/sts1/generate_phase1_anger_finesse_composition_discovery.py'
+      - 'scripts/sts1/run_phase1_anger_finesse_composition_discovery.py'
+      - 'src/roguelike_ai/sts1_teacher/anger_finesse_composition_policy_v1.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  anger-finesse-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      FROZEN_PRE_LABEL_HEAD: 916c19377d9921ca21aad1596fe58e2a7f35cc7f
+      NATIVE_READY_BASE: ad8d2c4d1a15698e1f5a80b537f7cba30525331e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify pre-label freeze identity and immutable discovery contract
+        run: |
+          test "$(git rev-parse HEAD^)" = "$FROZEN_PRE_LABEL_HEAD"
+          python -m py_compile \
+            scripts/sts1/generate_phase1_anger_finesse_composition_discovery.py \
+            scripts/sts1/run_phase1_anger_finesse_composition_discovery.py \
+            src/roguelike_ai/sts1_teacher/anger_finesse_composition_policy_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          seed_path = Path('tests/data/sts1_phase1_anger_finesse_composition_discovery_seeds_256.txt')
+          freeze_path = Path('tests/data/sts1_phase1_anger_finesse_composition_discovery_freeze.json')
+          seeds = [int(x.strip()) for x in seed_path.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+          freeze = json.loads(freeze_path.read_text())
+          digest = hashlib.sha256(seed_path.read_bytes()).hexdigest()
+          assert seeds == list(range(530001, 530257))
+          assert digest == 'd365110cff47ce160558382b98a1369156423da272ce537f110a7401bcb3f98d'
+          assert freeze['source_seed_file_sha256'] == digest
+          assert freeze['candidate_policy_id'] == 'jaw-worm-turn1-anger-finesse-search-top-set-v1'
+          assert freeze['sampler_contract'] == 'anger-finesse-composition-discovery-fixed-256-first24-v1'
+          assert freeze['discovery_gate_id'] == 'anger-finesse-discovery-candidate-ge-raw-gt-simple-random-v1'
+          assert freeze['oracle']['public_samples'] == 4
+          assert freeze['oracle']['mcts_sims_per_action_per_sample'] == 2000
+          assert freeze['search'] == {
+              'samples_per_semantic_action': 8,
+              'rollout_budget': 256,
+              'node_budget': 16384,
+              'max_depth': 30,
+              'timeout_ms': 60000,
+              'tie_tolerance': 1e-09,
+              'sampling_seed': 20260830,
+          }
+          assert freeze['public_state_contract'] == 'sts1-public-state-v1'
+          assert freeze['public_fields_added'] == 0
+          assert freeze['phase1_status'] == 'IN_PROGRESS'
+          assert freeze['phase1_gate_claimed'] is False
+          assert freeze['phase2_locked'] is True
+          print('ANGER_FINESSE_DISCOVERY_PRE_LABEL_FREEZE = PASS')
+          print('FROZEN_PRE_LABEL_HEAD=916c19377d9921ca21aad1596fe58e2a7f35cc7f')
+          print('SOURCE_SEED_COUNT=256')
+          print('SOURCE_SEED_FILE_SHA256=' + digest)
+          print('CANDIDATE_POLICY=jaw-worm-turn1-anger-finesse-search-top-set-v1')
+          print('SAMPLER=anger-finesse-composition-discovery-fixed-256-first24-v1')
+          print('DISCOVERY_GATE=anger-finesse-discovery-candidate-ge-raw-gt-simple-random-v1')
+          print('ORACLE=4_public_samples_x_2000_mcts_per_action')
+          print('SEARCH=8_samples_256_rollouts_16384_nodes_depth30_seed20260830')
+          PY
+          git diff --check "$NATIVE_READY_BASE"...HEAD
+          ! git diff --name-only "$NATIVE_READY_BASE"...HEAD | grep -Fx 'src/roguelike_ai/sts1_teacher/contract.py'
+          ! git diff --name-only "$NATIVE_READY_BASE"...HEAD | grep -Fx 'docs/sts1/STS1_PUBLIC_STATE_CONTRACT_V1.md'
+          echo 'FROZEN_PUBLIC_CONTRACT_UNCHANGED = PASS'
+          echo 'PUBLIC_FIELDS_ADDED = 0'
+
+      - name: Focused Python regression before native build
+        run: |
+          python -m pip install 'pytest>=8,<9'
+          python -m pytest -q \
+            tests/test_sts1_anger_finesse_composition_reconstruction.py \
+            tests/test_sts1_finesse_midturn_reconstruction.py \
+            tests/test_sts1_anger_midturn_reconstruction.py \
+            tests/test_sts1_anger_pommel_composition_reconstruction.py \
+            tests/test_sts1_public_native_v1_admission.py \
+            tests/test_sts1_reconstruction_state.py
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply established formal public reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+          python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
+          python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
+          python scripts/sts1/apply_phase1_public_finesse_midturn_overlay.py
+          python scripts/sts1/apply_phase1_public_anger_finesse_composition_overlay.py
+
+      - name: Build real native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Re-prove exact Anger Finesse Native Ready Search smoke
+        run: python scripts/sts1/verify_phase1_public_anger_finesse_composition_native.py
+
+      - name: Generate blind 530xxx discovery suite twice and prove both orders
+        run: |
+          python scripts/sts1/generate_phase1_anger_finesse_composition_discovery.py --output evidence/anger-finesse-discovery-a.json
+          python scripts/sts1/generate_phase1_anger_finesse_composition_discovery.py --output evidence/anger-finesse-discovery-b.json
+          cmp evidence/anger-finesse-discovery-a.json evidence/anger-finesse-discovery-b.json
+          cp evidence/anger-finesse-discovery-a.json evidence/anger-finesse-discovery-suite.json
+          python - <<'PY'
+          import json
+          s = json.load(open('evidence/anger-finesse-discovery-suite.json'))
+          assert s['case_count'] >= 24
+          assert all(case['order_observation_equivalent'] is True for case in s['cases'])
+          assert s['source_battle_context_exported'] == 0
+          assert s['source_hidden_rng_exported'] == 0
+          assert s['source_move_history_exported'] == 0
+          assert s['source_counter_history_exported'] == 0
+          print('ANGER_THEN_FINESSE_AND_FINESSE_THEN_ANGER_FORMAL_OBSERVATION_EQUIVALENT = PASS')
+          print('UNIQUE_ADMITTED_CASES=' + str(s['case_count']))
+          PY
+
+      - name: Run frozen discovery comparison twice
+        run: >-
+          python scripts/sts1/run_phase1_anger_finesse_composition_discovery.py
+          --suite evidence/anger-finesse-discovery-suite.json
+          --output-dir evidence/sts1/phase1_anger_finesse_composition_discovery
+
+      - name: Show discovery summary
+        if: always()
+        run: |
+          test -f evidence/sts1/phase1_anger_finesse_composition_discovery/summary.json && cat evidence/sts1/phase1_anger_finesse_composition_discovery/summary.json || true
+          test -f evidence/anger-finesse-discovery-suite.json && python - <<'PY'
+          from pathlib import Path
+          import json
+          p = Path('evidence/anger-finesse-discovery-suite.json')
+          if p.exists():
+              s = json.loads(p.read_text())
+              print('SAMPLING_CONTRACT=' + s['sampling_contract_version'])
+              print('SUITE_DIGEST=' + s['suite_digest'])
+              print('CASE_COUNT=' + str(s['case_count']))
+              print('REJECTED_COUNTS=' + str(s['rejected_counts']))
+              print('ORDER_EQUIVALENT_SOURCE_COUNT_BEFORE_STOP=' + str(s['order_equivalent_source_count_before_stop']))
+          PY
+          echo 'PHASE1_STATUS=IN_PROGRESS'
+          echo 'PHASE1_GATE_CLAIMED=0'
+          echo 'PHASE2=LOCKED'
+          echo 'FRESH_HOLDOUT_540XXX_TOUCHED=0'
+
+      - name: Upload discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-anger-finesse-composition-530xxx-discovery-evidence
+          path: |
+            evidence/anger-finesse-discovery-suite.json
+            evidence/sts1/phase1_anger_finesse_composition_discovery/
+          if-no-files-found: warn
+          retention-days: 90

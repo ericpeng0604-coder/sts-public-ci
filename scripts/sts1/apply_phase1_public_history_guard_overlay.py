@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Make V1 monster reconstruction turn-aware for audited opening enemies.
+"""Make V1 monster reconstruction turn-aware for audited enemies.
 
-Applied after the base public BattleContext constructor. Jaw Worm later history
-is sampled; Cultist, Gremlin Nob, and Blue Slaver are admitted only from opening
-public observations. No source move history is read.
+Applied after the base public BattleContext constructor. Jaw Worm turn 1 has a
+publicly derivable previous move because the pinned simulator always opens with
+CHOMP; still-later Jaw Worm history is sampled. Cultist, Gremlin Nob, and Blue
+Slaver remain opening-only. No source move history is read.
 """
 from __future__ import annotations
 
@@ -26,10 +27,17 @@ HISTORY_REPLACEMENT = '''              // phase1_public_history_turn_guard_v1:
               if (bc.turn <= 0) {
                   mo.moveHistory[1] = MMID::INVALID;
               } else if (enemyName == "JAW_WORM") {
-                  const auto historyChoice = get_u64(seeds, "previous_history") % 3ULL;
-                  mo.moveHistory[1] = historyChoice == 0 ? MMID::JAW_WORM_CHOMP
-                                    : historyChoice == 1 ? MMID::JAW_WORM_THRASH
-                                                         : MMID::JAW_WORM_BELLOW;
+                  if (bc.turn == 1) {
+                      // The pinned Jaw Worm opener is deterministically CHOMP.
+                      // This is derived from public encounter+turn semantics; no
+                      // source BattleContext move history is copied.
+                      mo.moveHistory[1] = MMID::JAW_WORM_CHOMP;
+                  } else {
+                      const auto historyChoice = get_u64(seeds, "previous_history") % 3ULL;
+                      mo.moveHistory[1] = historyChoice == 0 ? MMID::JAW_WORM_CHOMP
+                                        : historyChoice == 1 ? MMID::JAW_WORM_THRASH
+                                                             : MMID::JAW_WORM_BELLOW;
+                  }
               } else if (enemyName == "CULTIST") {
                   throw std::runtime_error("cultist_later_turn_unsupported_v1");
               } else if (enemyName == "GREMLIN_NOB") {
@@ -115,6 +123,7 @@ def main() -> None:
     TARGET.write_text(text, encoding="utf-8")
     print(f"patched={TARGET}")
     print("opening_turn_zero_previous_history=INVALID")
+    print("jaw_worm_turn_one_previous_history=PUBLIC_DERIVED_CHOMP")
     print("later_jaw_worm_previous_history=PUBLIC_SAMPLE")
     print("cultist_opening_incantation_only=1")
     print("cultist_later_turn=FAIL_CLOSED")

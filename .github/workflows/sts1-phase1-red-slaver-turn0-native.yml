@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gpt/sts1-phase1-red-slaver-turn0-native
+      - gpt/sts1-phase1-red-slaver-postmerge-ci-fix
       - gpt/sts1-phase1-public-reconstruction
     paths:
       - '.github/workflows/sts1-phase1-red-slaver-turn0-native.yml'

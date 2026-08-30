@@ -1,0 +1,250 @@
+name: STS1 Phase 1 Looter Formal Integration
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-looter-turn0-formal-integration
+      - gpt/sts1-phase1-public-reconstruction
+    paths:
+      - '.github/workflows/sts1-phase1-looter-formal-integration.yml'
+      - 'src/roguelike_ai/sts1_teacher/**'
+      - 'tests/test_sts1_*.py'
+      - 'tests/data/sts1_phase1_looter_*.txt'
+      - 'tests/data/sts1_phase1_looter_candidate_freeze_v2.json'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+      - 'scripts/sts1/verify_phase1_public_looter_native.py'
+      - 'scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py'
+      - 'scripts/sts1/generate_phase1_looter_v2_suite.py'
+      - 'scripts/sts1/run_phase1_looter_v2_quality.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+
+      - name: Exact formal ancestry and frozen Looter V2 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base 47033d35846a8cddfdfc5470f998ae5c2395406c HEAD)" = "47033d35846a8cddfdfc5470f998ae5c2395406c"
+          test "$(git rev-parse HEAD:scripts/sts1/run_phase1_looter_v2_quality.py)" = "8f85a95c4fb831b9918ca4c12f852e56752b1213"
+          test "$(git rev-parse HEAD:src/roguelike_ai/sts1_teacher/native_rollout.py)" = "4f63ac21ca0a2a34fe46326ae11d11342e2a3d91"
+          test "$(git rev-parse HEAD:tests/data/sts1_phase1_looter_candidate_freeze_v2.json)" = "1aaab9556af9f9521a9fbc96cd97f982977a8d43"
+          test "$(git rev-parse HEAD:scripts/sts1/generate_phase1_looter_v2_suite.py)" = "f2e2fb8b95d0ac4218f37d6f1a1bd4032aff9d1f"
+          test "$(sha256sum tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt | awk '{print $1}')" = "5d7d538a1f1c38881d41e6e6f3e3a0b2a8fbd4534fe5393d070a2848588d359c"
+          git diff --exit-code 47033d35846a8cddfdfc5470f998ae5c2395406c -- \
+            src/roguelike_ai/sts1_teacher/contract.py \
+            docs/sts1/STS1_PUBLIC_STATE_CONTRACT_V1.md
+          python - <<'PY'
+          import subprocess
+          allowed = {'.github/workflows/sts1-phase1-looter-formal-integration.yml'}
+          changed = set(subprocess.check_output([
+              'git', 'diff', '--name-only',
+              '7a152f46e0e198ffc35e2a27e623f0fb6c4edffb...HEAD'
+          ], text=True).splitlines())
+          assert changed <= allowed, f'frozen_candidate_changed_after_holdout:{sorted(changed - allowed)}'
+          print('FROZEN_LOOTER_V2_CANDIDATE_UNCHANGED = PASS')
+          print('FROZEN_PUBLIC_CONTRACT_UNCHANGED = PASS')
+          print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
+          print('OLD_600XXX_USED_FOR_TUNING = 0')
+          print('PHASE1_GATE_CLAIMED = 0')
+          PY
+
+      - name: Full reconstruction regression tests
+        run: >-
+          python -m pytest -q
+          tests/test_sts1_public_reconstruction.py
+          tests/test_sts1_public_run_state.py
+          tests/test_sts1_public_redeterminization.py
+          tests/test_sts1_public_card_reconstruction.py
+          tests/test_sts1_public_enemy_reconstruction.py
+          tests/test_sts1_public_native_v1_admission.py
+          tests/test_sts1_reconstruction_state.py
+          tests/test_sts1_public_reconstruction_smoke.py
+          tests/test_sts1_midturn_nonstarter_failclosed.py
+          tests/test_sts1_pommel_midturn_reconstruction.py
+          tests/test_sts1_shrug_midturn_reconstruction.py
+          tests/test_sts1_shrug_upgraded_midturn_reconstruction.py
+          tests/test_sts1_anger_midturn_reconstruction.py
+          tests/test_sts1_anger_pommel_composition_reconstruction.py
+          tests/test_sts1_finesse_midturn_reconstruction.py
+          tests/test_sts1_anger_finesse_composition_reconstruction.py
+
+      - name: Looter V2 safety proof and syntax gates
+        run: |
+          python scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py
+          python -m py_compile \
+            src/roguelike_ai/sts1_teacher/enemy_reconstruction.py \
+            src/roguelike_ai/sts1_teacher/native_rollout.py \
+            scripts/sts1/apply_phase1_public_history_guard_overlay.py \
+            scripts/sts1/verify_phase1_public_looter_native.py \
+            scripts/sts1/generate_phase1_looter_v2_suite.py \
+            scripts/sts1/run_phase1_looter_v2_quality.py \
+            scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py
+          git diff --check 47033d35846a8cddfdfc5470f998ae5c2395406c...HEAD
+
+  native-regression:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Snapshot non-target simulator diff
+        run: >-
+          git -C external/sts_lightspeed/source diff -- .
+          ':(exclude)bindings/slaythespire.cpp'
+          > "$RUNNER_TEMP/nonbinding-before.diff"
+
+      - name: Apply complete established public reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+          python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
+          python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
+          python scripts/sts1/apply_phase1_public_finesse_midturn_overlay.py
+          python scripts/sts1/apply_phase1_public_anger_finesse_composition_overlay.py
+
+      - name: Build real native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Opening and enemy native proofs
+        run: |
+          python scripts/sts1/verify_phase1_public_reconstruction_native.py
+          python scripts/sts1/verify_phase1_public_gremlin_nob_native.py
+          python scripts/sts1/verify_phase1_public_blue_slaver_native.py
+          python scripts/sts1/verify_phase1_public_red_slaver_native.py
+          python scripts/sts1/verify_phase1_public_looter_native.py
+          python scripts/sts1/verify_phase1_public_search_native.py
+
+      - name: Rich midturn native proofs
+        run: |
+          python scripts/sts1/verify_phase1_public_pommel_midturn_native.py
+          python scripts/sts1/verify_phase1_public_shrug_midturn_native.py
+          python scripts/sts1/verify_phase1_public_shrug_upgraded_midturn_native.py
+          python scripts/sts1/verify_phase1_public_anger_midturn_native.py
+          python scripts/sts1/verify_phase1_public_anger_pommel_composition_native.py
+          python scripts/sts1/verify_phase1_public_finesse_midturn_native.py
+          python scripts/sts1/verify_phase1_public_anger_finesse_composition_native.py
+
+      - name: Prove native overlay scope and no hidden source reads
+        run: |
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
+          cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
+          git -C external/sts_lightspeed/source diff --check
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_looter_opening_v1'
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_anger_finesse_composition_v1'
+          echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+          echo 'SOURCE_HIDDEN_RNG_ACCESS = 0'
+          echo 'SOURCE_RAW_BATTLE_CONTEXT_INPUT = 0'
+          echo 'SOURCE_MOVE_HISTORY_ACCESS = 0'
+          echo 'SOURCE_COUNTER_HISTORY_ACCESS = 0'
+          echo 'SOURCE_HIDDEN_MISCINFO_ACCESS = 0'
+          echo 'SOURCE_HIDDEN_THIEVERY_ACCESS = 0'
+          echo 'SOURCE_DRAW_ORDER_ACCESS = 0'
+          echo 'FORMAL_SEARCH_ORACLE_ACCESS = 0'
+          echo 'PHASE1_GATE_CLAIMED = 0'
+
+  frozen-looter-quality:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Re-assert frozen 620xxx quality identity
+        run: |
+          test "$(git rev-parse HEAD:scripts/sts1/run_phase1_looter_v2_quality.py)" = "8f85a95c4fb831b9918ca4c12f852e56752b1213"
+          test "$(git rev-parse HEAD:src/roguelike_ai/sts1_teacher/native_rollout.py)" = "4f63ac21ca0a2a34fe46326ae11d11342e2a3d91"
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          p = Path('tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt')
+          assert hashlib.sha256(p.read_bytes()).hexdigest() == '5d7d538a1f1c38881d41e6e6f3e3a0b2a8fbd4534fe5393d070a2848588d359c'
+          f = json.loads(Path('tests/data/sts1_phase1_looter_candidate_freeze_v2.json').read_text())
+          assert f['candidate_id'] == 'looter-turn0-public-search-gold-tiebreak-v2'
+          assert f['quality_runner_blob_sha'] == '8f85a95c4fb831b9918ca4c12f852e56752b1213'
+          assert f['native_rollout_blob_sha'] == '4f63ac21ca0a2a34fe46326ae11d11342e2a3d91'
+          assert f['gold_tiebreak']['can_overturn_nonzero_combat_mean_gap'] is False
+          assert f['old_600xxx_used_for_tuning'] is False
+          print('FROZEN_LOOTER_V2_620XXX_IDENTITY = PASS')
+          PY
+
+      - name: Hydrate and build grading binding
+        run: |
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/build_probe.py
+
+      - name: Regenerate exact frozen 620xxx holdout twice
+        run: |
+          mkdir -p evidence
+          python scripts/sts1/generate_phase1_looter_v2_suite.py --suite-kind holdout --output evidence/holdout-a.json
+          python scripts/sts1/generate_phase1_looter_v2_suite.py --suite-kind holdout --output evidence/holdout-b.json
+          cmp evidence/holdout-a.json evidence/holdout-b.json
+          cp evidence/holdout-a.json evidence/holdout.json
+
+      - name: Re-run exact frozen Looter V2 quality
+        run: >-
+          python scripts/sts1/run_phase1_looter_v2_quality.py
+          --suite-kind holdout
+          --suite evidence/holdout.json
+          --output-dir evidence/sts1/looter-v2-holdout
+
+      - name: Require exact previous 620xxx fresh-holdout result
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s = json.loads(Path('evidence/sts1/looter-v2-holdout/summary.json').read_text())
+          assert s['suite_digest'] == '8e550f1f016daaddaa1fceed3e5f19027fc8f63f50f3e70894839b2beb77fd2f'
+          assert s['rows_digest'] == 'c34c7fcc91b4bf13e4045f78dd55c939345732ec6fac13c4bdbdf3b745095ba6'
+          assert s['agreement_counts'] == {'search': 13, 'simple': 10, 'random': 11}
+          assert s['search_unresolved'] == 0
+          assert s['illegal_actions'] == 0
+          assert s['leakage'] == 0
+          assert s['deterministic'] is True and s['full_repeats'] == 2
+          assert s['quality_verdict'] == 'PASS'
+          assert s['quality_reasons'] == []
+          assert s['gold_tiebreak']['can_overturn_nonzero_combat_mean_gap'] is False
+          print('LOOTER_V2_FROZEN_620XXX_FRESH_QUALITY_REPRODUCED = PASS')
+          print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
+          print('NON_TARGET_SIMULATOR_DIFF = 0')
+          print('PHASE1_GATE_CLAIMED = 0')
+          PY

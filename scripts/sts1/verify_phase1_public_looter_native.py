@@ -42,9 +42,6 @@ def run_state(gc) -> dict:
 
 
 def main() -> None:
-    # The source simulator is used only to obtain a realistic public opening
-    # observation. Source BattleContext, source move history, and source RNG are
-    # never passed into the reconstructed context.
     gc = sts.GameContext(sts.CharacterClass.IRONCLAD, 580001, 0)
     gc.floor_num = 1
     gc.cur_room = sts.Room.MONSTER
@@ -63,9 +60,8 @@ def main() -> None:
     enemy = admitted_state["enemies"][0]
     assert enemy["name"] == "LOOTER"
     assert enemy["intent"] == "LOOTER_MUG"
-    # The pinned simulator adapter does not currently expose Thievery in its
-    # enemy power projection. V1 derives the native internal status from the
-    # already-frozen public ascension field; no new policy field is introduced.
+    # Pinned simulator projection omits this public power, so reconstruction
+    # derives it solely from the already-public ascension field.
     assert enemy["powers"] == []
 
     config = SearchConfig(sampling_seed=20260830)
@@ -85,6 +81,8 @@ def main() -> None:
         assert len(fresh.monsters) == 1
         assert fresh.monsters[0].name == "LOOTER"
         assert fresh.monsters[0].intent == "LOOTER_MUG"
+        assert sts.get_public_monster_thievery_v1(fresh, 0) == 15
+        assert sts.get_public_player_gold_v1(fresh) == admitted_state["gold"]
 
     projected = adapter.adapt(
         fresh0,
@@ -95,7 +93,7 @@ def main() -> None:
     assert require_public_reconstruction(projected).decision_signature == context.decision_signature
 
     hp_before = fresh0.player.cur_hp
-    gold_before = fresh0.player.gold
+    gold_before = sts.get_public_player_gold_v1(fresh0)
     end_turn = next(
         action
         for action in sts.get_legal_actions(fresh0)
@@ -103,7 +101,7 @@ def main() -> None:
     )
     end_turn.execute(fresh0)
     assert fresh0.player.cur_hp == hp_before - 10
-    assert fresh0.player.gold == gold_before - 15
+    assert sts.get_public_player_gold_v1(fresh0) == gold_before - 15
     assert fresh0.monsters[0].intent in {
         "LOOTER_MUG",
         "LOOTER_LUNGE",
@@ -114,6 +112,7 @@ def main() -> None:
     print("LOOTER_OPENING_PUBLIC_INTENT = LOOTER_MUG")
     print("LOOTER_OPENING_DAMAGE_A0 = 10")
     print("LOOTER_OPENING_THIEVERY_A0 = PUBLIC_ASCENSION_DERIVED_15")
+    print("LOOTER_MUG_GOLD_THEFT_A0 = 15")
     print("LOOTER_CURRENT_INTENT_STABLE_ACROSS_FRESH_SAMPLES = PASS")
     print("LOOTER_FUTURE_AI_RNG = FRESH_ROLLOUT_ONLY")
     print("SOURCE_BATTLE_CONTEXT_INPUT = 0")

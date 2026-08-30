@@ -29,6 +29,13 @@ def blue_slaver_state(intent: str = "BLUE_SLAVER_STAB") -> dict:
     }
 
 
+def red_slaver_state(intent: str = "RED_SLAVER_STAB", turn: int = 0) -> dict:
+    return {
+        "turn": turn,
+        "enemies": [{"index": 0, "name": "Red Slaver", "hp": 46, "max_hp": 46, "block": 0, "intent": intent, "intent_damage": 13, "intent_hits": 1, "is_gone": False, "powers": []}],
+    }
+
+
 def test_single_jaw_worm_public_surface_is_admitted() -> None:
     result = assess_public_enemies(jaw_worm_state())
     assert result.allowed is True
@@ -58,6 +65,13 @@ def test_blue_slaver_opening_stab_and_rake_are_publicly_admitted() -> None:
         assert result.enemy_count == 1
 
 
+def test_red_slaver_opening_stab_is_publicly_admitted() -> None:
+    result = assess_public_enemies(red_slaver_state())
+    assert result.allowed is True
+    assert result.reasons == ()
+    assert result.enemy_count == 1
+
+
 def test_impossible_cultist_opening_dark_strike_fails_closed() -> None:
     state = cultist_state()
     state["enemies"][0]["intent"] = "CULTIST_DARK_STRIKE"
@@ -79,6 +93,18 @@ def test_impossible_blue_slaver_opening_intent_fails_closed() -> None:
     result = assess_public_enemies(state)
     assert result.allowed is False
     assert "blue_slaver_opening_intent_mismatch_v1:BLUE_SLAVER_UNKNOWN" in result.reasons
+
+
+def test_impossible_red_slaver_opening_intent_fails_closed() -> None:
+    result = assess_public_enemies(red_slaver_state("RED_SLAVER_ENTANGLE"))
+    assert result.allowed is False
+    assert "red_slaver_opening_intent_mismatch_v1:RED_SLAVER_ENTANGLE" in result.reasons
+
+
+def test_red_slaver_later_turn_fails_closed() -> None:
+    result = assess_public_enemies(red_slaver_state(turn=1))
+    assert result.allowed is False
+    assert "red_slaver_later_turn_unsupported_v1" in result.reasons
 
 
 def test_unknown_monster_fails_closed() -> None:

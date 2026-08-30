@@ -1,0 +1,122 @@
+name: STS1 Phase 1 Red Slaver Discovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-red-slaver-turn0-native
+    paths:
+      - '.github/workflows/sts1-phase1-red-slaver-discovery.yml'
+      - 'tests/data/sts1_phase1_red_slaver_discovery_seeds_64.txt'
+      - 'tests/data/sts1_phase1_red_slaver_fresh_holdout_seeds_64.txt'
+      - 'scripts/sts1/generate_phase1_red_slaver_suite.py'
+      - 'scripts/sts1/run_phase1_red_slaver_quality.py'
+      - 'src/roguelike_ai/sts1_teacher/native_rollout.py'
+      - 'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py'
+      - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  red-slaver-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Freeze both disjoint seed sources before quality
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          specs = [
+              ('tests/data/sts1_phase1_red_slaver_discovery_seeds_64.txt', 560001, 560064, 'DISCOVERY'),
+              ('tests/data/sts1_phase1_red_slaver_fresh_holdout_seeds_64.txt', 570001, 570064, 'FRESH_HOLDOUT'),
+          ]
+          for name, low, high, label in specs:
+              p = Path(name)
+              seeds = [int(x.strip()) for x in p.read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]
+              assert len(seeds) == 64 and len(set(seeds)) == 64
+              assert min(seeds) == low and max(seeds) == high
+              print(f'RED_SLAVER_{label}_SOURCE_SEED_FREEZE = PASS')
+              print(f'{label}_SOURCE_SEED_FILE_SHA256=' + hashlib.sha256(p.read_bytes()).hexdigest())
+          assert set(range(560001, 560065)).isdisjoint(set(range(570001, 570065)))
+          print('DISCOVERY_HOLDOUT_DISJOINT = PASS')
+          PY
+
+      - name: Syntax and frozen public-contract guard
+        run: |
+          python -m py_compile \
+            src/roguelike_ai/sts1_teacher/native_rollout.py \
+            src/roguelike_ai/sts1_teacher/enemy_reconstruction.py \
+            scripts/sts1/generate_phase1_red_slaver_suite.py \
+            scripts/sts1/run_phase1_red_slaver_quality.py \
+            scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          git diff --exit-code acd9e177cf29a7394fb954cf177db6053d17d296 -- src/roguelike_ai/sts1_teacher/contract.py
+          git diff --check acd9e177cf29a7394fb954cf177db6053d17d296...HEAD
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply read-only public-state overlay
+        run: python scripts/sts1/apply_phase1_public_state_overlay.py
+
+      - name: Apply public BattleContext reconstruction overlay
+        run: python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+
+      - name: Apply audited opening-enemy overlay
+        run: python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Freeze discovery suite twice
+        run: |
+          python scripts/sts1/generate_phase1_red_slaver_suite.py --suite-kind discovery --output evidence/red-slaver-discovery-a.json
+          python scripts/sts1/generate_phase1_red_slaver_suite.py --suite-kind discovery --output evidence/red-slaver-discovery-b.json
+          cmp evidence/red-slaver-discovery-a.json evidence/red-slaver-discovery-b.json
+          cp evidence/red-slaver-discovery-a.json evidence/red-slaver-discovery-suite.json
+
+      - name: Run raw Search discovery twice
+        run: >-
+          python scripts/sts1/run_phase1_red_slaver_quality.py
+          --suite-kind discovery
+          --suite evidence/red-slaver-discovery-suite.json
+          --output-dir evidence/sts1/phase1_red_slaver_discovery
+
+      - name: Verify discovery did not consume fresh holdout
+        run: |
+          test ! -e evidence/red-slaver-fresh-holdout-suite.json
+          echo 'FRESH_HOLDOUT_QUALITY_OBSERVED = 0'
+          echo 'SOURCE_BATTLE_CONTEXT_INPUT = 0'
+          echo 'SOURCE_HIDDEN_RNG_ACCESS = 0'
+          echo 'SOURCE_MOVE_HISTORY_ACCESS = 0'
+          echo 'SOURCE_COUNTER_HISTORY_ACCESS = 0'
+          echo 'SOURCE_HIDDEN_MISCINFO_ACCESS = 0'
+          echo 'PHASE1_GATE_CLAIMED = 0'
+
+      - name: Show discovery summary
+        if: always()
+        run: test -f evidence/sts1/phase1_red_slaver_discovery/summary.json && cat evidence/sts1/phase1_red_slaver_discovery/summary.json || true
+
+      - name: Upload discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-red-slaver-discovery-evidence
+          path: |
+            evidence/red-slaver-discovery-suite.json
+            evidence/sts1/phase1_red_slaver_discovery/
+          if-no-files-found: warn
+          retention-days: 90

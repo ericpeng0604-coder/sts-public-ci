@@ -1,7 +1,7 @@
 """Conservative public enemy admission for Phase-1 rollout reconstruction.
 
-V1 intentionally supports only tiny audited opening surfaces. It is better to
-mark a combat unsupported than to reconstruct hidden monster state from guesses.
+V1 intentionally supports only tiny audited surfaces. It is better to mark a
+combat unsupported than to reconstruct hidden monster state from guesses.
 Hidden previous move history is never accepted as a source input.
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 _SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST", "GREMLIN_NOB", "BLUE_SLAVER", "RED_SLAVER", "LOOTER"})
 _ALLOWED_POWER_NAMES = frozenset({"STRENGTH", "VULNERABLE", "WEAK", "POISON", "THIEVERY"})
 _CULTIST_OPENING_INTENTS = frozenset({"INCANTATION", "CULTIST_INCANTATION"})
+_CULTIST_TURN1_INTENTS = frozenset({"DARK_STRIKE", "CULTIST_DARK_STRIKE"})
 _NOB_OPENING_INTENTS = frozenset({"BELLOW", "GREMLIN_NOB_BELLOW"})
 _BLUE_SLAVER_OPENING_INTENTS = frozenset({"STAB", "BLUE_SLAVER_STAB", "RAKE", "BLUE_SLAVER_RAKE"})
 _RED_SLAVER_OPENING_INTENTS = frozenset({"STAB", "RED_SLAVER_STAB"})
@@ -61,8 +62,15 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
             reasons.append(f"missing_public_intent:{path}")
         else:
             normalized_intent = _canonical_name(intent)
-            if name == "CULTIST" and turn == 0 and normalized_intent not in _CULTIST_OPENING_INTENTS:
-                reasons.append(f"cultist_opening_intent_mismatch_v1:{normalized_intent}")
+            if name == "CULTIST":
+                if turn == 0:
+                    if normalized_intent not in _CULTIST_OPENING_INTENTS:
+                        reasons.append(f"cultist_opening_intent_mismatch_v1:{normalized_intent}")
+                elif turn == 1:
+                    if normalized_intent not in _CULTIST_TURN1_INTENTS:
+                        reasons.append(f"cultist_turn1_intent_mismatch_v1:{normalized_intent}")
+                else:
+                    reasons.append("cultist_later_turn_unsupported_v1")
             if name == "GREMLIN_NOB" and turn == 0 and normalized_intent not in _NOB_OPENING_INTENTS:
                 reasons.append(f"gremlin_nob_opening_intent_mismatch_v1:{normalized_intent}")
             if name == "BLUE_SLAVER" and turn == 0 and normalized_intent not in _BLUE_SLAVER_OPENING_INTENTS:
@@ -106,6 +114,24 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
                 normalized_powers.append((power_name, None))
             else:
                 normalized_powers.append((power_name, amount))
+
+        if name == "CULTIST" and turn == 1:
+            if isinstance(ascension, bool) or not isinstance(ascension, int):
+                reasons.append("cultist_turn1_missing_public_ascension_v1")
+            # The current public adapter intentionally does not expose Ritual.
+            # For this pristine boundary, no player card was played on turn 0,
+            # so all projected enemy powers must be empty. Ritual itself is
+            # reconstructed from public ascension + the source-proven fixed
+            # Incantation opener, with no new contract field.
+            if normalized_powers:
+                reasons.append("cultist_turn1_requires_no_projected_enemy_powers_v1")
+            hp = raw_enemy.get("hp")
+            max_hp = raw_enemy.get("max_hp")
+            block = raw_enemy.get("block")
+            if type(hp) is int and type(max_hp) is int and hp != max_hp:
+                reasons.append("cultist_turn1_requires_pristine_enemy_hp_v1")
+            if type(block) is int and block != 0:
+                reasons.append("cultist_turn1_requires_zero_enemy_block_v1")
 
         if name == "LOOTER" and turn in (0, 1):
             if isinstance(ascension, bool) or not isinstance(ascension, int):

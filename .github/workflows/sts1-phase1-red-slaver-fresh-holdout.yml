@@ -1,0 +1,82 @@
+name: STS1 Phase 1 Red Slaver Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-red-slaver-turn0-native
+    paths:
+      - '.github/workflows/sts1-phase1-red-slaver-fresh-holdout.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify candidate freeze
+        run: |
+          test "$(git rev-parse HEAD:scripts/sts1/run_phase1_red_slaver_quality.py)" = "ddd7f4e5b799b4dd5a00f0e893dd2240ca70e2a8"
+          git diff --exit-code 456566cd949ae4b81319ba7113603fd1e19daca4 -- scripts/sts1/run_phase1_red_slaver_quality.py src/roguelike_ai/sts1_teacher/native_rollout.py tests/data/sts1_phase1_red_slaver_fresh_holdout_seeds_64.txt
+          git diff --exit-code acd9e177cf29a7394fb954cf177db6053d17d296 -- src/roguelike_ai/sts1_teacher/contract.py
+          python -m py_compile scripts/sts1/generate_phase1_red_slaver_suite.py scripts/sts1/run_phase1_red_slaver_quality.py
+
+      - name: Hydrate exact simulator
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - name: Apply grading and public reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+      - name: Build native binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Freeze fresh suite twice
+        run: |
+          python scripts/sts1/generate_phase1_red_slaver_suite.py --suite-kind holdout --output evidence/holdout-a.json
+          python scripts/sts1/generate_phase1_red_slaver_suite.py --suite-kind holdout --output evidence/holdout-b.json
+          cmp evidence/holdout-a.json evidence/holdout-b.json
+          cp evidence/holdout-a.json evidence/holdout.json
+
+      - name: Run frozen candidate
+        run: python scripts/sts1/run_phase1_red_slaver_quality.py --suite-kind holdout --suite evidence/holdout.json --output-dir evidence/sts1/red-slaver-holdout
+
+      - name: Enforce fresh quality gate
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s = json.loads(Path('evidence/sts1/red-slaver-holdout/summary.json').read_text())
+          assert s['candidate_id'] == 'red-slaver-turn0-raw-public-search-v1'
+          assert s['case_count'] == 24
+          assert s['deterministic'] is True and s['full_repeats'] == 2
+          assert s['search_unresolved'] == 0 and s['illegal_actions'] == 0 and s['leakage'] == 0
+          assert s['quality_verdict'] == 'PASS', s['quality_reasons']
+          assert s['agreement_counts']['search'] > s['agreement_counts']['simple']
+          assert s['agreement_counts']['search'] > s['agreement_counts']['random']
+          print('RED_SLAVER_FRESH_QUALITY_GATE = PASS')
+          print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
+          print('NON_TARGET_SIMULATOR_DIFF = 0')
+          print('PHASE1_GATE_CLAIMED = 0')
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-red-slaver-fresh-holdout-evidence
+          path: |
+            evidence/holdout.json
+            evidence/sts1/red-slaver-holdout/
+          if-no-files-found: warn
+          retention-days: 90

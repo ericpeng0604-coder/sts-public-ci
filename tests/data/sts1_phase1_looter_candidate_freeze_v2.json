@@ -1,0 +1,58 @@
+{
+  "schema_version": "sts1-phase1-looter-candidate-freeze-v2",
+  "scope": "Looter turn-0 opening slice only",
+  "candidate_id": "looter-turn0-public-search-gold-tiebreak-v2",
+  "candidate_policy": "V1 combat rollout score plus bounded remaining-gold tie-break only",
+  "frozen_before_fresh_holdout_quality": true,
+  "fresh_holdout_quality_observed_at_freeze": false,
+  "fresh_holdout_seed_range_precommitted": "620001..620064",
+  "fresh_holdout_seed_file_created_at_freeze": false,
+  "discovery_run_id": 33309764201,
+  "discovery_head": "7e7fc2c410872d18259dfd7b015594d908eec8bb",
+  "discovery_artifact_id": 9731620038,
+  "discovery_artifact_sha256": "c4b3c77d9908ba877bc3da231a430daca1392a304ad17d5a6454189dc73b14ed",
+  "quality_runner_blob_sha": "8f85a95c4fb831b9918ca4c12f852e56752b1213",
+  "native_rollout_blob_sha": "4f63ac21ca0a2a34fe46326ae11d11342e2a3d91",
+  "search_config": {
+    "samples_per_semantic_action": 8,
+    "rollout_budget": 256,
+    "node_budget": 16384,
+    "max_depth": 30,
+    "timeout_ms": 60000,
+    "tie_tolerance": 1e-9,
+    "sampling_seed": 20260830
+  },
+  "gold_tiebreak": {
+    "definition": "combat_score + min(max(remaining_gold,0)*1e-7,0.001)",
+    "per_gold": 1e-7,
+    "cap": 0.001,
+    "frozen_combat_mean_min_nonzero_gap": 0.125,
+    "can_overturn_nonzero_combat_mean_gap": false,
+    "weight_selected_from_600xxx_rows": false
+  },
+  "oracle_grading_only": {
+    "public_samples": 4,
+    "mcts_sims_per_action_per_sample": 2000
+  },
+  "discovery_evidence": {
+    "seed_range": "610001..610064",
+    "seed_file_sha256": "293d8e8d7d125410a9b4ef8cd4aeea5effefc3d41c6aa97985f4ba7713a5836c",
+    "case_count": 24,
+    "search": 14,
+    "simple": 6,
+    "random": 6,
+    "search_unresolved": 0,
+    "illegal_actions": 0,
+    "leakage": 0,
+    "deterministic_full_repeats": 2,
+    "quality_verdict": "PASS",
+    "suite_digest": "733cbac73149837ee152308ab47a36d36d8a96ebe830e7c5256d0ec62899949c",
+    "rows_digest": "0fa80b2ddac2bce09263c5ee98101a5c6ba224e95417726ad17de02a1c71bce4"
+  },
+  "old_590xxx_used_as_new_evidence": false,
+  "old_600xxx_used_for_tuning": false,
+  "old_600xxx_status": "historical_failed_evidence_only",
+  "public_contract_fields_added": 0,
+  "non_target_simulator_diff": 0,
+  "phase1_gate_claimed": false
+}

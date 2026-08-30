@@ -10,6 +10,7 @@ from .anger_reconstruction import assess_public_anger_midturn
 from .card_reconstruction import assess_public_cards
 from .composition_reconstruction import assess_public_anger_pommel_composition
 from .contract import DecisionContext
+from .cultist_turn1_reconstruction import assess_public_cultist_turn1_player, is_cultist_turn1_candidate
 from .enemy_reconstruction import assess_public_enemies
 from .finesse_reconstruction import assess_public_finesse_player, is_finesse_slice_candidate
 from .player_reconstruction import assess_public_player
@@ -28,6 +29,16 @@ def attach_reconstruction_capabilities(
     source = dict(source_marker) if isinstance(source_marker, Mapping) else {}
 
     base_player_admission = assess_public_player(result, reconstruction_aux=reconstruction_aux)
+    cultist_turn1_candidate = (
+        reconstruction_aux is None
+        and not base_player_admission.allowed
+        and is_cultist_turn1_candidate(result)
+    )
+    cultist_turn1_admission = (
+        assess_public_cultist_turn1_player(result)
+        if cultist_turn1_candidate
+        else base_player_admission
+    )
     finesse_candidate = (
         not base_player_admission.allowed
         and isinstance(reconstruction_aux, Mapping)
@@ -51,13 +62,15 @@ def attach_reconstruction_capabilities(
     # path and still needs normal card admission, so it cannot widen rich slices.
     # Anger, Anger+Pommel, and the exact Anger+Finesse composition may override
     # both player/card admission only when their own audited public-state +
-    # bounded auxiliary proofs pass.
+    # bounded auxiliary proofs pass. Cultist turn1 has a separate, stricter
+    # pristine starter boundary and never receives reconstruction auxiliary data.
     anger_override = anger_admission.allowed
     anger_pommel_override = anger_pommel_admission.allowed
     anger_finesse_override = anger_finesse_admission.allowed
     rich_override = anger_override or anger_pommel_override or anger_finesse_override
     finesse_override = finesse_candidate and finesse_admission.allowed
-    player_complete = player_admission.allowed or rich_override
+    cultist_turn1_override = cultist_turn1_candidate and cultist_turn1_admission.allowed
+    player_complete = player_admission.allowed or rich_override or cultist_turn1_override
     card_complete = card_admission.allowed or rich_override
 
     marker: dict[str, Any] = {
@@ -67,8 +80,10 @@ def attach_reconstruction_capabilities(
         "public_relic_state_complete": bool(source.get("public_relic_state_complete")) and run_admission.relics_allowed,
         "public_potion_state_complete": bool(source.get("public_potion_state_complete")) and run_admission.potions_allowed,
         "public_enemy_state_complete": enemy_admission.allowed,
-        "player_admission_reasons": [] if rich_override else list(player_admission.reasons),
+        "player_admission_reasons": [] if rich_override or cultist_turn1_override else list(player_admission.reasons),
         "card_admission_reasons": [] if rich_override else list(card_admission.reasons),
+        "cultist_turn1_complete": cultist_turn1_override,
+        "cultist_turn1_admission_reasons": list(cultist_turn1_admission.reasons) if cultist_turn1_candidate else [],
         "anger_midturn_complete": anger_override,
         "anger_admission_reasons": list(anger_admission.reasons),
         "finesse_midturn_complete": finesse_override,

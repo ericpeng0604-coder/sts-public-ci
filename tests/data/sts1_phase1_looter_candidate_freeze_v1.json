@@ -1,0 +1,43 @@
+{
+  "schema_version": "sts1-phase1-looter-candidate-freeze-v1",
+  "scope": "Looter turn-0 opening slice only",
+  "candidate_id": "looter-turn0-raw-public-search-v1",
+  "candidate_policy": "raw PublicStateSearch; no Looter-specific gold scoring or threshold tuning",
+  "frozen_before_fresh_holdout_quality": true,
+  "fresh_holdout_quality_observed_at_freeze": false,
+  "discovery_run_id": 33308554701,
+  "discovery_head": "f3dc37ded124642b391e7868b14ae7dfa3e9220b",
+  "discovery_artifact_id": 9731262673,
+  "discovery_artifact_sha256": "56dcdebf58c5b8e18268c07f083e1ceef251beb6749d487ebb3b7541986d3776",
+  "quality_runner_blob_sha": "c6b37499c748fb863f4f25e0d5c4b65bf7d609b6",
+  "search_config": {
+    "samples_per_semantic_action": 8,
+    "rollout_budget": 256,
+    "node_budget": 16384,
+    "max_depth": 30,
+    "timeout_ms": 60000,
+    "tie_tolerance": 1e-9,
+    "sampling_seed": 20260830
+  },
+  "oracle_grading_only": {
+    "public_samples": 4,
+    "mcts_sims_per_action_per_sample": 2000
+  },
+  "discovery_evidence": {
+    "case_count": 24,
+    "search": 14,
+    "simple": 8,
+    "random": 9,
+    "search_unresolved": 0,
+    "illegal_actions": 0,
+    "leakage": 0,
+    "deterministic_full_repeats": 2,
+    "quality_verdict": "PASS",
+    "suite_digest": "52d46415ecdbabd8c40cb624486f662a768b90300fd7dc5dc961a26bc215ca73",
+    "rows_digest": "1b988ee31ed1e92d22c517a2f0142ba49377fc2bb90f133bc73f1937bc7d802e"
+  },
+  "discovery_seed_file_sha256": "59294f68cc616a10b9645fe9fd3c23d2ffe2a4f2297983ccc3a9ffe64c48fcba",
+  "fresh_holdout_seed_file_sha256": "c1f7a0fab2c5291e6c7e5ccaa1ff58c094b98910a297f1c8ff1c81c0a1a303ec",
+  "public_contract_fields_added": 0,
+  "phase1_gate_claimed": false
+}

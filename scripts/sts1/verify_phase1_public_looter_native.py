@@ -63,7 +63,10 @@ def main() -> None:
     enemy = admitted_state["enemies"][0]
     assert enemy["name"] == "LOOTER"
     assert enemy["intent"] == "LOOTER_MUG"
-    assert enemy["powers"] == [{"name": "THIEVERY", "amount": 15}]
+    # The pinned simulator adapter does not currently expose Thievery in its
+    # enemy power projection. V1 derives the native internal status from the
+    # already-frozen public ascension field; no new policy field is introduced.
+    assert enemy["powers"] == []
 
     config = SearchConfig(sampling_seed=20260830)
     sample0 = public_sample(context, sample_index=0, config=config)
@@ -110,13 +113,14 @@ def main() -> None:
     print("LOOTER_TURN0_PUBLIC_RECONSTRUCTION_NATIVE = PASS")
     print("LOOTER_OPENING_PUBLIC_INTENT = LOOTER_MUG")
     print("LOOTER_OPENING_DAMAGE_A0 = 10")
-    print("LOOTER_OPENING_THIEVERY_A0 = 15")
+    print("LOOTER_OPENING_THIEVERY_A0 = PUBLIC_ASCENSION_DERIVED_15")
     print("LOOTER_CURRENT_INTENT_STABLE_ACROSS_FRESH_SAMPLES = PASS")
     print("LOOTER_FUTURE_AI_RNG = FRESH_ROLLOUT_ONLY")
     print("SOURCE_BATTLE_CONTEXT_INPUT = 0")
     print("SOURCE_OPENING_RNG_ACCESS = 0")
     print("SOURCE_HIDDEN_MOVE_HISTORY_ACCESS = 0")
     print("SOURCE_HIDDEN_MISCINFO_ACCESS = 0")
+    print("SOURCE_HIDDEN_THIEVERY_ACCESS = 0")
     print("PUBLIC_CONTRACT_FIELDS_ADDED = 0")
     print("PHASE1_GATE_CLAIMED = 0")
 

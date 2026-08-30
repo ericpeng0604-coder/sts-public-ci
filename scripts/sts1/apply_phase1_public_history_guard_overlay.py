@@ -4,7 +4,7 @@
 Applied after the base public BattleContext constructor. Jaw Worm turn 1 has a
 publicly derivable previous move because the pinned simulator always opens with
 CHOMP; still-later Jaw Worm history is sampled. Cultist, Gremlin Nob, Blue
-Slaver, and Red Slaver remain opening-only. No source move history is read.
+Slaver, Red Slaver, and Looter remain opening-only. No source move history is read.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ CULTIST_MARKER = "phase1_public_cultist_opening_v1"
 NOB_MARKER = "phase1_public_gremlin_nob_opening_v1"
 BLUE_SLAVER_MARKER = "phase1_public_blue_slaver_opening_v1"
 RED_SLAVER_MARKER = "phase1_public_red_slaver_opening_v1"
+LOOTER_MARKER = "phase1_public_looter_opening_v1"
 
 HISTORY_ANCHOR = '''              const auto historyChoice = get_u64(seeds, "previous_history") % 3ULL;
               mo.moveHistory[1] = historyChoice == 0 ? MMID::JAW_WORM_CHOMP
@@ -45,6 +46,8 @@ HISTORY_REPLACEMENT = '''              // phase1_public_history_turn_guard_v1:
                   throw std::runtime_error("gremlin_nob_later_turn_unsupported_v1");
               } else if (enemyName == "BLUE_SLAVER") {
                   throw std::runtime_error("blue_slaver_later_turn_unsupported_v1");
+              } else if (enemyName == "LOOTER") {
+                  throw std::runtime_error("looter_later_turn_unsupported_v1");
               } else {
                   throw std::runtime_error("red_slaver_later_turn_unsupported_v1");
               }'''
@@ -53,21 +56,23 @@ ENEMY_NAME_ANCHOR = '''              if (normalized(get_s(enemy, "name")) != "JA
 
 ENEMY_NAME_REPLACEMENT = '''              // audited single-enemy opening surfaces only.
               const auto enemyName = normalized(get_s(enemy, "name"));
-              if (enemyName != "JAW_WORM" && enemyName != "CULTIST" && enemyName != "GREMLIN_NOB" && enemyName != "BLUE_SLAVER" && enemyName != "RED_SLAVER") {
+              if (enemyName != "JAW_WORM" && enemyName != "CULTIST" && enemyName != "GREMLIN_NOB" && enemyName != "BLUE_SLAVER" && enemyName != "RED_SLAVER" && enemyName != "LOOTER") {
                   throw std::runtime_error("enemy_unsupported_single_v1:" + enemyName);
               }
               bc.encounter = enemyName == "CULTIST" ? MonsterEncounter::CULTIST
                            : enemyName == "GREMLIN_NOB" ? MonsterEncounter::GREMLIN_NOB
                            : enemyName == "BLUE_SLAVER" ? MonsterEncounter::BLUE_SLAVER
                            : enemyName == "RED_SLAVER" ? MonsterEncounter::RED_SLAVER
-                                                        : MonsterEncounter::JAW_WORM;'''
+                           : enemyName == "LOOTER" ? MonsterEncounter::LOOTER
+                                                    : MonsterEncounter::JAW_WORM;'''
 
 ENEMY_ID_ANCHOR = '''              mo.id = MonsterId::JAW_WORM;'''
 ENEMY_ID_REPLACEMENT = '''              mo.id = enemyName == "CULTIST" ? MonsterId::CULTIST
                     : enemyName == "GREMLIN_NOB" ? MonsterId::GREMLIN_NOB
                     : enemyName == "BLUE_SLAVER" ? MonsterId::BLUE_SLAVER
                     : enemyName == "RED_SLAVER" ? MonsterId::RED_SLAVER
-                                                  : MonsterId::JAW_WORM;'''
+                    : enemyName == "LOOTER" ? MonsterId::LOOTER
+                                              : MonsterId::JAW_WORM;'''
 
 ENEMY_MOVE_ANCHOR = '''              mo.moveHistory[0] = jaw_worm_move(get_s(enemy, "intent"));'''
 ENEMY_MOVE_REPLACEMENT = '''              const auto publicIntent = normalized(get_s(enemy, "intent"));
@@ -97,6 +102,16 @@ ENEMY_MOVE_REPLACEMENT = '''              const auto publicIntent = normalized(g
                   } else {
                       throw std::runtime_error("blue_slaver_opening_intent_mismatch_v1:" + publicIntent);
                   }
+              } else if (enemyName == "LOOTER") {
+                  // phase1_public_looter_opening_v1: source getMoveForRoll returns
+                  // MUG unconditionally on the opening move. Thievery is copied
+                  // only from the public power list after Python admission checks
+                  // its amount against public ascension level.
+                  if (bc.turn != 0) throw std::runtime_error("looter_later_turn_unsupported_v1");
+                  if (publicIntent != "MUG" && publicIntent != "LOOTER_MUG") {
+                      throw std::runtime_error("looter_opening_intent_mismatch_v1:" + publicIntent);
+                  }
+                  mo.moveHistory[0] = MMID::LOOTER_MUG;
               } else {
                   // phase1_public_red_slaver_opening_v1: pinned source logic
                   // returns STAB on the first move before used-Entangle miscInfo
@@ -111,6 +126,12 @@ ENEMY_MOVE_REPLACEMENT = '''              const auto publicIntent = normalized(g
                   mo.miscInfo = 0;
               }'''
 
+POWER_ANCHOR = '''                  else if (name == "POISON") mo.setStatus<MonsterStatus::POISON>(amount);
+                  else throw std::runtime_error("unsupported_enemy_power_v1:" + name);'''
+POWER_REPLACEMENT = '''                  else if (name == "POISON") mo.setStatus<MonsterStatus::POISON>(amount);
+                  else if (name == "THIEVERY") mo.setStatus<MonsterStatus::THIEVERY>(amount);
+                  else throw std::runtime_error("unsupported_enemy_power_v1:" + name);'''
+
 
 def replace_once(text: str, anchor: str, replacement: str, label: str) -> str:
     count = text.count(anchor)
@@ -123,18 +144,19 @@ def main() -> None:
     if not TARGET.is_file():
         raise SystemExit(f"missing hydrated binding: {TARGET}")
     text = TARGET.read_text(encoding="utf-8")
-    if MARKER in text or CULTIST_MARKER in text or NOB_MARKER in text or BLUE_SLAVER_MARKER in text or RED_SLAVER_MARKER in text:
+    if MARKER in text or CULTIST_MARKER in text or NOB_MARKER in text or BLUE_SLAVER_MARKER in text or RED_SLAVER_MARKER in text or LOOTER_MARKER in text:
         raise SystemExit("public history/opening-enemy overlay already applied")
 
     text = replace_once(text, ENEMY_NAME_ANCHOR, ENEMY_NAME_REPLACEMENT, "enemy-name")
     text = replace_once(text, ENEMY_ID_ANCHOR, ENEMY_ID_REPLACEMENT, "enemy-id")
     text = replace_once(text, ENEMY_MOVE_ANCHOR, ENEMY_MOVE_REPLACEMENT, "enemy-move")
     text = replace_once(text, HISTORY_ANCHOR, HISTORY_REPLACEMENT, "history-guard")
+    text = replace_once(text, POWER_ANCHOR, POWER_REPLACEMENT, "enemy-power")
 
     # Markers are intentionally embedded in the patched binding for CI scope proof.
     text = text.replace(
         "// audited single-enemy opening surfaces only.",
-        "// audited single-enemy opening surfaces only. phase1_public_cultist_opening_v1 phase1_public_gremlin_nob_opening_v1 phase1_public_blue_slaver_opening_v1 phase1_public_red_slaver_opening_v1",
+        "// audited single-enemy opening surfaces only. phase1_public_cultist_opening_v1 phase1_public_gremlin_nob_opening_v1 phase1_public_blue_slaver_opening_v1 phase1_public_red_slaver_opening_v1 phase1_public_looter_opening_v1",
         1,
     )
     TARGET.write_text(text, encoding="utf-8")
@@ -151,6 +173,9 @@ def main() -> None:
     print("red_slaver_opening_stab_only=1")
     print("red_slaver_opening_miscinfo=PUBLIC_DERIVED_ZERO")
     print("red_slaver_later_turn=FAIL_CLOSED")
+    print("looter_opening_mug_only=1")
+    print("looter_opening_thievery=PUBLIC_ASCENSION_CHECKED")
+    print("looter_later_turn=FAIL_CLOSED")
     print("source_move_history_access=0")
     print("source_opening_roll_access=0")
     print("source_miscinfo_access=0")

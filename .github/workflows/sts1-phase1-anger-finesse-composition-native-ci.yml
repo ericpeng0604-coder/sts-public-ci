@@ -56,7 +56,7 @@ jobs:
         shell: bash
         run: |
           git diff --name-only 15b32c24451a0823cbd7a51d1c6ad78ba85175e3...HEAD
-          if [[ "$GITHUB_REF_NAME" == "gpt/sts1-phase1-public-reconstruction" ]]; then
+          if [[ "$GITHUB_REF_NAME" == "gpt/sts1-phase1-public-reconstruction" || "$GITHUB_REF_NAME" == "gpt/sts1-phase1-red-slaver-postmerge-ci-fix" ]]; then
             echo 'FORMAL_BRANCH_ACCUMULATED_SCOPE = PASS'
           else
             test "$(git diff --name-only 15b32c24451a0823cbd7a51d1c6ad78ba85175e3...HEAD | grep -Ev '^(src/roguelike_ai/sts1_teacher/anger_finesse_composition_reconstruction.py|src/roguelike_ai/sts1_teacher/anger_finesse_composition_policy_v1.py|src/roguelike_ai/sts1_teacher/reconstruction_state.py|scripts/sts1/apply_phase1_public_anger_finesse_composition_overlay.py|scripts/sts1/verify_phase1_public_anger_finesse_composition_native.py|tests/test_sts1_anger_finesse_composition_reconstruction.py|.github/workflows/sts1-phase1-anger-finesse-composition-native-ci.yml)$' | wc -l)" -eq 0

@@ -9,11 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST", "GREMLIN_NOB", "BLUE_SLAVER"})
+_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST", "GREMLIN_NOB", "BLUE_SLAVER", "RED_SLAVER"})
 _ALLOWED_POWER_NAMES = frozenset({"STRENGTH", "VULNERABLE", "WEAK", "POISON"})
 _CULTIST_OPENING_INTENTS = frozenset({"INCANTATION", "CULTIST_INCANTATION"})
 _NOB_OPENING_INTENTS = frozenset({"BELLOW", "GREMLIN_NOB_BELLOW"})
 _BLUE_SLAVER_OPENING_INTENTS = frozenset({"STAB", "BLUE_SLAVER_STAB", "RAKE", "BLUE_SLAVER_RAKE"})
+_RED_SLAVER_OPENING_INTENTS = frozenset({"STAB", "RED_SLAVER_STAB"})
 
 
 def _canonical_name(value: Any) -> str:
@@ -67,6 +68,14 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
             # opening intents; source RNG is never copied or queried.
             if name == "BLUE_SLAVER" and turn == 0 and normalized_intent not in _BLUE_SLAVER_OPENING_INTENTS:
                 reasons.append(f"blue_slaver_opening_intent_mismatch_v1:{normalized_intent}")
+            # Red Slaver is deliberately narrower: the pinned simulator always
+            # opens with STAB before hidden used-Entangle state or RNG can affect
+            # move selection. Later turns stay fail-closed.
+            if name == "RED_SLAVER":
+                if turn != 0:
+                    reasons.append("red_slaver_later_turn_unsupported_v1")
+                elif normalized_intent not in _RED_SLAVER_OPENING_INTENTS:
+                    reasons.append(f"red_slaver_opening_intent_mismatch_v1:{normalized_intent}")
 
         if raw_enemy.get("is_gone") is True:
             reasons.append(f"gone_enemy_unsupported_v1:{path}")

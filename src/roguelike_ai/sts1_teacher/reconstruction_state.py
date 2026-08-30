@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from .anger_finesse_composition_reconstruction import assess_public_anger_finesse_composition
 from .anger_reconstruction import assess_public_anger_midturn
 from .card_reconstruction import assess_public_cards
 from .composition_reconstruction import assess_public_anger_pommel_composition
@@ -41,17 +42,20 @@ def attach_reconstruction_capabilities(
     card_admission = assess_public_cards(result)
     anger_admission = assess_public_anger_midturn(result, reconstruction_aux)
     anger_pommel_admission = assess_public_anger_pommel_composition(result, reconstruction_aux)
+    anger_finesse_admission = assess_public_anger_finesse_composition(result, reconstruction_aux)
     enemy_admission = assess_public_enemies(result)
     run_admission = assess_public_run_state(result)
 
     # Rich generated-card slices stay deliberately isolated from the established
-    # V1 player/card admission paths. Finesse composes only with the player path
-    # and still needs normal card admission, so it cannot widen the rich slices.
-    # Anger and Anger+Pommel may override both player/card admission only when
-    # their own audited public-state + bounded auxiliary proofs pass.
+    # V1 player/card admission paths. Finesse alone composes only with the player
+    # path and still needs normal card admission, so it cannot widen rich slices.
+    # Anger, Anger+Pommel, and the exact Anger+Finesse composition may override
+    # both player/card admission only when their own audited public-state +
+    # bounded auxiliary proofs pass.
     anger_override = anger_admission.allowed
     anger_pommel_override = anger_pommel_admission.allowed
-    rich_override = anger_override or anger_pommel_override
+    anger_finesse_override = anger_finesse_admission.allowed
+    rich_override = anger_override or anger_pommel_override or anger_finesse_override
     finesse_override = finesse_candidate and finesse_admission.allowed
     player_complete = player_admission.allowed or rich_override
     card_complete = card_admission.allowed or rich_override
@@ -70,6 +74,8 @@ def attach_reconstruction_capabilities(
         "finesse_midturn_complete": finesse_override,
         "anger_pommel_composition_complete": anger_pommel_override,
         "anger_pommel_composition_admission_reasons": list(anger_pommel_admission.reasons),
+        "anger_finesse_composition_complete": anger_finesse_override,
+        "anger_finesse_composition_admission_reasons": list(anger_finesse_admission.reasons),
         "card_count": card_admission.card_count,
         "enemy_admission_reasons": list(enemy_admission.reasons),
         "enemy_count": enemy_admission.enemy_count,

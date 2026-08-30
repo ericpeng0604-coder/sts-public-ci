@@ -186,10 +186,23 @@ class NativePublicBlueSlaverRolloutV1(NativePublicJawWormRolloutV1):
     backend_id = "sts1-public-native-blue-slaver-rollout-v1"
 
 
+class NativePublicRedSlaverRolloutV1(NativePublicJawWormRolloutV1):
+    """Public-only rollout identity for the audited Red Slaver turn-0 slice.
+
+    The opening STAB and initial ``miscInfo == 0`` are derived from pinned source
+    encounter/turn semantics. Later rollout state is generated only by fresh,
+    action-independent rollout RNG; source move history and source miscInfo are
+    never read.
+    """
+
+    backend_id = "sts1-public-native-red-slaver-turn0-rollout-v1"
+
+
 __all__ = [
     "NativePublicJawWormRolloutV1",
     "NativePublicCultistRolloutV1",
     "NativePublicGremlinNobRolloutV1",
     "NativePublicBlueSlaverRolloutV1",
+    "NativePublicRedSlaverRolloutV1",
     "NativePublicRolloutError",
 ]

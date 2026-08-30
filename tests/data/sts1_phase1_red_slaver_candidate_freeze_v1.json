@@ -1,0 +1,41 @@
+{
+  "schema_version": "sts1-phase1-red-slaver-turn0-candidate-freeze-v1",
+  "candidate_id": "red-slaver-turn0-raw-public-search-v1",
+  "scope": "Red Slaver turn-0 opening slice only",
+  "selected_from": "disjoint 560001..560064 discovery only",
+  "selection_reason": "raw Search strictly beat both Simple and deterministic Random on the frozen discovery suite",
+  "discovery_head": "456566cd949ae4b81319ba7113603fd1e19daca4",
+  "quality_runner_blob_sha": "ddd7f4e5b799b4dd5a00f0e893dd2240ca70e2a8",
+  "search_config": {
+    "samples_per_semantic_action": 8,
+    "rollout_budget": 256,
+    "node_budget": 16384,
+    "max_depth": 30,
+    "timeout_ms": 60000,
+    "tie_tolerance": 1e-9,
+    "sampling_seed": 20260830
+  },
+  "discovery_evidence": {
+    "workflow_run_id": 33295330294,
+    "artifact_id": 9727237682,
+    "artifact_zip_sha256": "7853425be6d040822403cd6079fca813611d29e4c3f08dae2806a4c858b648a9",
+    "suite_digest": "c2061101848811c781542a13f7819d94d9623b2ad4ecf5fde12078be4f26555f",
+    "rows_digest": "996b96052452c860625f0d2330b541f2aa39f8c517734dc7f5ae87000fe07ca2",
+    "agreement_counts": {
+      "search": 13,
+      "simple": 6,
+      "random": 5
+    },
+    "unresolved": 0,
+    "illegal": 0,
+    "leakage": 0,
+    "deterministic_repeats": 2
+  },
+  "fresh_holdout": {
+    "seed_range": "570001..570064",
+    "source_seed_file_sha256": "bbd413a5621bd9cac89a36521261b420d1204d542dc953bd606de9ac8f9b592b",
+    "quality_observed_before_candidate_freeze": false
+  },
+  "phase1_gate_claimed": false,
+  "phase2_locked": true
+}

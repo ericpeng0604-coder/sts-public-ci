@@ -103,15 +103,16 @@ ENEMY_MOVE_REPLACEMENT = '''              const auto publicIntent = normalized(g
                       throw std::runtime_error("blue_slaver_opening_intent_mismatch_v1:" + publicIntent);
                   }
               } else if (enemyName == "LOOTER") {
-                  // phase1_public_looter_opening_v1: source getMoveForRoll returns
-                  // MUG unconditionally on the opening move. Thievery is copied
-                  // only from the public power list after Python admission checks
-                  // its amount against public ascension level.
+                  // phase1_public_looter_opening_v1: pinned getMoveForRoll returns
+                  // MUG unconditionally on the opening move. Looter's initial
+                  // Thievery is also deterministic from public ascension level:
+                  // 15 below A17, 20 at A17+. No source hidden status is read.
                   if (bc.turn != 0) throw std::runtime_error("looter_later_turn_unsupported_v1");
                   if (publicIntent != "MUG" && publicIntent != "LOOTER_MUG") {
                       throw std::runtime_error("looter_opening_intent_mismatch_v1:" + publicIntent);
                   }
                   mo.moveHistory[0] = MMID::LOOTER_MUG;
+                  mo.setStatus<MonsterStatus::THIEVERY>(bc.ascension >= 17 ? 20 : 15);
               } else {
                   // phase1_public_red_slaver_opening_v1: pinned source logic
                   // returns STAB on the first move before used-Entangle miscInfo
@@ -129,7 +130,12 @@ ENEMY_MOVE_REPLACEMENT = '''              const auto publicIntent = normalized(g
 POWER_ANCHOR = '''                  else if (name == "POISON") mo.setStatus<MonsterStatus::POISON>(amount);
                   else throw std::runtime_error("unsupported_enemy_power_v1:" + name);'''
 POWER_REPLACEMENT = '''                  else if (name == "POISON") mo.setStatus<MonsterStatus::POISON>(amount);
-                  else if (name == "THIEVERY") mo.setStatus<MonsterStatus::THIEVERY>(amount);
+                  else if (name == "THIEVERY") {
+                      if (enemyName != "LOOTER") throw std::runtime_error("thievery_non_looter_unsupported_v1");
+                      const int expected = bc.ascension >= 17 ? 20 : 15;
+                      if (amount != expected) throw std::runtime_error("looter_opening_thievery_mismatch_v1");
+                      mo.setStatus<MonsterStatus::THIEVERY>(amount);
+                  }
                   else throw std::runtime_error("unsupported_enemy_power_v1:" + name);'''
 
 
@@ -174,11 +180,12 @@ def main() -> None:
     print("red_slaver_opening_miscinfo=PUBLIC_DERIVED_ZERO")
     print("red_slaver_later_turn=FAIL_CLOSED")
     print("looter_opening_mug_only=1")
-    print("looter_opening_thievery=PUBLIC_ASCENSION_CHECKED")
+    print("looter_opening_thievery=PUBLIC_ASCENSION_DERIVED")
     print("looter_later_turn=FAIL_CLOSED")
     print("source_move_history_access=0")
     print("source_opening_roll_access=0")
     print("source_miscinfo_access=0")
+    print("source_hidden_thievery_access=0")
 
 
 if __name__ == "__main__":

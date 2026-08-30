@@ -201,6 +201,35 @@ class NativePublicLooterRolloutV1(NativePublicJawWormRolloutV1):
     backend_id = "sts1-public-native-looter-turn0-rollout-v1"
 
 
+class NativePublicLooterRolloutV2(NativePublicLooterRolloutV1):
+    """Looter V2: preserve combat score dominance and use gold only as a tie-break.
+
+    The frozen quality candidate averages exactly eight rollout scores. The V1
+    combat score is integer-valued per rollout, so two different averaged combat
+    scores are separated by at least 1/8 = 0.125. This V2 adds at most 0.001 to
+    any rollout, which is over 100x smaller than that minimum non-zero combat
+    gap. One gold is worth 1e-7, above the frozen Search tie tolerance (1e-9),
+    so equal combat outcomes can still be ordered by remaining public gold.
+
+    The cap is structural, not fitted to any discovery or holdout row.
+    """
+
+    backend_id = "sts1-public-native-looter-turn0-rollout-v2"
+    gold_tiebreak_per_gold = 1e-7
+    gold_tiebreak_cap = 0.001
+
+    @classmethod
+    def gold_tiebreak(cls, gold: int) -> float:
+        if isinstance(gold, bool) or not isinstance(gold, int):
+            raise NativePublicRolloutError("looter_v2_gold_must_be_int")
+        return min(max(gold, 0) * cls.gold_tiebreak_per_gold, cls.gold_tiebreak_cap)
+
+    def _score(self, bc: Any) -> float:
+        combat_score = NativePublicJawWormRolloutV1._score(bc)
+        gold = self._native.get_public_player_gold_v1(bc)
+        return combat_score + self.gold_tiebreak(gold)
+
+
 __all__ = [
     "NativePublicJawWormRolloutV1",
     "NativePublicCultistRolloutV1",
@@ -208,5 +237,6 @@ __all__ = [
     "NativePublicBlueSlaverRolloutV1",
     "NativePublicRedSlaverRolloutV1",
     "NativePublicLooterRolloutV1",
+    "NativePublicLooterRolloutV2",
     "NativePublicRolloutError",
 ]

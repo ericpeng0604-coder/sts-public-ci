@@ -5,6 +5,7 @@ on:
     branches:
       - gpt/sts1-phase1-anger-finesse-composition-native-ready
       - gpt/sts1-phase1-anger-finesse-formal-integration-v2
+      - gpt/sts1-phase1-red-slaver-postmerge-ci-fix
       - gpt/sts1-phase1-public-reconstruction
   workflow_dispatch:
 

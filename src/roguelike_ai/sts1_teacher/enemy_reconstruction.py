@@ -65,23 +65,13 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
                 reasons.append(f"cultist_opening_intent_mismatch_v1:{normalized_intent}")
             if name == "GREMLIN_NOB" and turn == 0 and normalized_intent not in _NOB_OPENING_INTENTS:
                 reasons.append(f"gremlin_nob_opening_intent_mismatch_v1:{normalized_intent}")
-            # Blue Slaver's first intent is stochastic upstream, but the current
-            # intent is public information. V1 accepts only its two legal
-            # opening intents; source RNG is never copied or queried.
             if name == "BLUE_SLAVER" and turn == 0 and normalized_intent not in _BLUE_SLAVER_OPENING_INTENTS:
                 reasons.append(f"blue_slaver_opening_intent_mismatch_v1:{normalized_intent}")
-            # Red Slaver is deliberately narrower: the pinned simulator always
-            # opens with STAB before hidden used-Entangle state or RNG can affect
-            # move selection. Later turns stay fail-closed.
             if name == "RED_SLAVER":
                 if turn != 0:
                     reasons.append("red_slaver_later_turn_unsupported_v1")
                 elif normalized_intent not in _RED_SLAVER_OPENING_INTENTS:
                     reasons.append(f"red_slaver_opening_intent_mismatch_v1:{normalized_intent}")
-            # Looter is source-level deterministic on the opening turn: its
-            # getMoveForRoll path returns MUG unconditionally. The only
-            # pre-battle monster state needed by MUG is the public Thievery
-            # power, whose amount is fixed by public ascension level.
             if name == "LOOTER":
                 if turn != 0:
                     reasons.append("looter_later_turn_unsupported_v1")
@@ -115,7 +105,11 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
                 reasons.append("looter_missing_public_ascension_v1")
             else:
                 expected_thievery = 20 if ascension >= 17 else 15
-                if normalized_powers != [("THIEVERY", expected_thievery)]:
+                # The pinned simulator binding currently omits Thievery from its
+                # public monster projection. This is still safely reconstructible:
+                # preBattleAction derives it solely from public ascension level.
+                # If a source does expose the public power, it must match exactly.
+                if normalized_powers not in ([], [("THIEVERY", expected_thievery)]):
                     reasons.append(
                         f"looter_opening_thievery_mismatch_v1:expected_{expected_thievery}"
                     )

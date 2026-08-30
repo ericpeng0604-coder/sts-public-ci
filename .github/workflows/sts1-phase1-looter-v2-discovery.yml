@@ -1,0 +1,142 @@
+name: STS1 Phase 1 Looter V2 Discovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-looter-turn0-quality-v2
+    paths:
+      - '.github/workflows/sts1-phase1-looter-v2-discovery.yml'
+      - 'src/roguelike_ai/sts1_teacher/native_rollout.py'
+      - 'scripts/sts1/generate_phase1_looter_v2_suite.py'
+      - 'scripts/sts1/run_phase1_looter_v2_quality.py'
+      - 'scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py'
+      - 'tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  looter-v2-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Freeze V2 scope and 610xxx evidence identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(wc -l < tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt)" -eq 64
+          test "$(sort -n tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt | uniq | wc -l)" -eq 64
+          test "$(head -1 tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt)" = '610001'
+          test "$(tail -1 tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt)" = '610064'
+          test "$(sha256sum tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt | awk '{print $1}')" = '293d8e8d7d125410a9b4ef8cd4aeea5effefc3d41c6aa97985f4ba7713a5836c'
+          test "$(git hash-object scripts/sts1/run_phase1_looter_v2_quality.py)" = '8f85a95c4fb831b9918ca4c12f852e56752b1213'
+          test "$(comm -12 <(sort -n tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt) <(sort -n tests/data/sts1_phase1_looter_discovery_seeds_64.txt) | wc -l)" -eq 0
+          test "$(comm -12 <(sort -n tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt) <(sort -n tests/data/sts1_phase1_looter_fresh_holdout_seeds_64.txt) | wc -l)" -eq 0
+          git diff --quiet af788ea377894c0b0c85539e0084cae6b712f827 -- src/roguelike_ai/sts1_teacher/contract.py
+          git diff --quiet af788ea377894c0b0c85539e0084cae6b712f827 -- src/roguelike_ai/sts1_teacher/simulator.py
+          echo 'CANDIDATE_ID = looter-turn0-public-search-gold-tiebreak-v2'
+          echo 'QUALITY_RUNNER_BLOB_SHA = 8f85a95c4fb831b9918ca4c12f852e56752b1213'
+          echo 'DISCOVERY_SEED_SHA256 = 293d8e8d7d125410a9b4ef8cd4aeea5effefc3d41c6aa97985f4ba7713a5836c'
+          echo 'OLD_590XXX_RERUN_AS_NEW_EVIDENCE = 0'
+          echo 'OLD_600XXX_ROWS_USED_FOR_TUNING = 0'
+          echo '620XXX_FRESH_HOLDOUT_OPENED = 0'
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+          echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+
+      - name: Syntax gate
+        run: >-
+          python -m py_compile
+          src/roguelike_ai/sts1_teacher/native_rollout.py
+          scripts/sts1/generate_phase1_looter_v2_suite.py
+          scripts/sts1/run_phase1_looter_v2_quality.py
+          scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py
+
+      - name: Prove bounded gold tie-break
+        run: python scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply public reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate blind 610xxx discovery suite twice
+        run: |
+          python scripts/sts1/generate_phase1_looter_v2_suite.py --suite-kind discovery --output "$RUNNER_TEMP/looter-v2-discovery-a.json"
+          python scripts/sts1/generate_phase1_looter_v2_suite.py --suite-kind discovery --output "$RUNNER_TEMP/looter-v2-discovery-b.json"
+          cmp "$RUNNER_TEMP/looter-v2-discovery-a.json" "$RUNNER_TEMP/looter-v2-discovery-b.json"
+          cp "$RUNNER_TEMP/looter-v2-discovery-a.json" "$RUNNER_TEMP/looter-v2-discovery.json"
+          echo 'LOOTER_V2_DISCOVERY_SUITE_DETERMINISTIC = PASS'
+
+      - name: Run frozen V2 on 610xxx discovery
+        run: >-
+          python scripts/sts1/run_phase1_looter_v2_quality.py
+          --suite-kind discovery
+          --suite "$RUNNER_TEMP/looter-v2-discovery.json"
+          --output-dir "$RUNNER_TEMP/looter-v2-discovery-evidence"
+
+      - name: Discovery execution evidence
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['RUNNER_TEMP']) / 'looter-v2-discovery-evidence' / 'summary.json'
+          s = json.loads(p.read_text())
+          assert s['candidate_id'] == 'looter-turn0-public-search-gold-tiebreak-v2'
+          assert s['case_count'] == 24
+          assert s['deterministic'] is True and s['full_repeats'] == 2
+          assert s['search_unresolved'] == 0
+          assert s['illegal_actions'] == 0
+          assert s['leakage'] == 0
+          assert s['gold_tiebreak']['can_overturn_nonzero_combat_mean_gap'] is False
+          print('SEARCH', s['agreement_counts']['search'])
+          print('SIMPLE', s['agreement_counts']['simple'])
+          print('RANDOM', s['agreement_counts']['random'])
+          print('QUALITY_VERDICT', s['quality_verdict'])
+          print('QUALITY_REASONS', s['quality_reasons'])
+          print('SUITE_DIGEST', s['suite_digest'])
+          print('ROWS_DIGEST', s['rows_digest'])
+          print('SOURCE_SEED_FILE_SHA256', s['source_seed_file_sha256'])
+          print('DISCOVERY_EXECUTION_INTEGRITY = PASS')
+          print('620XXX_FRESH_HOLDOUT_OPENED = 0')
+          print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
+          print('NON_TARGET_SIMULATOR_DIFF = 0')
+          print('PHASE1_GATE_CLAIMED = 0')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-phase1-looter-v2-discovery-evidence
+          path: ${{ runner.temp }}/looter-v2-discovery-evidence
+          if-no-files-found: warn
+
+      - name: Strict Discovery quality gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'looter-v2-discovery-evidence'/'summary.json').read_text())
+          assert s['quality_verdict']=='PASS', s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['simple'], s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['random'], s
+          print('PASS — LOOTER_TURN0_QUALITY_V2_DISCOVERY')
+          PY

@@ -1,0 +1,113 @@
+name: STS1 Phase 1 Looter Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-looter-turn0-native
+    paths:
+      - '.github/workflows/sts1-phase1-looter-fresh-holdout.yml'
+      - 'tests/data/sts1_phase1_looter_candidate_freeze_v1.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  looter-fresh-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify frozen candidate before opening holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object scripts/sts1/run_phase1_looter_quality.py)" = 'c6b37499c748fb863f4f25e0d5c4b65bf7d609b6'
+          test "$(sha256sum tests/data/sts1_phase1_looter_fresh_holdout_seeds_64.txt | awk '{print $1}')" = 'c1f7a0fab2c5291e6c7e5ccaa1ff58c094b98910a297f1c8ff1c81c0a1a303ec'
+          python - <<'PY'
+          import json
+          p='tests/data/sts1_phase1_looter_candidate_freeze_v1.json'
+          f=json.load(open(p))
+          assert f['candidate_id']=='looter-turn0-raw-public-search-v1'
+          assert f['frozen_before_fresh_holdout_quality'] is True
+          assert f['fresh_holdout_quality_observed_at_freeze'] is False
+          assert f['quality_runner_blob_sha']=='c6b37499c748fb863f4f25e0d5c4b65bf7d609b6'
+          assert f['discovery_evidence']['quality_verdict']=='PASS'
+          assert f['fresh_holdout_seed_file_sha256']=='c1f7a0fab2c5291e6c7e5ccaa1ff58c094b98910a297f1c8ff1c81c0a1a303ec'
+          assert f['public_contract_fields_added']==0
+          assert f['phase1_gate_claimed'] is False
+          print('FROZEN_CANDIDATE_UNCHANGED = PASS')
+          print('FRESH_HOLDOUT_FIRST_OPEN = PASS')
+          PY
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply public reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Reprove Looter Native Ready semantics
+        run: python scripts/sts1/verify_phase1_public_looter_native.py
+
+      - name: Generate frozen fresh holdout twice
+        run: |
+          python scripts/sts1/generate_phase1_looter_suite.py --suite-kind holdout --output "$RUNNER_TEMP/looter-holdout-a.json"
+          python scripts/sts1/generate_phase1_looter_suite.py --suite-kind holdout --output "$RUNNER_TEMP/looter-holdout-b.json"
+          cmp "$RUNNER_TEMP/looter-holdout-a.json" "$RUNNER_TEMP/looter-holdout-b.json"
+          cp "$RUNNER_TEMP/looter-holdout-a.json" "$RUNNER_TEMP/looter-holdout.json"
+          echo 'LOOTER_FRESH_HOLDOUT_SUITE_DETERMINISTIC = PASS'
+
+      - name: Run exact frozen candidate on fresh holdout
+        run: >-
+          python scripts/sts1/run_phase1_looter_quality.py
+          --suite-kind holdout
+          --suite "$RUNNER_TEMP/looter-holdout.json"
+          --output-dir "$RUNNER_TEMP/looter-holdout-evidence"
+
+      - name: Fresh holdout gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'looter-holdout-evidence'/'summary.json'
+          s=json.loads(p.read_text())
+          assert s['case_count']==24
+          assert s['deterministic'] is True and s['full_repeats']==2
+          assert s['search_unresolved']==0
+          assert s['illegal_actions']==0
+          assert s['leakage']==0
+          assert s['quality_verdict']=='PASS', s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['simple']
+          assert s['agreement_counts']['search'] > s['agreement_counts']['random']
+          print('SEARCH',s['agreement_counts']['search'])
+          print('SIMPLE',s['agreement_counts']['simple'])
+          print('RANDOM',s['agreement_counts']['random'])
+          print('SUITE_DIGEST',s['suite_digest'])
+          print('ROWS_DIGEST',s['rows_digest'])
+          print('LOOTER_FRESH_HOLDOUT_QUALITY = PASS')
+          print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
+          print('NON_TARGET_SIMULATOR_DIFF = 0')
+          print('PHASE1_GATE_CLAIMED = 0')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-phase1-looter-fresh-holdout-evidence
+          path: ${{ runner.temp }}/looter-holdout-evidence
+          if-no-files-found: error

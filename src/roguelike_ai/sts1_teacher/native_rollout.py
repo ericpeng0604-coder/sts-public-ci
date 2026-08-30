@@ -177,25 +177,57 @@ class NativePublicGremlinNobRolloutV1(NativePublicJawWormRolloutV1):
 
 
 class NativePublicBlueSlaverRolloutV1(NativePublicJawWormRolloutV1):
-    """Public-only rollout identity for the audited Blue Slaver opening slice.
-
-    The reconstructed current opening intent comes only from public state.
-    Subsequent move rolls use the fresh action-independent rollout RNG.
-    """
+    """Public-only rollout identity for the audited Blue Slaver opening slice."""
 
     backend_id = "sts1-public-native-blue-slaver-rollout-v1"
 
 
 class NativePublicRedSlaverRolloutV1(NativePublicJawWormRolloutV1):
-    """Public-only rollout identity for the audited Red Slaver turn-0 slice.
-
-    The opening STAB and initial ``miscInfo == 0`` are derived from pinned source
-    encounter/turn semantics. Later rollout state is generated only by fresh,
-    action-independent rollout RNG; source move history and source miscInfo are
-    never read.
-    """
+    """Public-only rollout identity for the audited Red Slaver turn-0 slice."""
 
     backend_id = "sts1-public-native-red-slaver-turn0-rollout-v1"
+
+
+class NativePublicLooterRolloutV1(NativePublicJawWormRolloutV1):
+    """Public-only rollout identity for the audited Looter turn-0 slice.
+
+    Opening MUG and initial Thievery are reconstructed only from the public
+    encounter, turn, and ascension. Future move rolls use fresh rollout RNG.
+    The scoring function is intentionally unchanged from the already-established
+    raw PublicStateSearch candidate for discovery; no Looter-specific tuning is
+    performed before seeing discovery evidence.
+    """
+
+    backend_id = "sts1-public-native-looter-turn0-rollout-v1"
+
+
+class NativePublicLooterRolloutV2(NativePublicLooterRolloutV1):
+    """Looter V2: preserve combat score dominance and use gold only as a tie-break.
+
+    The frozen quality candidate averages exactly eight rollout scores. The V1
+    combat score is integer-valued per rollout, so two different averaged combat
+    scores are separated by at least 1/8 = 0.125. This V2 adds at most 0.001 to
+    any rollout, which is over 100x smaller than that minimum non-zero combat
+    gap. One gold is worth 1e-7, above the frozen Search tie tolerance (1e-9),
+    so equal combat outcomes can still be ordered by remaining public gold.
+
+    The cap is structural, not fitted to any discovery or holdout row.
+    """
+
+    backend_id = "sts1-public-native-looter-turn0-rollout-v2"
+    gold_tiebreak_per_gold = 1e-7
+    gold_tiebreak_cap = 0.001
+
+    @classmethod
+    def gold_tiebreak(cls, gold: int) -> float:
+        if isinstance(gold, bool) or not isinstance(gold, int):
+            raise NativePublicRolloutError("looter_v2_gold_must_be_int")
+        return min(max(gold, 0) * cls.gold_tiebreak_per_gold, cls.gold_tiebreak_cap)
+
+    def _score(self, bc: Any) -> float:
+        combat_score = NativePublicJawWormRolloutV1._score(bc)
+        gold = self._native.get_public_player_gold_v1(bc)
+        return combat_score + self.gold_tiebreak(gold)
 
 
 __all__ = [
@@ -204,5 +236,7 @@ __all__ = [
     "NativePublicGremlinNobRolloutV1",
     "NativePublicBlueSlaverRolloutV1",
     "NativePublicRedSlaverRolloutV1",
+    "NativePublicLooterRolloutV1",
+    "NativePublicLooterRolloutV2",
     "NativePublicRolloutError",
 ]

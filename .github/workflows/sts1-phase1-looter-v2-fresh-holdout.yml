@@ -1,0 +1,163 @@
+name: STS1 Phase 1 Looter V2 Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-looter-turn0-quality-v2
+    paths:
+      - '.github/workflows/sts1-phase1-looter-v2-fresh-holdout.yml'
+      - 'tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt'
+      - 'tests/data/sts1_phase1_looter_candidate_freeze_v2.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  looter-v2-fresh-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify candidate freeze before first 620xxx open
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor b8f22e618bc48c963e6d347bad8aef8ab9a013e9 HEAD
+          test "$(git hash-object scripts/sts1/run_phase1_looter_v2_quality.py)" = '8f85a95c4fb831b9918ca4c12f852e56752b1213'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/native_rollout.py)" = '4f63ac21ca0a2a34fe46326ae11d11342e2a3d91'
+          test "$(git hash-object tests/data/sts1_phase1_looter_candidate_freeze_v2.json)" = '1aaab9556af9f9521a9fbc96cd97f982977a8d43'
+          test "$(wc -l < tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt)" -eq 64
+          test "$(sort -n tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt | uniq | wc -l)" -eq 64
+          test "$(head -1 tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt)" = '620001'
+          test "$(tail -1 tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt)" = '620064'
+          test "$(sha256sum tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt | awk '{print $1}')" = '5d7d538a1f1c38881d41e6e6f3e3a0b2a8fbd4534fe5393d070a2848588d359c'
+          for other in \
+            tests/data/sts1_phase1_looter_discovery_seeds_64.txt \
+            tests/data/sts1_phase1_looter_fresh_holdout_seeds_64.txt \
+            tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt; do
+            test "$(comm -12 <(sort -n tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt) <(sort -n "$other") | wc -l)" -eq 0
+          done
+          git diff --quiet af788ea377894c0b0c85539e0084cae6b712f827 -- src/roguelike_ai/sts1_teacher/contract.py
+          git diff --quiet af788ea377894c0b0c85539e0084cae6b712f827 -- src/roguelike_ai/sts1_teacher/simulator.py
+          python - <<'PY'
+          import json
+          f=json.load(open('tests/data/sts1_phase1_looter_candidate_freeze_v2.json'))
+          assert f['candidate_id']=='looter-turn0-public-search-gold-tiebreak-v2'
+          assert f['frozen_before_fresh_holdout_quality'] is True
+          assert f['fresh_holdout_quality_observed_at_freeze'] is False
+          assert f['fresh_holdout_seed_range_precommitted']=='620001..620064'
+          assert f['fresh_holdout_seed_file_created_at_freeze'] is False
+          assert f['quality_runner_blob_sha']=='8f85a95c4fb831b9918ca4c12f852e56752b1213'
+          assert f['native_rollout_blob_sha']=='4f63ac21ca0a2a34fe46326ae11d11342e2a3d91'
+          assert f['discovery_evidence']['quality_verdict']=='PASS'
+          assert f['discovery_evidence']['search'] > f['discovery_evidence']['simple']
+          assert f['discovery_evidence']['search'] > f['discovery_evidence']['random']
+          assert f['gold_tiebreak']['can_overturn_nonzero_combat_mean_gap'] is False
+          assert f['old_600xxx_used_for_tuning'] is False
+          assert f['public_contract_fields_added']==0
+          assert f['non_target_simulator_diff']==0
+          assert f['phase1_gate_claimed'] is False
+          print('V2_FROZEN_CANDIDATE_UNCHANGED = PASS')
+          print('620XXX_FRESH_HOLDOUT_FIRST_OPEN = PASS')
+          PY
+          echo 'CANDIDATE_ID = looter-turn0-public-search-gold-tiebreak-v2'
+          echo 'QUALITY_RUNNER_BLOB_SHA = 8f85a95c4fb831b9918ca4c12f852e56752b1213'
+          echo 'FRESH_HOLDOUT_SEED_SHA256 = 5d7d538a1f1c38881d41e6e6f3e3a0b2a8fbd4534fe5393d070a2848588d359c'
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+          echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+
+      - name: Syntax gate
+        run: >-
+          python -m py_compile
+          src/roguelike_ai/sts1_teacher/native_rollout.py
+          scripts/sts1/generate_phase1_looter_v2_suite.py
+          scripts/sts1/run_phase1_looter_v2_quality.py
+          scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py
+
+      - name: Reprove frozen gold tie-break bound
+        run: python scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py
+
+      - name: Hydrate exact upstream sources
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply public reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Generate frozen 620xxx fresh holdout twice
+        run: |
+          python scripts/sts1/generate_phase1_looter_v2_suite.py --suite-kind holdout --output "$RUNNER_TEMP/looter-v2-holdout-a.json"
+          python scripts/sts1/generate_phase1_looter_v2_suite.py --suite-kind holdout --output "$RUNNER_TEMP/looter-v2-holdout-b.json"
+          cmp "$RUNNER_TEMP/looter-v2-holdout-a.json" "$RUNNER_TEMP/looter-v2-holdout-b.json"
+          cp "$RUNNER_TEMP/looter-v2-holdout-a.json" "$RUNNER_TEMP/looter-v2-holdout.json"
+          echo 'LOOTER_V2_FRESH_HOLDOUT_SUITE_DETERMINISTIC = PASS'
+
+      - name: Run exact frozen V2 on 620xxx fresh holdout
+        run: >-
+          python scripts/sts1/run_phase1_looter_v2_quality.py
+          --suite-kind holdout
+          --suite "$RUNNER_TEMP/looter-v2-holdout.json"
+          --output-dir "$RUNNER_TEMP/looter-v2-holdout-evidence"
+
+      - name: Fresh holdout execution evidence
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'looter-v2-holdout-evidence'/'summary.json'
+          s=json.loads(p.read_text())
+          assert s['candidate_id']=='looter-turn0-public-search-gold-tiebreak-v2'
+          assert s['case_count']==24
+          assert s['deterministic'] is True and s['full_repeats']==2
+          assert s['search_unresolved']==0
+          assert s['illegal_actions']==0
+          assert s['leakage']==0
+          assert s['gold_tiebreak']['can_overturn_nonzero_combat_mean_gap'] is False
+          print('SEARCH',s['agreement_counts']['search'])
+          print('SIMPLE',s['agreement_counts']['simple'])
+          print('RANDOM',s['agreement_counts']['random'])
+          print('QUALITY_VERDICT',s['quality_verdict'])
+          print('QUALITY_REASONS',s['quality_reasons'])
+          print('SUITE_DIGEST',s['suite_digest'])
+          print('ROWS_DIGEST',s['rows_digest'])
+          print('SOURCE_SEED_FILE_SHA256',s['source_seed_file_sha256'])
+          print('FRESH_HOLDOUT_EXECUTION_INTEGRITY = PASS')
+          print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
+          print('NON_TARGET_SIMULATOR_DIFF = 0')
+          print('PHASE1_GATE_CLAIMED = 0')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-phase1-looter-v2-fresh-holdout-evidence
+          path: ${{ runner.temp }}/looter-v2-holdout-evidence
+          if-no-files-found: warn
+
+      - name: Strict Fresh Holdout quality gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'looter-v2-holdout-evidence'/'summary.json').read_text())
+          assert s['quality_verdict']=='PASS', s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['simple'], s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['random'], s
+          print('PASS — LOOTER_TURN0_QUALITY_V2_FRESH_HOLDOUT')
+          PY

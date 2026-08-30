@@ -36,6 +36,24 @@ def red_slaver_state(intent: str = "RED_SLAVER_STAB", turn: int = 0) -> dict:
     }
 
 
+def looter_state(
+    *,
+    intent: str = "LOOTER_MUG",
+    turn: int = 0,
+    ascension: int = 0,
+    thievery: int | None = None,
+    expose_thievery: bool = True,
+) -> dict:
+    if thievery is None:
+        thievery = 20 if ascension >= 17 else 15
+    powers = [{"name": "Thievery", "amount": thievery}] if expose_thievery else []
+    return {
+        "turn": turn,
+        "ascension_level": ascension,
+        "enemies": [{"index": 0, "name": "Looter", "hp": 46, "max_hp": 46, "block": 0, "intent": intent, "intent_damage": 10 if ascension < 2 else 11, "intent_hits": 1, "is_gone": False, "powers": powers}],
+    }
+
+
 def test_single_jaw_worm_public_surface_is_admitted() -> None:
     result = assess_public_enemies(jaw_worm_state())
     assert result.allowed is True
@@ -72,6 +90,22 @@ def test_red_slaver_opening_stab_is_publicly_admitted() -> None:
     assert result.enemy_count == 1
 
 
+def test_looter_opening_mug_and_public_thievery_are_admitted() -> None:
+    for ascension, expected in ((0, 15), (17, 20)):
+        result = assess_public_enemies(looter_state(ascension=ascension, thievery=expected))
+        assert result.allowed is True
+        assert result.reasons == ()
+        assert result.enemy_count == 1
+
+
+def test_looter_opening_without_projected_thievery_is_publicly_derivable() -> None:
+    for ascension in (0, 17):
+        result = assess_public_enemies(looter_state(ascension=ascension, expose_thievery=False))
+        assert result.allowed is True
+        assert result.reasons == ()
+        assert result.enemy_count == 1
+
+
 def test_impossible_cultist_opening_dark_strike_fails_closed() -> None:
     state = cultist_state()
     state["enemies"][0]["intent"] = "CULTIST_DARK_STRIKE"
@@ -105,6 +139,24 @@ def test_red_slaver_later_turn_fails_closed() -> None:
     result = assess_public_enemies(red_slaver_state(turn=1))
     assert result.allowed is False
     assert "red_slaver_later_turn_unsupported_v1" in result.reasons
+
+
+def test_looter_impossible_opening_intent_fails_closed() -> None:
+    result = assess_public_enemies(looter_state(intent="LOOTER_LUNGE"))
+    assert result.allowed is False
+    assert "looter_opening_intent_mismatch_v1:LOOTER_LUNGE" in result.reasons
+
+
+def test_looter_later_turn_fails_closed() -> None:
+    result = assess_public_enemies(looter_state(turn=1))
+    assert result.allowed is False
+    assert "looter_later_turn_unsupported_v1" in result.reasons
+
+
+def test_looter_wrong_public_thievery_fails_closed() -> None:
+    result = assess_public_enemies(looter_state(ascension=0, thievery=20))
+    assert result.allowed is False
+    assert "looter_opening_thievery_mismatch_v1:expected_15" in result.reasons
 
 
 def test_unknown_monster_fails_closed() -> None:

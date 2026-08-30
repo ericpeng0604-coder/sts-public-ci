@@ -9,12 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST", "GREMLIN_NOB", "BLUE_SLAVER", "RED_SLAVER"})
-_ALLOWED_POWER_NAMES = frozenset({"STRENGTH", "VULNERABLE", "WEAK", "POISON"})
+_SUPPORTED_V1 = frozenset({"JAW_WORM", "CULTIST", "GREMLIN_NOB", "BLUE_SLAVER", "RED_SLAVER", "LOOTER"})
+_ALLOWED_POWER_NAMES = frozenset({"STRENGTH", "VULNERABLE", "WEAK", "POISON", "THIEVERY"})
 _CULTIST_OPENING_INTENTS = frozenset({"INCANTATION", "CULTIST_INCANTATION"})
 _NOB_OPENING_INTENTS = frozenset({"BELLOW", "GREMLIN_NOB_BELLOW"})
 _BLUE_SLAVER_OPENING_INTENTS = frozenset({"STAB", "BLUE_SLAVER_STAB", "RAKE", "BLUE_SLAVER_RAKE"})
 _RED_SLAVER_OPENING_INTENTS = frozenset({"STAB", "RED_SLAVER_STAB"})
+_LOOTER_OPENING_INTENTS = frozenset({"MUG", "LOOTER_MUG"})
 
 
 def _canonical_name(value: Any) -> str:
@@ -39,6 +40,7 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
         reasons.append(f"enemy_count_unsupported_v1:{enemy_count}")
 
     turn = state.get("turn")
+    ascension = state.get("ascension_level")
     for index, raw_enemy in enumerate(raw_enemies):
         path = f"enemies[{index}]"
         if not isinstance(raw_enemy, Mapping):
@@ -63,19 +65,18 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
                 reasons.append(f"cultist_opening_intent_mismatch_v1:{normalized_intent}")
             if name == "GREMLIN_NOB" and turn == 0 and normalized_intent not in _NOB_OPENING_INTENTS:
                 reasons.append(f"gremlin_nob_opening_intent_mismatch_v1:{normalized_intent}")
-            # Blue Slaver's first intent is stochastic upstream, but the current
-            # intent is public information. V1 accepts only its two legal
-            # opening intents; source RNG is never copied or queried.
             if name == "BLUE_SLAVER" and turn == 0 and normalized_intent not in _BLUE_SLAVER_OPENING_INTENTS:
                 reasons.append(f"blue_slaver_opening_intent_mismatch_v1:{normalized_intent}")
-            # Red Slaver is deliberately narrower: the pinned simulator always
-            # opens with STAB before hidden used-Entangle state or RNG can affect
-            # move selection. Later turns stay fail-closed.
             if name == "RED_SLAVER":
                 if turn != 0:
                     reasons.append("red_slaver_later_turn_unsupported_v1")
                 elif normalized_intent not in _RED_SLAVER_OPENING_INTENTS:
                     reasons.append(f"red_slaver_opening_intent_mismatch_v1:{normalized_intent}")
+            if name == "LOOTER":
+                if turn != 0:
+                    reasons.append("looter_later_turn_unsupported_v1")
+                elif normalized_intent not in _LOOTER_OPENING_INTENTS:
+                    reasons.append(f"looter_opening_intent_mismatch_v1:{normalized_intent}")
 
         if raw_enemy.get("is_gone") is True:
             reasons.append(f"gone_enemy_unsupported_v1:{path}")
@@ -84,6 +85,7 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
         if not isinstance(powers, Sequence) or isinstance(powers, str | bytes | bytearray):
             reasons.append(f"enemy_powers_not_sequence:{path}")
             continue
+        normalized_powers: list[tuple[str, int | None]] = []
         for power_index, power in enumerate(powers):
             if not isinstance(power, Mapping):
                 reasons.append(f"enemy_power_not_mapping:{path}.powers[{power_index}]")
@@ -94,6 +96,23 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
             amount = power.get("amount")
             if isinstance(amount, bool) or not isinstance(amount, int):
                 reasons.append(f"invalid_enemy_power_amount:{path}.powers[{power_index}]")
+                normalized_powers.append((power_name, None))
+            else:
+                normalized_powers.append((power_name, amount))
+
+        if name == "LOOTER" and turn == 0:
+            if isinstance(ascension, bool) or not isinstance(ascension, int):
+                reasons.append("looter_missing_public_ascension_v1")
+            else:
+                expected_thievery = 20 if ascension >= 17 else 15
+                # The pinned simulator binding currently omits Thievery from its
+                # public monster projection. This is still safely reconstructible:
+                # preBattleAction derives it solely from public ascension level.
+                # If a source does expose the public power, it must match exactly.
+                if normalized_powers not in ([], [("THIEVERY", expected_thievery)]):
+                    reasons.append(
+                        f"looter_opening_thievery_mismatch_v1:expected_{expected_thievery}"
+                    )
 
     return PublicEnemyAdmission(
         allowed=not reasons,

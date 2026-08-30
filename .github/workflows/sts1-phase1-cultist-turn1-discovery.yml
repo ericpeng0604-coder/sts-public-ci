@@ -1,0 +1,158 @@
+name: STS1 Phase 1 Cultist Turn1 Discovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-cultist-turn1-public-reconstruction
+    paths:
+      - '.github/workflows/sts1-phase1-cultist-turn1-discovery.yml'
+      - 'scripts/sts1/generate_phase1_cultist_turn1_suite.py'
+      - 'scripts/sts1/run_phase1_cultist_turn1_quality.py'
+      - 'tests/data/sts1_phase1_cultist_turn1_discovery_seeds_64.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cultist-turn1-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Freeze scope and blind 650xxx identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=353e9721db1151dad51c256ebbf58bf7f1e1bc9c
+          python - <<'PY'
+          import subprocess
+          allowed = {
+              '.github/workflows/sts1-phase1-cultist-turn1-native.yml',
+              '.github/workflows/sts1-phase1-cultist-turn1-discovery.yml',
+              'src/roguelike_ai/sts1_teacher/cultist_turn1_reconstruction.py',
+              'src/roguelike_ai/sts1_teacher/reconstruction_state.py',
+              'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py',
+              'scripts/sts1/apply_phase1_cultist_turn1_overlay.py',
+              'scripts/sts1/verify_phase1_public_cultist_turn1_native.py',
+              'scripts/sts1/generate_phase1_cultist_turn1_suite.py',
+              'scripts/sts1/run_phase1_cultist_turn1_quality.py',
+              'tests/test_sts1_public_cultist_turn1_reconstruction.py',
+              'tests/data/sts1_phase1_cultist_turn1_source_audit_v1.json',
+              'tests/data/sts1_phase1_cultist_turn1_discovery_seeds_64.txt',
+              'tests/data/sts1_phase1_cultist_turn1_fresh_holdout_seeds_64.txt',
+          }
+          changed=set(subprocess.check_output(['git','diff','--name-only','353e9721db1151dad51c256ebbf58bf7f1e1bc9c...HEAD'],text=True).splitlines())
+          unexpected=sorted(changed-allowed)
+          assert not unexpected, unexpected
+          print('DISCOVERY_SCOPE_GUARD = PASS')
+          PY
+          test "$(wc -l < tests/data/sts1_phase1_cultist_turn1_discovery_seeds_64.txt)" -eq 64
+          test "$(sort -n tests/data/sts1_phase1_cultist_turn1_discovery_seeds_64.txt | uniq | wc -l)" -eq 64
+          test "$(head -1 tests/data/sts1_phase1_cultist_turn1_discovery_seeds_64.txt)" = '650001'
+          test "$(tail -1 tests/data/sts1_phase1_cultist_turn1_discovery_seeds_64.txt)" = '650064'
+          test "$(sha256sum tests/data/sts1_phase1_cultist_turn1_discovery_seeds_64.txt | awk '{print $1}')" = '9e584badf3d38849b4385030d454502925b84b5bb1b14f08b2c53a23b45e0bbc'
+          git diff --quiet "$BASE" -- src/roguelike_ai/sts1_teacher/contract.py
+          git diff --quiet "$BASE" -- src/roguelike_ai/sts1_teacher/simulator.py
+          git diff --quiet "$BASE" -- src/roguelike_ai/sts1_teacher/native_rollout.py
+          echo 'CANDIDATE_ID = cultist-turn1-pristine-public-search-v1'
+          echo 'DISCOVERY_SEED_RANGE = 650001..650064'
+          echo 'FRESH_HOLDOUT_SEED_RANGE_RESERVED = 660001..660064'
+          echo 'FRESH_HOLDOUT_QUALITY_OBSERVED = 0'
+          echo 'OLD_EVIDENCE_USED_FOR_TUNING = 0'
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+          echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+
+      - name: Syntax gate
+        run: >-
+          python -m py_compile
+          scripts/sts1/generate_phase1_cultist_turn1_suite.py
+          scripts/sts1/run_phase1_cultist_turn1_quality.py
+          scripts/sts1/verify_phase1_public_cultist_turn1_native.py
+
+      - name: Hydrate exact pinned simulator
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply public reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/apply_phase1_cultist_turn1_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Reverify Cultist turn1 Native boundary
+        run: python scripts/sts1/verify_phase1_public_cultist_turn1_native.py
+
+      - name: Generate blind 650xxx Discovery suite twice
+        run: |
+          python scripts/sts1/generate_phase1_cultist_turn1_suite.py --suite-kind discovery --output "$RUNNER_TEMP/cultist-turn1-discovery-a.json"
+          python scripts/sts1/generate_phase1_cultist_turn1_suite.py --suite-kind discovery --output "$RUNNER_TEMP/cultist-turn1-discovery-b.json"
+          cmp "$RUNNER_TEMP/cultist-turn1-discovery-a.json" "$RUNNER_TEMP/cultist-turn1-discovery-b.json"
+          cp "$RUNNER_TEMP/cultist-turn1-discovery-a.json" "$RUNNER_TEMP/cultist-turn1-discovery.json"
+          echo 'CULTIST_TURN1_DISCOVERY_SUITE_DETERMINISTIC = PASS'
+
+      - name: Run candidate on 650xxx Discovery
+        run: >-
+          python scripts/sts1/run_phase1_cultist_turn1_quality.py
+          --suite-kind discovery
+          --suite "$RUNNER_TEMP/cultist-turn1-discovery.json"
+          --output-dir "$RUNNER_TEMP/cultist-turn1-discovery-evidence"
+
+      - name: Discovery evidence integrity
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'cultist-turn1-discovery-evidence'/'summary.json').read_text())
+          assert s['candidate_id']=='cultist-turn1-pristine-public-search-v1'
+          assert s['case_count']==24
+          assert s['deterministic'] is True and s['full_repeats']==2
+          assert s['search_unresolved']==0
+          assert s['illegal_actions']==0
+          assert s['leakage']==0
+          print('SEARCH',s['agreement_counts']['search'])
+          print('SIMPLE',s['agreement_counts']['simple'])
+          print('RANDOM',s['agreement_counts']['random'])
+          print('QUALITY_VERDICT',s['quality_verdict'])
+          print('QUALITY_REASONS',s['quality_reasons'])
+          print('SUITE_DIGEST',s['suite_digest'])
+          print('ROWS_DIGEST',s['rows_digest'])
+          print('SOURCE_SEED_FILE_SHA256',s['source_seed_file_sha256'])
+          print('DISCOVERY_EXECUTION_INTEGRITY = PASS')
+          print('660XXX_FRESH_HOLDOUT_QUALITY_OBSERVED = 0')
+          print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
+          print('NON_TARGET_SIMULATOR_DIFF = 0')
+          print('PHASE1_GATE_CLAIMED = 0')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-phase1-cultist-turn1-discovery-evidence
+          path: ${{ runner.temp }}/cultist-turn1-discovery-evidence
+          if-no-files-found: warn
+
+      - name: Strict Discovery quality gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'cultist-turn1-discovery-evidence'/'summary.json').read_text())
+          assert s['quality_verdict']=='PASS', s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['simple'], s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['random'], s
+          print('PASS — CULTIST_TURN1_DISCOVERY')
+          PY

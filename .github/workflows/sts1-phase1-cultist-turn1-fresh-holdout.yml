@@ -1,0 +1,143 @@
+name: STS1 Phase 1 Cultist Turn1 Fresh Holdout
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-cultist-turn1-public-reconstruction
+    paths:
+      - '.github/workflows/sts1-phase1-cultist-turn1-fresh-holdout.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cultist-turn1-fresh-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Enforce candidate freeze before opening 660xxx
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          freeze=json.loads(Path('tests/data/sts1_phase1_cultist_turn1_candidate_freeze_v1.json').read_text())
+          assert freeze['candidate_id']=='cultist-turn1-pristine-public-search-v1'
+          assert freeze['discovery']['quality_verdict']=='PASS'
+          assert freeze['fresh_holdout']['seed_range']=='660001..660064'
+          assert freeze['fresh_holdout']['fresh_holdout_quality_observed_at_freeze'] is False
+          assert freeze['old_evidence_used_for_tuning'] is False
+          assert freeze['public_contract_fields_added']==0
+          assert freeze['non_target_simulator_diff']==0
+          assert freeze['phase1_gate_claimed'] is False
+          print('CANDIDATE_FREEZE = PASS')
+          print('FRESH_HOLDOUT_QUALITY_OBSERVED_AT_FREEZE = false')
+          PY
+          test "$(git hash-object scripts/sts1/run_phase1_cultist_turn1_quality.py)" = 'f82d859630f8f1fe97b58d89113ad556f42da29f'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/native_rollout.py)" = '4f63ac21ca0a2a34fe46326ae11d11342e2a3d91'
+          test "$(git hash-object scripts/sts1/generate_phase1_cultist_turn1_suite.py)" = '8d837f08b2fd3b89569d5d0e7e612f45989bc398'
+          test "$(git hash-object scripts/sts1/apply_phase1_cultist_turn1_overlay.py)" = 'f3915ab25bf70c800539f4ea73481e03b667c9ad'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/cultist_turn1_reconstruction.py)" = '78e4517cd9b72a7f10f33ca2a5acf5df16679090'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/enemy_reconstruction.py)" = 'fee3e62c9d214c9247f6c32db0ec455ba0ed9d29'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/reconstruction_state.py)" = '6a43788420dd635ca11b4ad50d43b24fa97c4ce7'
+          test "$(sha256sum tests/data/sts1_phase1_cultist_turn1_fresh_holdout_seeds_64.txt | awk '{print $1}')" = 'ba9580dfb7e2516fa62fc5ee0c13107cdc0af7631eac0a7eafde344d92a339bd'
+          echo 'FROZEN_CANDIDATE_BLOBS = PASS'
+          echo 'FRESH_HOLDOUT_SEED_RANGE = 660001..660064'
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+          echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+
+      - name: Syntax gate
+        run: >-
+          python -m py_compile
+          scripts/sts1/generate_phase1_cultist_turn1_suite.py
+          scripts/sts1/run_phase1_cultist_turn1_quality.py
+          scripts/sts1/verify_phase1_public_cultist_turn1_native.py
+
+      - name: Hydrate exact pinned simulator
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+
+      - name: Apply diagnostic oracle binding
+        run: python scripts/sts1/apply_phase1_oracle_judge_overlay.py
+
+      - name: Apply frozen public reconstruction overlays
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/apply_phase1_cultist_turn1_overlay.py
+
+      - name: Build native Python binding
+        run: python scripts/sts1/build_probe.py
+
+      - name: Reverify frozen Native boundary
+        run: python scripts/sts1/verify_phase1_public_cultist_turn1_native.py
+
+      - name: First open untouched 660xxx suite twice
+        run: |
+          python scripts/sts1/generate_phase1_cultist_turn1_suite.py --suite-kind holdout --output "$RUNNER_TEMP/cultist-turn1-holdout-a.json"
+          python scripts/sts1/generate_phase1_cultist_turn1_suite.py --suite-kind holdout --output "$RUNNER_TEMP/cultist-turn1-holdout-b.json"
+          cmp "$RUNNER_TEMP/cultist-turn1-holdout-a.json" "$RUNNER_TEMP/cultist-turn1-holdout-b.json"
+          cp "$RUNNER_TEMP/cultist-turn1-holdout-a.json" "$RUNNER_TEMP/cultist-turn1-holdout.json"
+          echo 'CULTIST_TURN1_FRESH_HOLDOUT_SUITE_DETERMINISTIC = PASS'
+
+      - name: Run frozen candidate on 660xxx Fresh Holdout
+        run: >-
+          python scripts/sts1/run_phase1_cultist_turn1_quality.py
+          --suite-kind holdout
+          --suite "$RUNNER_TEMP/cultist-turn1-holdout.json"
+          --output-dir "$RUNNER_TEMP/cultist-turn1-holdout-evidence"
+
+      - name: Fresh Holdout evidence integrity
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'cultist-turn1-holdout-evidence'/'summary.json').read_text())
+          assert s['candidate_id']=='cultist-turn1-pristine-public-search-v1'
+          assert s['case_count']==24
+          assert s['deterministic'] is True and s['full_repeats']==2
+          assert s['search_unresolved']==0
+          assert s['illegal_actions']==0
+          assert s['leakage']==0
+          print('SEARCH',s['agreement_counts']['search'])
+          print('SIMPLE',s['agreement_counts']['simple'])
+          print('RANDOM',s['agreement_counts']['random'])
+          print('QUALITY_VERDICT',s['quality_verdict'])
+          print('QUALITY_REASONS',s['quality_reasons'])
+          print('SUITE_DIGEST',s['suite_digest'])
+          print('ROWS_DIGEST',s['rows_digest'])
+          print('SOURCE_SEED_FILE_SHA256',s['source_seed_file_sha256'])
+          print('FRESH_HOLDOUT_EXECUTION_INTEGRITY = PASS')
+          print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
+          print('NON_TARGET_SIMULATOR_DIFF = 0')
+          print('PHASE1_GATE_CLAIMED = 0')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-phase1-cultist-turn1-fresh-holdout-evidence
+          path: ${{ runner.temp }}/cultist-turn1-holdout-evidence
+          if-no-files-found: warn
+
+      - name: Strict Fresh Holdout gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'cultist-turn1-holdout-evidence'/'summary.json').read_text())
+          assert s['quality_verdict']=='PASS', s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['simple'], s
+          assert s['agreement_counts']['search'] > s['agreement_counts']['random'], s
+          print('PASS — CULTIST_TURN1_FRESH_HOLDOUT')
+          PY

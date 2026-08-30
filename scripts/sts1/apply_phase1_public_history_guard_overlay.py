@@ -18,6 +18,7 @@ NOB_MARKER = "phase1_public_gremlin_nob_opening_v1"
 BLUE_SLAVER_MARKER = "phase1_public_blue_slaver_opening_v1"
 RED_SLAVER_MARKER = "phase1_public_red_slaver_opening_v1"
 LOOTER_MARKER = "phase1_public_looter_opening_v1"
+LOOTER_PUBLIC_PROOF_MARKER = "phase1_public_looter_readonly_proof_v1"
 
 HISTORY_ANCHOR = '''              const auto historyChoice = get_u64(seeds, "previous_history") % 3ULL;
               mo.moveHistory[1] = historyChoice == 0 ? MMID::JAW_WORM_CHOMP
@@ -138,6 +139,23 @@ POWER_REPLACEMENT = '''                  else if (name == "POISON") mo.setStatus
                   }
                   else throw std::runtime_error("unsupported_enemy_power_v1:" + name);'''
 
+PUBLIC_PROOF_ANCHOR = '''    m.def("get_legal_actions", &sts::py::getLegalActions,
+          "enumerate all legal actions in the current battle state for forward search");'''
+PUBLIC_PROOF_INSERT = '''    // phase1_public_looter_readonly_proof_v1: read-only values that are
+    // already part of the player-visible battle surface; no RNG/history access.
+    m.def("get_public_player_gold_v1",
+          [](const BattleContext &bc) { return bc.player.gold; },
+          "read reconstructed player gold for public-only native verification");
+    m.def("get_public_monster_thievery_v1",
+          [](const BattleContext &bc, int idx) {
+              if (idx < 0 || idx >= bc.monsters.monsterCount) throw std::runtime_error("monster_index_out_of_range");
+              return bc.monsters.arr[idx].getStatus<MonsterStatus::THIEVERY>();
+          },
+          pybind11::arg("battle"), pybind11::arg("monster_index"),
+          "read public Thievery amount for native verification");
+
+'''
+
 
 def replace_once(text: str, anchor: str, replacement: str, label: str) -> str:
     count = text.count(anchor)
@@ -150,7 +168,7 @@ def main() -> None:
     if not TARGET.is_file():
         raise SystemExit(f"missing hydrated binding: {TARGET}")
     text = TARGET.read_text(encoding="utf-8")
-    if MARKER in text or CULTIST_MARKER in text or NOB_MARKER in text or BLUE_SLAVER_MARKER in text or RED_SLAVER_MARKER in text or LOOTER_MARKER in text:
+    if MARKER in text or CULTIST_MARKER in text or NOB_MARKER in text or BLUE_SLAVER_MARKER in text or RED_SLAVER_MARKER in text or LOOTER_MARKER in text or LOOTER_PUBLIC_PROOF_MARKER in text:
         raise SystemExit("public history/opening-enemy overlay already applied")
 
     text = replace_once(text, ENEMY_NAME_ANCHOR, ENEMY_NAME_REPLACEMENT, "enemy-name")
@@ -158,8 +176,8 @@ def main() -> None:
     text = replace_once(text, ENEMY_MOVE_ANCHOR, ENEMY_MOVE_REPLACEMENT, "enemy-move")
     text = replace_once(text, HISTORY_ANCHOR, HISTORY_REPLACEMENT, "history-guard")
     text = replace_once(text, POWER_ANCHOR, POWER_REPLACEMENT, "enemy-power")
+    text = replace_once(text, PUBLIC_PROOF_ANCHOR, PUBLIC_PROOF_INSERT + PUBLIC_PROOF_ANCHOR, "looter-public-proof")
 
-    # Markers are intentionally embedded in the patched binding for CI scope proof.
     text = text.replace(
         "// audited single-enemy opening surfaces only.",
         "// audited single-enemy opening surfaces only. phase1_public_cultist_opening_v1 phase1_public_gremlin_nob_opening_v1 phase1_public_blue_slaver_opening_v1 phase1_public_red_slaver_opening_v1 phase1_public_looter_opening_v1",
@@ -182,6 +200,7 @@ def main() -> None:
     print("looter_opening_mug_only=1")
     print("looter_opening_thievery=PUBLIC_ASCENSION_DERIVED")
     print("looter_later_turn=FAIL_CLOSED")
+    print("looter_readonly_public_proof_values=gold,thievery")
     print("source_move_history_access=0")
     print("source_opening_roll_access=0")
     print("source_miscinfo_access=0")

@@ -30,6 +30,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install test dependency
+        run: python -m pip install pytest
+
       - name: Scope and frozen-contract guard
         shell: bash
         run: |

@@ -52,6 +52,13 @@ def jaw_worm_turn_one_boundary() -> dict:
     return state
 
 
+def looter_turn_one_boundary(*, gold: int = 84) -> dict:
+    state = jaw_worm_turn_one_boundary()
+    state["gold"] = gold
+    state["enemies"][0]["name"] = "LOOTER"
+    return state
+
+
 def test_v1_player_and_run_slice_is_admitted() -> None:
     state = base_state()
     assert assess_public_player(state).allowed is True
@@ -91,6 +98,18 @@ def test_jaw_worm_second_turn_fresh_boundary_is_admitted() -> None:
     result = assess_public_player(jaw_worm_turn_one_boundary())
     assert result.allowed is True
     assert result.reasons == ()
+
+
+def test_looter_second_turn_positive_gold_starter_boundary_is_admitted() -> None:
+    result = assess_public_player(looter_turn_one_boundary(gold=84))
+    assert result.allowed is True
+    assert result.reasons == ()
+
+
+def test_looter_second_turn_zero_gold_starter_boundary_fails_closed() -> None:
+    result = assess_public_player(looter_turn_one_boundary(gold=0))
+    assert result.allowed is False
+    assert "turn1_looter_requires_positive_gold" in result.reasons
 
 
 def test_jaw_worm_second_turn_after_one_defend_is_admitted() -> None:

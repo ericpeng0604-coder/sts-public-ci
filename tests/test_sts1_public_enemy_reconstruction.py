@@ -43,12 +43,14 @@ def looter_state(
     ascension: int = 0,
     thievery: int | None = None,
     expose_thievery: bool = True,
+    gold: int = 99,
 ) -> dict:
     if thievery is None:
         thievery = 20 if ascension >= 17 else 15
     powers = [{"name": "Thievery", "amount": thievery}] if expose_thievery else []
     return {
         "turn": turn,
+        "gold": gold,
         "ascension_level": ascension,
         "enemies": [{"index": 0, "name": "Looter", "hp": 46, "max_hp": 46, "block": 0, "intent": intent, "intent_damage": 10 if ascension < 2 else 11, "intent_hits": 1, "is_gone": False, "powers": powers}],
     }
@@ -147,16 +149,45 @@ def test_looter_impossible_opening_intent_fails_closed() -> None:
     assert "looter_opening_intent_mismatch_v1:LOOTER_LUNGE" in result.reasons
 
 
-def test_looter_later_turn_fails_closed() -> None:
-    result = assess_public_enemies(looter_state(turn=1))
+def test_looter_turn_one_positive_gold_is_publicly_admitted() -> None:
+    for ascension, expected in ((0, 15), (17, 20)):
+        for expose_thievery in (False, True):
+            result = assess_public_enemies(
+                looter_state(
+                    turn=1,
+                    ascension=ascension,
+                    thievery=expected,
+                    expose_thievery=expose_thievery,
+                    gold=84,
+                )
+            )
+            assert result.allowed is True
+            assert result.reasons == ()
+
+
+def test_looter_turn_one_zero_gold_fails_closed() -> None:
+    result = assess_public_enemies(looter_state(turn=1, gold=0))
+    assert result.allowed is False
+    assert "looter_turn1_positive_gold_required_v1" in result.reasons
+
+
+def test_looter_turn_one_non_mug_fails_closed() -> None:
+    result = assess_public_enemies(looter_state(turn=1, intent="LOOTER_LUNGE", gold=84))
+    assert result.allowed is False
+    assert "looter_turn1_intent_mismatch_v1:LOOTER_LUNGE" in result.reasons
+
+
+def test_looter_turn_two_still_fails_closed() -> None:
+    result = assess_public_enemies(looter_state(turn=2, gold=84))
     assert result.allowed is False
     assert "looter_later_turn_unsupported_v1" in result.reasons
 
 
 def test_looter_wrong_public_thievery_fails_closed() -> None:
-    result = assess_public_enemies(looter_state(ascension=0, thievery=20))
-    assert result.allowed is False
-    assert "looter_opening_thievery_mismatch_v1:expected_15" in result.reasons
+    for turn in (0, 1):
+        result = assess_public_enemies(looter_state(turn=turn, ascension=0, thievery=20, gold=84))
+        assert result.allowed is False
+        assert "looter_opening_thievery_mismatch_v1:expected_15" in result.reasons
 
 
 def test_unknown_monster_fails_closed() -> None:

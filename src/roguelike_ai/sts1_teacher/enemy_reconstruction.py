@@ -73,10 +73,17 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
                 elif normalized_intent not in _RED_SLAVER_OPENING_INTENTS:
                     reasons.append(f"red_slaver_opening_intent_mismatch_v1:{normalized_intent}")
             if name == "LOOTER":
-                if turn != 0:
+                if turn == 0:
+                    if normalized_intent not in _LOOTER_OPENING_INTENTS:
+                        reasons.append(f"looter_opening_intent_mismatch_v1:{normalized_intent}")
+                elif turn == 1:
+                    if normalized_intent not in _LOOTER_OPENING_INTENTS:
+                        reasons.append(f"looter_turn1_intent_mismatch_v1:{normalized_intent}")
+                    gold = state.get("gold")
+                    if isinstance(gold, bool) or not isinstance(gold, int) or gold <= 0:
+                        reasons.append("looter_turn1_positive_gold_required_v1")
+                else:
                     reasons.append("looter_later_turn_unsupported_v1")
-                elif normalized_intent not in _LOOTER_OPENING_INTENTS:
-                    reasons.append(f"looter_opening_intent_mismatch_v1:{normalized_intent}")
 
         if raw_enemy.get("is_gone") is True:
             reasons.append(f"gone_enemy_unsupported_v1:{path}")
@@ -100,7 +107,7 @@ def assess_public_enemies(state: Mapping[str, Any]) -> PublicEnemyAdmission:
             else:
                 normalized_powers.append((power_name, amount))
 
-        if name == "LOOTER" and turn == 0:
+        if name == "LOOTER" and turn in (0, 1):
             if isinstance(ascension, bool) or not isinstance(ascension, int):
                 reasons.append("looter_missing_public_ascension_v1")
             else:

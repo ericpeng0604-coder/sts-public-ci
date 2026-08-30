@@ -48,7 +48,14 @@ HISTORY_REPLACEMENT = '''              // phase1_public_history_turn_guard_v1:
               } else if (enemyName == "BLUE_SLAVER") {
                   throw std::runtime_error("blue_slaver_later_turn_unsupported_v1");
               } else if (enemyName == "LOOTER") {
-                  throw std::runtime_error("looter_later_turn_unsupported_v1");
+                  if (bc.turn == 1) {
+                      if (bc.player.gold <= 0) throw std::runtime_error("looter_turn1_positive_gold_required_v1");
+                      // The first Looter move is source-proven MUG, so on public
+                      // turn 1 the previous executed move is uniquely MUG.
+                      mo.moveHistory[1] = MMID::LOOTER_MUG;
+                  } else {
+                      throw std::runtime_error("looter_later_turn_unsupported_v1");
+                  }
               } else {
                   throw std::runtime_error("red_slaver_later_turn_unsupported_v1");
               }'''
@@ -105,16 +112,27 @@ ENEMY_MOVE_REPLACEMENT = '''              const auto publicIntent = normalized(g
                   }
               } else if (enemyName == "LOOTER") {
                   // phase1_public_looter_opening_v1: pinned getMoveForRoll returns
-                  // MUG unconditionally on the opening move. Looter's initial
-                  // Thievery is also deterministic from public ascension level:
-                  // 15 below A17, 20 at A17+. Use the native buff path exactly
-                  // like preBattleAction so both value and status-present bit match.
-                  if (bc.turn != 0) throw std::runtime_error("looter_later_turn_unsupported_v1");
+                  // MUG unconditionally on the opening move. After that first MUG,
+                  // source logic deterministically keeps MUG as the current move on
+                  // public turn 1. Thievery is public-ascension-derived: 15 below
+                  // A17, 20 at A17+. No source history, RNG, or miscInfo is read.
+                  if (bc.turn != 0 && bc.turn != 1) throw std::runtime_error("looter_later_turn_unsupported_v1");
                   if (publicIntent != "MUG" && publicIntent != "LOOTER_MUG") {
-                      throw std::runtime_error("looter_opening_intent_mismatch_v1:" + publicIntent);
+                      throw std::runtime_error(bc.turn == 1
+                          ? "looter_turn1_intent_mismatch_v1:" + publicIntent
+                          : "looter_opening_intent_mismatch_v1:" + publicIntent);
                   }
+                  const int expectedThievery = bc.ascension >= 17 ? 20 : 15;
                   mo.moveHistory[0] = MMID::LOOTER_MUG;
-                  mo.buff<MonsterStatus::THIEVERY>(bc.ascension >= 17 ? 20 : 15);
+                  mo.buff<MonsterStatus::THIEVERY>(expectedThievery);
+                  if (bc.turn == 1) {
+                      // Positive remaining public gold proves the first theft was
+                      // the full Thievery amount. Rebuild that gameplay-relevant
+                      // stolen-gold accumulator without peeking at source miscInfo.
+                      if (bc.player.gold <= 0) throw std::runtime_error("looter_turn1_positive_gold_required_v1");
+                      mo.miscInfo = expectedThievery;
+                      bc.setRequiresStolenGoldCheck(true);
+                  }
               } else {
                   // phase1_public_red_slaver_opening_v1: pinned source logic
                   // returns STAB on the first move before used-Entangle miscInfo
@@ -200,7 +218,9 @@ def main() -> None:
     print("red_slaver_later_turn=FAIL_CLOSED")
     print("looter_opening_mug_only=1")
     print("looter_opening_thievery=PUBLIC_ASCENSION_DERIVED_NATIVE_BUFF")
-    print("looter_later_turn=FAIL_CLOSED")
+    print("looter_turn1_positive_gold=PUBLIC_DERIVED_MUG_HISTORY_AND_STOLEN_GOLD")
+    print("looter_turn1_zero_gold=FAIL_CLOSED")
+    print("looter_turn2_plus=FAIL_CLOSED")
     print("looter_readonly_public_proof_values=gold,thievery")
     print("source_move_history_access=0")
     print("source_opening_roll_access=0")

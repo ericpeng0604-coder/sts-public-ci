@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native opening-turn proof for the audited Looter turn-0 slice."""
+"""Native proof for Looter turn 0 and the audited turn-1 positive-gold slice."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -100,15 +100,56 @@ def main() -> None:
         if action.action_type == sts.SearchActionType.END_TURN
     )
     end_turn.execute(fresh0)
+    assert fresh0.turn == 1
     assert fresh0.player.cur_hp == hp_before - 10
     assert sts.get_public_player_gold_v1(fresh0) == gold_before - 15
-    assert fresh0.monsters[0].intent in {
-        "LOOTER_MUG",
+    # Source-proven first-MUG behavior keeps the second Looter intent at MUG.
+    assert fresh0.monsters[0].intent == "LOOTER_MUG"
+
+    # Re-project only the now-visible turn-1 state. The updated run surface uses
+    # the visible post-theft gold; no source miscInfo/history/RNG is copied.
+    turn1_run = dict(run)
+    turn1_run["gold"] = sts.get_public_player_gold_v1(fresh0)
+    turn1_projected = adapter.adapt(
+        fresh0,
+        legal_actions=list(sts.get_legal_actions(fresh0)),
+        run_state=turn1_run,
+    )
+    turn1_state = attach_reconstruction_capabilities(turn1_projected, run_state=turn1_run)
+    turn1_context = require_public_reconstruction(turn1_state)
+    assert turn1_state["turn"] == 1
+    assert turn1_state["gold"] == gold_before - 15
+    assert turn1_state["gold"] > 0
+    assert turn1_state["enemies"][0]["intent"] == "LOOTER_MUG"
+
+    turn1_sample = public_sample(turn1_context, sample_index=2, config=config)
+    turn1_plan = build_redeterminization_plan(turn1_context, turn1_sample)
+    turn1_seeds = dict(turn1_plan.rng_seeds)
+    turn1_seeds["previous_history"] = turn1_plan.monster_history[0].previous_history_seed
+    fresh_turn1 = sts.build_public_jaw_worm_context_v1(turn1_state, turn1_seeds)
+    assert fresh_turn1.turn == 1
+    assert fresh_turn1.monsters[0].name == "LOOTER"
+    assert fresh_turn1.monsters[0].intent == "LOOTER_MUG"
+    assert sts.get_public_monster_thievery_v1(fresh_turn1, 0) == 15
+    assert sts.get_public_player_gold_v1(fresh_turn1) == gold_before - 15
+
+    turn1_hp_before = fresh_turn1.player.cur_hp
+    turn1_gold_before = sts.get_public_player_gold_v1(fresh_turn1)
+    turn1_end = next(
+        action
+        for action in sts.get_legal_actions(fresh_turn1)
+        if action.action_type == sts.SearchActionType.END_TURN
+    )
+    turn1_end.execute(fresh_turn1)
+    assert fresh_turn1.player.cur_hp == turn1_hp_before - 10
+    assert sts.get_public_player_gold_v1(fresh_turn1) == turn1_gold_before - 15
+    assert fresh_turn1.monsters[0].intent in {
         "LOOTER_LUNGE",
         "LOOTER_SMOKE_BOMB",
     }
 
     print("LOOTER_TURN0_PUBLIC_RECONSTRUCTION_NATIVE = PASS")
+    print("LOOTER_TURN1_POSITIVE_GOLD_PUBLIC_RECONSTRUCTION_NATIVE = PASS")
     print("LOOTER_OPENING_PUBLIC_INTENT = LOOTER_MUG")
     print("LOOTER_OPENING_DAMAGE_A0 = 10")
     print("LOOTER_OPENING_THIEVERY_A0 = PUBLIC_ASCENSION_DERIVED_15")

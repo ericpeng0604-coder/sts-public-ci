@@ -51,8 +51,14 @@ def _jaw_worm_turn_one_reasons(state: Mapping[str, Any]) -> list[str]:
     enemies = _sequence(state.get("enemies"))
     if enemies is None or len(enemies) != 1 or not isinstance(enemies[0], Mapping):
         reasons.append("turn1_requires_single_enemy")
-    elif _norm(enemies[0].get("name")) != "JAW_WORM":
-        reasons.append("turn1_requires_jaw_worm")
+    else:
+        enemy_name = _norm(enemies[0].get("name"))
+        if enemy_name == "LOOTER":
+            gold = state.get("gold")
+            if isinstance(gold, bool) or not isinstance(gold, int) or gold <= 0:
+                reasons.append("turn1_looter_requires_positive_gold")
+        elif enemy_name != "JAW_WORM":
+            reasons.append("turn1_requires_jaw_worm")
 
     hand = _sequence(state.get("hand"))
     draw = _sequence(state.get("draw_pile"))

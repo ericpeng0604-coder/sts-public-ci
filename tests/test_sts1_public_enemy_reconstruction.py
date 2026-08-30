@@ -36,13 +36,21 @@ def red_slaver_state(intent: str = "RED_SLAVER_STAB", turn: int = 0) -> dict:
     }
 
 
-def looter_state(*, intent: str = "LOOTER_MUG", turn: int = 0, ascension: int = 0, thievery: int | None = None) -> dict:
+def looter_state(
+    *,
+    intent: str = "LOOTER_MUG",
+    turn: int = 0,
+    ascension: int = 0,
+    thievery: int | None = None,
+    expose_thievery: bool = True,
+) -> dict:
     if thievery is None:
         thievery = 20 if ascension >= 17 else 15
+    powers = [{"name": "Thievery", "amount": thievery}] if expose_thievery else []
     return {
         "turn": turn,
         "ascension_level": ascension,
-        "enemies": [{"index": 0, "name": "Looter", "hp": 46, "max_hp": 46, "block": 0, "intent": intent, "intent_damage": 10 if ascension < 2 else 11, "intent_hits": 1, "is_gone": False, "powers": [{"name": "Thievery", "amount": thievery}]}],
+        "enemies": [{"index": 0, "name": "Looter", "hp": 46, "max_hp": 46, "block": 0, "intent": intent, "intent_damage": 10 if ascension < 2 else 11, "intent_hits": 1, "is_gone": False, "powers": powers}],
     }
 
 
@@ -85,6 +93,14 @@ def test_red_slaver_opening_stab_is_publicly_admitted() -> None:
 def test_looter_opening_mug_and_public_thievery_are_admitted() -> None:
     for ascension, expected in ((0, 15), (17, 20)):
         result = assess_public_enemies(looter_state(ascension=ascension, thievery=expected))
+        assert result.allowed is True
+        assert result.reasons == ()
+        assert result.enemy_count == 1
+
+
+def test_looter_opening_without_projected_thievery_is_publicly_derivable() -> None:
+    for ascension in (0, 17):
+        result = assess_public_enemies(looter_state(ascension=ascension, expose_thievery=False))
         assert result.allowed is True
         assert result.reasons == ()
         assert result.enemy_count == 1

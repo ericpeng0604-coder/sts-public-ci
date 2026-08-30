@@ -7,15 +7,21 @@ on:
       - gpt/sts1-phase1-public-reconstruction
     paths:
       - '.github/workflows/sts1-phase1-looter-formal-integration.yml'
+      - '.github/workflows/sts1-phase1-looter-turn0-native.yml'
+      - '.github/workflows/sts1-phase1-looter-turn1-discovery.yml'
+      - '.github/workflows/sts1-phase1-looter-turn1-fresh-holdout.yml'
       - 'src/roguelike_ai/sts1_teacher/**'
       - 'tests/test_sts1_*.py'
       - 'tests/data/sts1_phase1_looter_*.txt'
       - 'tests/data/sts1_phase1_looter_candidate_freeze_v2.json'
+      - 'tests/data/sts1_phase1_looter_turn1_candidate_freeze_v1.json'
       - 'scripts/sts1/apply_phase1_public_history_guard_overlay.py'
       - 'scripts/sts1/verify_phase1_public_looter_native.py'
       - 'scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py'
       - 'scripts/sts1/generate_phase1_looter_v2_suite.py'
       - 'scripts/sts1/run_phase1_looter_v2_quality.py'
+      - 'scripts/sts1/generate_phase1_looter_turn1_suite.py'
+      - 'scripts/sts1/run_phase1_looter_turn1_quality.py'
   workflow_dispatch:
 
 permissions:
@@ -52,7 +58,23 @@ jobs:
             docs/sts1/STS1_PUBLIC_STATE_CONTRACT_V1.md
           python - <<'PY'
           import subprocess
-          allowed = {'.github/workflows/sts1-phase1-looter-formal-integration.yml'}
+          allowed = {
+              '.github/workflows/sts1-phase1-looter-formal-integration.yml',
+              '.github/workflows/sts1-phase1-looter-turn0-native.yml',
+              '.github/workflows/sts1-phase1-looter-turn1-discovery.yml',
+              '.github/workflows/sts1-phase1-looter-turn1-fresh-holdout.yml',
+              'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py',
+              'src/roguelike_ai/sts1_teacher/player_reconstruction.py',
+              'tests/test_sts1_public_enemy_reconstruction.py',
+              'tests/test_sts1_public_native_v1_admission.py',
+              'scripts/sts1/apply_phase1_public_history_guard_overlay.py',
+              'scripts/sts1/verify_phase1_public_looter_native.py',
+              'scripts/sts1/generate_phase1_looter_turn1_suite.py',
+              'scripts/sts1/run_phase1_looter_turn1_quality.py',
+              'tests/data/sts1_phase1_looter_turn1_candidate_freeze_v1.json',
+              'tests/data/sts1_phase1_looter_turn1_discovery_seeds_64.txt',
+              'tests/data/sts1_phase1_looter_turn1_fresh_holdout_seeds_64.txt',
+          }
           changed = set(subprocess.check_output([
               'git', 'diff', '--name-only',
               '7a152f46e0e198ffc35e2a27e623f0fb6c4edffb...HEAD'
@@ -90,11 +112,14 @@ jobs:
           python scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py
           python -m py_compile \
             src/roguelike_ai/sts1_teacher/enemy_reconstruction.py \
+            src/roguelike_ai/sts1_teacher/player_reconstruction.py \
             src/roguelike_ai/sts1_teacher/native_rollout.py \
             scripts/sts1/apply_phase1_public_history_guard_overlay.py \
             scripts/sts1/verify_phase1_public_looter_native.py \
             scripts/sts1/generate_phase1_looter_v2_suite.py \
             scripts/sts1/run_phase1_looter_v2_quality.py \
+            scripts/sts1/generate_phase1_looter_turn1_suite.py \
+            scripts/sts1/run_phase1_looter_turn1_quality.py \
             scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py
           git diff --check 47033d35846a8cddfdfc5470f998ae5c2395406c...HEAD
 

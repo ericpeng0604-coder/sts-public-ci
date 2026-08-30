@@ -1,0 +1,81 @@
+{
+  "schema_version": "sts1-phase1-cultist-turn1-candidate-freeze-v1",
+  "candidate_id": "cultist-turn1-pristine-public-search-v1",
+  "scope": "Cultist turn-1 pristine no-turn0-card-play boundary only",
+  "candidate_policy": "unchanged NativePublicCultistRolloutV1 with fail-closed Cultist turn1 pristine admission and public-derived Incantation/Dark Strike/Ritual reconstruction",
+  "formal_base_head": "353e9721db1151dad51c256ebbf58bf7f1e1bc9c",
+  "discovery_head": "7075a3e7ef4c87b9195409314f812f60f528743e",
+  "native_ready_run_id": 33324074462,
+  "discovery_run_id": 33324176056,
+  "discovery_artifact": {
+    "id": 9735754164,
+    "name": "sts1-phase1-cultist-turn1-discovery-evidence",
+    "digest": "sha256:6c20781a5049f289af12507ae982947f539952102e2c9766d6491a49cc251e1a"
+  },
+  "frozen_blobs": {
+    "quality_runner": {
+      "path": "scripts/sts1/run_phase1_cultist_turn1_quality.py",
+      "blob_sha": "f82d859630f8f1fe97b58d89113ad556f42da29f"
+    },
+    "native_rollout": {
+      "path": "src/roguelike_ai/sts1_teacher/native_rollout.py",
+      "blob_sha": "4f63ac21ca0a2a34fe46326ae11d11342e2a3d91"
+    },
+    "suite_generator": {
+      "path": "scripts/sts1/generate_phase1_cultist_turn1_suite.py",
+      "blob_sha": "8d837f08b2fd3b89569d5d0e7e612f45989bc398"
+    },
+    "native_reconstruction_overlay": {
+      "path": "scripts/sts1/apply_phase1_cultist_turn1_overlay.py",
+      "blob_sha": "f3915ab25bf70c800539f4ea73481e03b667c9ad"
+    },
+    "player_admission": {
+      "path": "src/roguelike_ai/sts1_teacher/cultist_turn1_reconstruction.py",
+      "blob_sha": "78e4517cd9b72a7f10f33ca2a5acf5df16679090"
+    },
+    "enemy_admission": {
+      "path": "src/roguelike_ai/sts1_teacher/enemy_reconstruction.py",
+      "blob_sha": "fee3e62c9d214c9247f6c32db0ec455ba0ed9d29"
+    },
+    "reconstruction_capability_wiring": {
+      "path": "src/roguelike_ai/sts1_teacher/reconstruction_state.py",
+      "blob_sha": "6a43788420dd635ca11b4ad50d43b24fa97c4ce7"
+    }
+  },
+  "search_config": {
+    "samples_per_semantic_action": 8,
+    "rollout_budget": 256,
+    "node_budget": 16384,
+    "max_depth": 30,
+    "timeout_ms": 60000,
+    "tie_tolerance": 1e-9,
+    "sampling_seed": 20260831
+  },
+  "discovery": {
+    "seed_range": "650001..650064",
+    "case_count": 24,
+    "full_repeats": 2,
+    "deterministic": true,
+    "search": 14,
+    "simple": 8,
+    "random": 9,
+    "search_unresolved": 0,
+    "illegal_actions": 0,
+    "leakage": 0,
+    "quality_verdict": "PASS",
+    "suite_digest": "c3d3fbc886f965530c25274e7b1df8c9a2fc8911ed55a0c12917cc05d9a981f4",
+    "rows_digest": "2bf90ab7362b2fd3d1fc6a344f46223445a180427234ed9491240dc9242a08f2",
+    "source_seed_file_sha256": "9e584badf3d38849b4385030d454502925b84b5bb1b14f08b2c53a23b45e0bbc"
+  },
+  "fresh_holdout": {
+    "seed_range": "660001..660064",
+    "source_seed_file_sha256": "ba9580dfb7e2516fa62fc5ee0c13107cdc0af7631eac0a7eafde344d92a339bd",
+    "fresh_holdout_quality_observed_at_freeze": false
+  },
+  "old_evidence_used_for_tuning": false,
+  "public_contract_fields_added": 0,
+  "non_target_simulator_diff": 0,
+  "phase1_gate_claimed": false,
+  "phase1_status": "IN_PROGRESS",
+  "phase2": "LOCKED"
+}

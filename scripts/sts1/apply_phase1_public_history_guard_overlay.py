@@ -107,13 +107,14 @@ ENEMY_MOVE_REPLACEMENT = '''              const auto publicIntent = normalized(g
                   // phase1_public_looter_opening_v1: pinned getMoveForRoll returns
                   // MUG unconditionally on the opening move. Looter's initial
                   // Thievery is also deterministic from public ascension level:
-                  // 15 below A17, 20 at A17+. No source hidden status is read.
+                  // 15 below A17, 20 at A17+. Use the native buff path exactly
+                  // like preBattleAction so both value and status-present bit match.
                   if (bc.turn != 0) throw std::runtime_error("looter_later_turn_unsupported_v1");
                   if (publicIntent != "MUG" && publicIntent != "LOOTER_MUG") {
                       throw std::runtime_error("looter_opening_intent_mismatch_v1:" + publicIntent);
                   }
                   mo.moveHistory[0] = MMID::LOOTER_MUG;
-                  mo.setStatus<MonsterStatus::THIEVERY>(bc.ascension >= 17 ? 20 : 15);
+                  mo.buff<MonsterStatus::THIEVERY>(bc.ascension >= 17 ? 20 : 15);
               } else {
                   // phase1_public_red_slaver_opening_v1: pinned source logic
                   // returns STAB on the first move before used-Entangle miscInfo
@@ -135,7 +136,7 @@ POWER_REPLACEMENT = '''                  else if (name == "POISON") mo.setStatus
                       if (enemyName != "LOOTER") throw std::runtime_error("thievery_non_looter_unsupported_v1");
                       const int expected = bc.ascension >= 17 ? 20 : 15;
                       if (amount != expected) throw std::runtime_error("looter_opening_thievery_mismatch_v1");
-                      mo.setStatus<MonsterStatus::THIEVERY>(amount);
+                      if (mo.getStatus<MonsterStatus::THIEVERY>() != expected) throw std::runtime_error("looter_opening_thievery_internal_mismatch_v1");
                   }
                   else throw std::runtime_error("unsupported_enemy_power_v1:" + name);'''
 
@@ -198,7 +199,7 @@ def main() -> None:
     print("red_slaver_opening_miscinfo=PUBLIC_DERIVED_ZERO")
     print("red_slaver_later_turn=FAIL_CLOSED")
     print("looter_opening_mug_only=1")
-    print("looter_opening_thievery=PUBLIC_ASCENSION_DERIVED")
+    print("looter_opening_thievery=PUBLIC_ASCENSION_DERIVED_NATIVE_BUFF")
     print("looter_later_turn=FAIL_CLOSED")
     print("looter_readonly_public_proof_values=gold,thievery")
     print("source_move_history_access=0")

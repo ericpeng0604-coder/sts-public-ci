@@ -177,25 +177,28 @@ class NativePublicGremlinNobRolloutV1(NativePublicJawWormRolloutV1):
 
 
 class NativePublicBlueSlaverRolloutV1(NativePublicJawWormRolloutV1):
-    """Public-only rollout identity for the audited Blue Slaver opening slice.
-
-    The reconstructed current opening intent comes only from public state.
-    Subsequent move rolls use the fresh action-independent rollout RNG.
-    """
+    """Public-only rollout identity for the audited Blue Slaver opening slice."""
 
     backend_id = "sts1-public-native-blue-slaver-rollout-v1"
 
 
 class NativePublicRedSlaverRolloutV1(NativePublicJawWormRolloutV1):
-    """Public-only rollout identity for the audited Red Slaver turn-0 slice.
-
-    The opening STAB and initial ``miscInfo == 0`` are derived from pinned source
-    encounter/turn semantics. Later rollout state is generated only by fresh,
-    action-independent rollout RNG; source move history and source miscInfo are
-    never read.
-    """
+    """Public-only rollout identity for the audited Red Slaver turn-0 slice."""
 
     backend_id = "sts1-public-native-red-slaver-turn0-rollout-v1"
+
+
+class NativePublicLooterRolloutV1(NativePublicJawWormRolloutV1):
+    """Public-only rollout identity for the audited Looter turn-0 slice.
+
+    Opening MUG and initial Thievery are reconstructed only from the public
+    encounter, turn, and ascension. Future move rolls use fresh rollout RNG.
+    The scoring function is intentionally unchanged from the already-established
+    raw PublicStateSearch candidate for discovery; no Looter-specific tuning is
+    performed before seeing discovery evidence.
+    """
+
+    backend_id = "sts1-public-native-looter-turn0-rollout-v1"
 
 
 __all__ = [
@@ -204,5 +207,6 @@ __all__ = [
     "NativePublicGremlinNobRolloutV1",
     "NativePublicBlueSlaverRolloutV1",
     "NativePublicRedSlaverRolloutV1",
+    "NativePublicLooterRolloutV1",
     "NativePublicRolloutError",
 ]

@@ -39,10 +39,27 @@ jobs:
           import subprocess
           allowed = {
               '.github/workflows/sts1-phase1-looter-turn0-native.yml',
+              '.github/workflows/sts1-phase1-looter-discovery.yml',
+              '.github/workflows/sts1-phase1-looter-fresh-holdout.yml',
+              '.github/workflows/sts1-phase1-looter-v2-discovery.yml',
+              '.github/workflows/sts1-phase1-looter-v2-fresh-holdout.yml',
+              '.github/workflows/sts1-phase1-looter-formal-integration.yml',
               'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py',
+              'src/roguelike_ai/sts1_teacher/native_rollout.py',
               'tests/test_sts1_public_enemy_reconstruction.py',
               'scripts/sts1/apply_phase1_public_history_guard_overlay.py',
               'scripts/sts1/verify_phase1_public_looter_native.py',
+              'scripts/sts1/generate_phase1_looter_suite.py',
+              'scripts/sts1/run_phase1_looter_quality.py',
+              'scripts/sts1/generate_phase1_looter_v2_suite.py',
+              'scripts/sts1/run_phase1_looter_v2_quality.py',
+              'scripts/sts1/verify_phase1_looter_gold_tiebreak_v2.py',
+              'tests/data/sts1_phase1_looter_candidate_freeze_v1.json',
+              'tests/data/sts1_phase1_looter_candidate_freeze_v2.json',
+              'tests/data/sts1_phase1_looter_discovery_seeds_64.txt',
+              'tests/data/sts1_phase1_looter_fresh_holdout_seeds_64.txt',
+              'tests/data/sts1_phase1_looter_v2_discovery_seeds_64.txt',
+              'tests/data/sts1_phase1_looter_v2_fresh_holdout_seeds_64.txt',
           }
           changed = set(subprocess.check_output([
               'git', 'diff', '--name-only',
@@ -52,6 +69,7 @@ jobs:
           assert not unexpected, f'unexpected_changed_paths:{unexpected}'
           print('PUBLIC_CONTRACT_FIELDS_ADDED = 0')
           print('TRACKED_SCOPE_GUARD = PASS')
+          print('CUMULATIVE_LOOTER_FORMAL_EVIDENCE_ALLOWED = PASS')
           PY
 
       - name: Public reconstruction regression tests

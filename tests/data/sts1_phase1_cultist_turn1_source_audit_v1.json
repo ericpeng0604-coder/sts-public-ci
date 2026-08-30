@@ -1,0 +1,83 @@
+{
+  "schema_version": "sts1-phase1-next-public-gap-source-audit-v1",
+  "formal_base_head": "353e9721db1151dad51c256ebbf58bf7f1e1bc9c",
+  "frozen_public_state_contract": "sts1-public-state-v1",
+  "pinned_simulator": {
+    "repository": "gamerpuppy/sts_lightspeed",
+    "commit": "7476a81954020087da31d41d16fddf475746ec2d",
+    "source_files": [
+      "src/combat/MonsterSpecific.cpp",
+      "src/combat/Monster.cpp",
+      "include/combat/Monster.h"
+    ]
+  },
+  "coverage_gap_inventory": [
+    {
+      "candidate": "CULTIST turn1 pristine no-turn0-card-play boundary",
+      "public_fields_available": ["turn", "ascension_level", "enemy name", "current intent", "enemy hp/max_hp/block", "player hp/block/energy", "hand/draw/discard/exhaust", "legal_actions"],
+      "hidden_fields_possibly_required": [],
+      "current_intent_reconstructible": true,
+      "previous_move_history_reconstructible": true,
+      "counter_miscinfo_reconstructible": true,
+      "player_card_state_reconstructible": true,
+      "future_rng_can_be_freshly_redeterminized": true,
+      "verdict_likelihood": "HIGH_PASS",
+      "notes": "Pinned source opening is INCANTATION; INCANTATION sets DARK_STRIKE and Ritual 3/4/5 from hallway ascension index. End-of-round clears Ritual justApplied on the first application. No Cultist miscInfo/private counter is involved."
+    },
+    {
+      "candidate": "GREMLIN_NOB turn1",
+      "public_fields_available": ["turn", "ascension_level", "current intent", "enemy/player/card state"],
+      "hidden_fields_possibly_required": ["move history for later roll rules", "Enrage gameplay power if not projected"],
+      "current_intent_reconstructible": true,
+      "previous_move_history_reconstructible": true,
+      "counter_miscinfo_reconstructible": true,
+      "player_card_state_reconstructible": true,
+      "future_rng_can_be_freshly_redeterminized": true,
+      "verdict_likelihood": "MEDIUM_PASS_BUT_WIDER",
+      "notes": "Opening BELLOW is fixed, so turn1 previous move may be derivable; however Enrage and future roll/history interactions make this materially wider than Cultist turn1. Not selected."
+    },
+    {
+      "candidate": "BLUE_SLAVER turn1",
+      "public_fields_available": ["turn", "current intent", "enemy/player/card state"],
+      "hidden_fields_possibly_required": ["previous opening STAB/RAKE history"],
+      "current_intent_reconstructible": true,
+      "previous_move_history_reconstructible": false,
+      "counter_miscinfo_reconstructible": true,
+      "player_card_state_reconstructible": true,
+      "future_rng_can_be_freshly_redeterminized": true,
+      "verdict_likelihood": "LOW_BLOCKED",
+      "notes": "Pinned source opening may be STAB or RAKE. A turn1 snapshot does not retain which opening intent became the previous move, while later selection reads lastMove/lastTwoMoves. Not selected."
+    },
+    {
+      "candidate": "RED_SLAVER turn1",
+      "public_fields_available": ["turn", "current intent", "enemy/player/card state"],
+      "hidden_fields_possibly_required": ["used-Entangle miscInfo for wider continuation", "move history for later rules"],
+      "current_intent_reconstructible": true,
+      "previous_move_history_reconstructible": true,
+      "counter_miscinfo_reconstructible": "BOUNDARY_DEPENDENT",
+      "player_card_state_reconstructible": true,
+      "future_rng_can_be_freshly_redeterminized": true,
+      "verdict_likelihood": "MEDIUM_LOW_WIDER_AUDIT_REQUIRED",
+      "notes": "Opening STAB is fixed, but the source move logic uses miscInfo as the used-Entangle flag. A safe slice may exist but needs a wider proof than Cultist turn1. Not selected."
+    }
+  ],
+  "selected_gap": "CULTIST turn1 pristine no-turn0-card-play boundary",
+  "selected_source_audit": {
+    "verdict": "PASS — CULTIST_TURN1_PUBLICLY_RECONSTRUCTIBLE",
+    "opening_move": "CULTIST_INCANTATION",
+    "turn1_current_move": "CULTIST_DARK_STRIKE",
+    "previous_move": "CULTIST_INCANTATION",
+    "ritual_amount_derivation": "ascension <2 => 3; ascension 2..16 => 4; ascension >=17 => 5",
+    "ritual_just_applied_at_public_turn1": false,
+    "source_raw_battle_context_input": 0,
+    "source_hidden_rng_access": 0,
+    "source_move_history_access": 0,
+    "source_counter_history_access": 0,
+    "source_hidden_miscinfo_access": 0,
+    "public_contract_fields_added": 0,
+    "future_oracle_information_access": 0
+  },
+  "scope": "Only public turn=1 Cultist states reached by ending turn0 without playing a card; starter deck unchanged; enemy pristine; current intent DARK_STRIKE. Other Cultist turn1 variants fail closed.",
+  "phase1_status": "IN_PROGRESS",
+  "phase2": "LOCKED"
+}

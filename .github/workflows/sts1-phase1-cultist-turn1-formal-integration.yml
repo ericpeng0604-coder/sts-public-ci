@@ -1,0 +1,180 @@
+name: STS1 Phase 1 Cultist Turn1 Formal Integration
+
+on:
+  push:
+    branches:
+      - gpt/sts1-phase1-cultist-turn1-public-reconstruction
+      - gpt/sts1-phase1-public-reconstruction
+    paths:
+      - '.github/workflows/sts1-phase1-cultist-turn1-formal-integration.yml'
+      - 'src/roguelike_ai/sts1_teacher/cultist_turn1_reconstruction.py'
+      - 'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py'
+      - 'src/roguelike_ai/sts1_teacher/reconstruction_state.py'
+      - 'scripts/sts1/apply_phase1_cultist_turn1_overlay.py'
+      - 'scripts/sts1/verify_phase1_public_cultist_turn1_native.py'
+      - 'scripts/sts1/generate_phase1_cultist_turn1_suite.py'
+      - 'scripts/sts1/run_phase1_cultist_turn1_quality.py'
+      - 'tests/test_sts1_public_cultist_turn1_reconstruction.py'
+      - 'tests/data/sts1_phase1_cultist_turn1_*.json'
+      - 'tests/data/sts1_phase1_cultist_turn1_*.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused test dependency
+        run: python -m pip install 'pytest>=8,<9'
+      - name: Exact ancestry, frozen candidate, and contract guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=353e9721db1151dad51c256ebbf58bf7f1e1bc9c
+          test "$(git merge-base "$BASE" HEAD)" = "$BASE"
+          test "$(git hash-object scripts/sts1/run_phase1_cultist_turn1_quality.py)" = 'f82d859630f8f1fe97b58d89113ad556f42da29f'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/native_rollout.py)" = '4f63ac21ca0a2a34fe46326ae11d11342e2a3d91'
+          test "$(git hash-object scripts/sts1/generate_phase1_cultist_turn1_suite.py)" = '8d837f08b2fd3b89569d5d0e7e612f45989bc398'
+          test "$(git hash-object scripts/sts1/apply_phase1_cultist_turn1_overlay.py)" = 'f3915ab25bf70c800539f4ea73481e03b667c9ad'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/cultist_turn1_reconstruction.py)" = '78e4517cd9b72a7f10f33ca2a5acf5df16679090'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/enemy_reconstruction.py)" = 'fee3e62c9d214c9247f6c32db0ec455ba0ed9d29'
+          test "$(git hash-object src/roguelike_ai/sts1_teacher/reconstruction_state.py)" = '6a43788420dd635ca11b4ad50d43b24fa97c4ce7'
+          git diff --exit-code "$BASE" -- src/roguelike_ai/sts1_teacher/contract.py docs/sts1/STS1_PUBLIC_STATE_CONTRACT_V1.md
+          git diff --exit-code "$BASE" -- src/roguelike_ai/sts1_teacher/simulator.py src/roguelike_ai/sts1_teacher/native_rollout.py
+          echo 'FROZEN_CULTIST_TURN1_CANDIDATE_UNCHANGED = PASS'
+          echo 'FROZEN_PUBLIC_CONTRACT_UNCHANGED = PASS'
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+          echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+          echo 'PHASE1_GATE_CLAIMED = 0'
+      - name: Discovery, freeze, and fresh-holdout evidence identity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          f=json.loads(Path('tests/data/sts1_phase1_cultist_turn1_candidate_freeze_v1.json').read_text())
+          h=json.loads(Path('tests/data/sts1_phase1_cultist_turn1_fresh_holdout_evidence_v1.json').read_text())
+          assert f['candidate_id']=='cultist-turn1-pristine-public-search-v1'
+          assert f['discovery']['quality_verdict']=='PASS'
+          assert f['discovery']['search']==14 and f['discovery']['simple']==8 and f['discovery']['random']==9
+          assert f['discovery']['search_unresolved']==0 and f['discovery']['illegal_actions']==0 and f['discovery']['leakage']==0
+          assert f['fresh_holdout']['fresh_holdout_quality_observed_at_freeze'] is False
+          assert f['old_evidence_used_for_tuning'] is False
+          assert h['candidate_freeze_commit']=='499ae3989f1e973ee86b9817c10f30af6608c3cc'
+          assert h['quality_verdict']=='PASS'
+          assert h['search']==13 and h['simple']==7 and h['random']==7
+          assert h['search_unresolved']==0 and h['illegal_actions']==0 and h['leakage']==0
+          assert h['deterministic'] is True and h['full_repeats']==2
+          assert h['source_raw_battle_context_input']==0
+          assert h['source_hidden_rng_access']==0
+          assert h['source_move_history_access']==0
+          assert h['source_counter_history_access']==0
+          assert h['source_hidden_miscinfo_access']==0
+          assert h['public_contract_fields_added']==0
+          assert h['non_target_simulator_diff']==0
+          print('DISCOVERY_FREEZE_HOLDOUT_IDENTITY = PASS')
+          PY
+      - name: Full reconstruction regression tests
+        run: >-
+          python -m pytest -q
+          tests/test_sts1_public_reconstruction.py
+          tests/test_sts1_public_run_state.py
+          tests/test_sts1_public_redeterminization.py
+          tests/test_sts1_public_card_reconstruction.py
+          tests/test_sts1_public_enemy_reconstruction.py
+          tests/test_sts1_public_native_v1_admission.py
+          tests/test_sts1_reconstruction_state.py
+          tests/test_sts1_public_reconstruction_smoke.py
+          tests/test_sts1_midturn_nonstarter_failclosed.py
+          tests/test_sts1_pommel_midturn_reconstruction.py
+          tests/test_sts1_shrug_midturn_reconstruction.py
+          tests/test_sts1_shrug_upgraded_midturn_reconstruction.py
+          tests/test_sts1_anger_midturn_reconstruction.py
+          tests/test_sts1_anger_pommel_composition_reconstruction.py
+          tests/test_sts1_finesse_midturn_reconstruction.py
+          tests/test_sts1_anger_finesse_composition_reconstruction.py
+          tests/test_sts1_public_cultist_turn1_reconstruction.py
+      - name: Syntax and whitespace gates
+        run: |
+          python -m py_compile \
+            src/roguelike_ai/sts1_teacher/cultist_turn1_reconstruction.py \
+            src/roguelike_ai/sts1_teacher/enemy_reconstruction.py \
+            src/roguelike_ai/sts1_teacher/reconstruction_state.py \
+            scripts/sts1/apply_phase1_cultist_turn1_overlay.py \
+            scripts/sts1/verify_phase1_public_cultist_turn1_native.py \
+            scripts/sts1/generate_phase1_cultist_turn1_suite.py \
+            scripts/sts1/run_phase1_cultist_turn1_quality.py
+          git diff --check 353e9721db1151dad51c256ebbf58bf7f1e1bc9c...HEAD
+
+  native-regression:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Hydrate exact pinned simulator
+        run: python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - name: Snapshot non-target simulator diff
+        run: >-
+          git -C external/sts_lightspeed/source diff -- .
+          ':(exclude)bindings/slaythespire.cpp'
+          > "$RUNNER_TEMP/nonbinding-before.diff"
+      - name: Apply established overlays plus frozen Cultist turn1 overlay
+        run: |
+          python scripts/sts1/apply_phase1_public_state_overlay.py
+          python scripts/sts1/apply_phase1_public_reconstruction_overlay.py
+          python scripts/sts1/apply_phase1_public_history_guard_overlay.py
+          python scripts/sts1/apply_phase1_public_midturn_counter_overlay.py
+          python scripts/sts1/apply_phase1_public_communicationmod_card_alias_overlay.py
+          python scripts/sts1/apply_phase1_public_draw_midturn_aux_overlay.py
+          python scripts/sts1/apply_phase1_public_finesse_midturn_overlay.py
+          python scripts/sts1/apply_phase1_public_anger_finesse_composition_overlay.py
+          python scripts/sts1/apply_phase1_cultist_turn1_overlay.py
+      - name: Build real native Linux binding
+        run: python scripts/sts1/build_probe.py
+      - name: Opening and enemy native proofs
+        run: |
+          python scripts/sts1/verify_phase1_public_reconstruction_native.py
+          python scripts/sts1/verify_phase1_public_gremlin_nob_native.py
+          python scripts/sts1/verify_phase1_public_blue_slaver_native.py
+          python scripts/sts1/verify_phase1_public_red_slaver_native.py
+          python scripts/sts1/verify_phase1_public_looter_native.py
+          python scripts/sts1/verify_phase1_public_cultist_turn1_native.py
+          python scripts/sts1/verify_phase1_public_search_native.py
+      - name: Rich midturn native proofs
+        run: |
+          python scripts/sts1/verify_phase1_public_pommel_midturn_native.py
+          python scripts/sts1/verify_phase1_public_shrug_midturn_native.py
+          python scripts/sts1/verify_phase1_public_shrug_upgraded_midturn_native.py
+          python scripts/sts1/verify_phase1_public_anger_midturn_native.py
+          python scripts/sts1/verify_phase1_public_anger_pommel_composition_native.py
+          python scripts/sts1/verify_phase1_public_finesse_midturn_native.py
+          python scripts/sts1/verify_phase1_public_anger_finesse_composition_native.py
+      - name: Prove native scope and no hidden source reads
+        run: |
+          git -C external/sts_lightspeed/source diff -- . ':(exclude)bindings/slaythespire.cpp' > "$RUNNER_TEMP/nonbinding-after.diff"
+          cmp "$RUNNER_TEMP/nonbinding-before.diff" "$RUNNER_TEMP/nonbinding-after.diff"
+          git -C external/sts_lightspeed/source diff --check
+          git -C external/sts_lightspeed/source diff -- bindings/slaythespire.cpp | grep -F 'phase1_public_cultist_turn1_v1'
+          echo 'SOURCE_RAW_BATTLE_CONTEXT_INPUT = 0'
+          echo 'SOURCE_HIDDEN_RNG_ACCESS = 0'
+          echo 'SOURCE_MOVE_HISTORY_ACCESS = 0'
+          echo 'SOURCE_COUNTER_HISTORY_ACCESS = 0'
+          echo 'SOURCE_HIDDEN_MISCINFO_ACCESS = 0'
+          echo 'PUBLIC_CONTRACT_FIELDS_ADDED = 0'
+          echo 'NON_TARGET_SIMULATOR_DIFF = 0'
+          echo 'PASS — CULTIST_TURN1_FORMAL_INTEGRATION'
+          echo 'PHASE1_GATE_CLAIMED = 0'

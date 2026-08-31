@@ -272,11 +272,35 @@ jobs:
       - name: Require exact previous 620xxx fresh-holdout result
         run: |
           python - <<'PY'
+          import hashlib
           import json
+          from copy import deepcopy
           from pathlib import Path
+
+          def canonical_json(value):
+              return json.dumps(
+                  value, ensure_ascii=True, sort_keys=True,
+                  separators=(',', ':'), allow_nan=False
+              )
+
           s = json.loads(Path('evidence/sts1/looter-v2-holdout/summary.json').read_text())
-          assert s['suite_digest'] == '8e550f1f016daaddaa1fceed3e5f19027fc8f63f50f3e70894839b2beb77fd2f'
+          suite = json.loads(Path('evidence/sts1/looter-v2-holdout/suite.json').read_text())
+          assert s['suite_digest'] == 'c6507fb7438b6fb1c3d3ca3a3ba49aff1ea0a2f768355f9098c35b0f2a023660'
           assert s['rows_digest'] == 'c34c7fcc91b4bf13e4045f78dd55c939345732ec6fac13c4bdbdf3b745095ba6'
+
+          # Cultist turn1 added two reconstruction-only metadata keys after the
+          # frozen Looter holdout. Prove those keys are inert for every Looter
+          # case, remove only them, and recover the exact legacy frozen digest.
+          legacy_cases = deepcopy(suite['cases'])
+          for record in legacy_cases:
+              reconstruction = record['public_state']['reconstruction']
+              assert reconstruction['cultist_turn1_complete'] is False
+              assert reconstruction['cultist_turn1_admission_reasons'] == []
+              del reconstruction['cultist_turn1_complete']
+              del reconstruction['cultist_turn1_admission_reasons']
+          payload = '\n'.join(canonical_json(record) for record in legacy_cases) + '\n'
+          legacy_suite_digest = hashlib.sha256(payload.encode('utf-8')).hexdigest()
+          assert legacy_suite_digest == '8e550f1f016daaddaa1fceed3e5f19027fc8f63f50f3e70894839b2beb77fd2f'
           assert s['agreement_counts'] == {'search': 13, 'simple': 10, 'random': 11}
           assert s['search_unresolved'] == 0
           assert s['illegal_actions'] == 0

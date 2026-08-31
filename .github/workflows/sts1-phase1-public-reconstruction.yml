@@ -6,6 +6,8 @@ on:
       - gpt/sts1-phase1-public-reconstruction
     paths:
       - '.github/workflows/sts1-phase1-public-reconstruction.yml'
+      - '.github/workflows/sts1-phase1-cultist-turn1-native.yml'
+      - '.github/workflows/sts1-phase1-cultist-turn1-formal-integration.yml'
       - 'src/roguelike_ai/sts1_teacher/**'
       - 'tests/test_sts1_public_*.py'
       - 'tests/test_sts1_reconstruction_state.py'

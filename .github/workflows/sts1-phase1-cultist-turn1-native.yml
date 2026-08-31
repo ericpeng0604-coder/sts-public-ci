@@ -7,6 +7,8 @@ on:
       - gpt/sts1-phase1-public-reconstruction
     paths:
       - '.github/workflows/sts1-phase1-cultist-turn1-native.yml'
+      - '.github/workflows/sts1-phase1-public-reconstruction.yml'
+      - '.github/workflows/sts1-phase1-cultist-turn1-formal-integration.yml'
       - 'src/roguelike_ai/sts1_teacher/cultist_turn1_reconstruction.py'
       - 'src/roguelike_ai/sts1_teacher/reconstruction_state.py'
       - 'src/roguelike_ai/sts1_teacher/enemy_reconstruction.py'
@@ -43,6 +45,7 @@ jobs:
           import subprocess
           allowed = {
               '.github/workflows/sts1-phase1-cultist-turn1-native.yml',
+              '.github/workflows/sts1-phase1-public-reconstruction.yml',
               '.github/workflows/sts1-phase1-cultist-turn1-discovery.yml',
               '.github/workflows/sts1-phase1-cultist-turn1-fresh-holdout.yml',
               '.github/workflows/sts1-phase1-cultist-turn1-formal-integration.yml',

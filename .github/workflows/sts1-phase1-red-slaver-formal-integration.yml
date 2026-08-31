@@ -173,11 +173,36 @@ jobs:
       - name: Require exact previous fresh-holdout result
         run: |
           python - <<'PY'
+          import hashlib
           import json
+          from copy import deepcopy
           from pathlib import Path
+
+          def canonical_json(value):
+              return json.dumps(
+                  value, ensure_ascii=True, sort_keys=True,
+                  separators=(',', ':'), allow_nan=False
+              )
+
           s = json.loads(Path('evidence/sts1/red-slaver-holdout/summary.json').read_text())
-          assert s['suite_digest'] == '5631a2352dea6cbed958f5b4552195ecc0c170fa7aa41b107e1b41e162ef868e'
+          suite = json.loads(Path('evidence/sts1/red-slaver-holdout/suite.json').read_text())
+          assert s['suite_digest'] == '5c849966fa16032fbc51c5e7026ff486b1f334f776468dc118f21a45a76539f0'
           assert s['rows_digest'] == '944adcdb93fae9738118befec86392fcfb94a6f297ef7a43bb749a3ff852853a'
+
+          # Cultist turn1 added two reconstruction-only metadata keys after the
+          # frozen Red Slaver holdout. They must be inert on every Red Slaver
+          # case, and removing only those keys must recover the exact legacy
+          # frozen suite digest.
+          legacy_cases = deepcopy(suite['cases'])
+          for record in legacy_cases:
+              reconstruction = record['public_state']['reconstruction']
+              assert reconstruction['cultist_turn1_complete'] is False
+              assert reconstruction['cultist_turn1_admission_reasons'] == []
+              del reconstruction['cultist_turn1_complete']
+              del reconstruction['cultist_turn1_admission_reasons']
+          payload = '\n'.join(canonical_json(record) for record in legacy_cases) + '\n'
+          legacy_suite_digest = hashlib.sha256(payload.encode('utf-8')).hexdigest()
+          assert legacy_suite_digest == '5631a2352dea6cbed958f5b4552195ecc0c170fa7aa41b107e1b41e162ef868e'
           assert s['agreement_counts'] == {'search': 15, 'simple': 8, 'random': 10}
           assert s['search_unresolved'] == 0 and s['illegal_actions'] == 0 and s['leakage'] == 0
           assert s['deterministic'] is True and s['full_repeats'] == 2

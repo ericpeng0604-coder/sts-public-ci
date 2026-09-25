@@ -45,6 +45,7 @@ class HybridModelSpec:
     fusion_rule: str
     noncombat_policy: str
     base_policy_id: str
+    armg_map_weight_sha256: str | None = None
     loop_round: int | None = None
 
     def __post_init__(self) -> None:
@@ -60,6 +61,11 @@ class HybridModelSpec:
             raise HybridModelError("hybrid non-combat policy must be ArmG")
         if self.base_policy_id != STS1_BASE_POLICY_ID:
             raise HybridModelError("hybrid base policy identity drift")
+        if (
+            self.armg_map_weight_sha256 is not None
+            and len(self.armg_map_weight_sha256) != 64
+        ):
+            raise HybridModelError("ArmG map checkpoint SHA-256 is invalid")
         if self.loop_round is not None and self.loop_round < 0:
             raise HybridModelError("loop_round must be non-negative")
 
@@ -75,10 +81,13 @@ class HybridModelSpec:
 def build_hybrid_model_spec(
     student_checkpoint: Path,
     *,
+    armg_map_weight: Path | None = None,
     loop_round: int | None = None,
 ) -> HybridModelSpec:
     if not student_checkpoint.is_file():
         raise HybridModelError(f"Student checkpoint missing: {student_checkpoint}")
+    if armg_map_weight is not None and not armg_map_weight.is_file():
+        raise HybridModelError(f"ArmG map checkpoint missing: {armg_map_weight}")
     return HybridModelSpec(
         runtime_id=HYBRID_RUNTIME_ID,
         student_checkpoint_sha256=_file_sha256(student_checkpoint),
@@ -86,6 +95,11 @@ def build_hybrid_model_spec(
         fusion_rule=HYBRID_FUSION_RULE,
         noncombat_policy="armg",
         base_policy_id=STS1_BASE_POLICY_ID,
+        armg_map_weight_sha256=(
+            _file_sha256(armg_map_weight)
+            if armg_map_weight is not None
+            else None
+        ),
         loop_round=loop_round,
     )
 
@@ -94,9 +108,14 @@ def write_hybrid_model_manifest(
     student_checkpoint: Path,
     manifest_path: Path,
     *,
+    armg_map_weight: Path | None = None,
     loop_round: int | None = None,
 ) -> dict[str, Any]:
-    spec = build_hybrid_model_spec(student_checkpoint, loop_round=loop_round)
+    spec = build_hybrid_model_spec(
+        student_checkpoint,
+        armg_map_weight=armg_map_weight,
+        loop_round=loop_round,
+    )
     payload = spec.manifest()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(

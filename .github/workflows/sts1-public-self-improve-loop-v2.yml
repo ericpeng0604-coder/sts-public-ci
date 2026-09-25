@@ -9,8 +9,9 @@ on:
       - 'control/sts1-self-improve-loop-v2.request'
 
 permissions:
-  contents: read
-  actions: read
+  contents: write
+  actions: write
+  issues: write
 
 concurrency:
   group: sts1-self-improve-loop-v2
@@ -267,6 +268,69 @@ jobs:
             evidence/sts1/self-improve-v2/loop-summary.json
           if-no-files-found: warn
           retention-days: 90
+
+      - name: GitHub-native round report and continuation
+        if: always()
+        env:
+          LOOP_JOB_STATUS: ${{ job.status }}
+          LOOP_REPORT_ISSUE: '15'
+          LOOP_WORKFLOW_FILE: 'sts1-public-self-improve-loop-v2.yml'
+          LOOP_CONTROL_PATH: 'control/sts1-self-improve-loop-v2.request'
+        run: |
+          set -uo pipefail
+          handoff="$RUNNER_TEMP/sts1-github-handoff"
+          rm -rf "$handoff"
+          mkdir -p "$handoff"
+
+          run_url="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          if [ "$LOOP_JOB_STATUS" != "success" ]; then
+            body="## Student + MCTS — Run failed
+
+- Run：$run_url
+- 結果：**FAILED**
+- 下一輪：**未接續**
+- 原因：workflow job 未成功完成；保留 artifacts/logs 供診斷。"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$LOOP_REPORT_ISSUE/comments" -f body="$body"
+            exit 0
+          fi
+
+          python scripts/sts1/sts1_github_native_loop.py \
+            --kind student \
+            --report-root evidence/sts1/self-improve-v2 \
+            --control "$LOOP_CONTROL_PATH" \
+            --out-dir "$handoff" \
+            --run-url "$run_url"
+
+          next_status="下一輪：**已暫停**"
+          continue_loop="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["continue"]).lower())' "$handoff/decision.json")"
+
+          if [ "$continue_loop" = "true" ]; then
+            current_sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$LOOP_CONTROL_PATH?ref=$GITHUB_REF_NAME" --jq '.sha')"
+            encoded="$(base64 -w0 "$handoff/next-control.request")"
+            gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$LOOP_CONTROL_PATH" \
+              -f message="control(sts1): GitHub-native continue student loop" \
+              -f content="$encoded" \
+              -f sha="$current_sha" \
+              -f branch="$GITHUB_REF_NAME" >/dev/null
+
+            gh workflow run "$LOOP_WORKFLOW_FILE" --ref "$GITHUB_REF_NAME"
+            next_status="下一輪：**已接續**（GitHub Actions 已 dispatch）"
+          fi
+
+          python - "$handoff/comments.json" "$handoff" <<'PY'
+          import json, sys
+          from pathlib import Path
+          comments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          out = Path(sys.argv[2])
+          for i, body in enumerate(comments, 1):
+              (out / f"comment-{i:03d}.md").write_text(body, encoding="utf-8")
+          PY
+
+          for file in "$handoff"/comment-*.md; do
+            printf '\n\n%s\n' "$next_status" >> "$file"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$LOOP_REPORT_ISSUE/comments" -f body="$(cat "$file")"
+          done
 
       - name: Delete transient frozen v0
         if: always()

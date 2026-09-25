@@ -1,4 +1,4 @@
-attempt=8
+attempt=9
 rounds=1
 teacher_seeds=32
 ppo_seeds=64
@@ -13,5 +13,5 @@ baseline_anchor_coef=0.01
 learner_floor_delta=0.5
 champion_check_interval=3
 max_stagnation=5
-reason=retry_after_safe_workflow_args_fix
+reason=retry_after_reset_env_fix
 reset_stagnation=1

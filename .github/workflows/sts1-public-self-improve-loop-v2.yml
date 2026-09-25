@@ -242,7 +242,34 @@ jobs:
           if [ -f "$RUNNER_TEMP/sts1-armg-map-state/current-map.pt" ]; then
             armg_map_args=(--armg-map-weight "$RUNNER_TEMP/sts1-armg-map-state/current-map.pt")
           fi
-          python scripts/sts1/sts1_self_improve_loop_v2.py             --baseline-v0 "$RUNNER_TEMP/sts1-loop-v2/student-v0.json"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt             "${armg_map_args[@]}"             --eval-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --state-dir "$RUNNER_TEMP/sts1-loop-v2-state"             --output-dir evidence/sts1/self-improve-v2             --rounds "$LOOP_ROUNDS"             --teacher-seeds-per-round "$TEACHER_SEEDS"             --ppo-seeds-per-round "$PPO_SEEDS"             --shadow-eval-seeds "$SHADOW_EVAL_SEEDS"             --rng-seed "$LOOP_RNG_SEED"             --teacher-mcts-sims "$TEACHER_MCTS_SIMS"             --distill-epochs "$DISTILL_EPOCHS"             --distill-batch-size "$DISTILL_BATCH_SIZE"             --teacher-top1-before-ppo "$TEACHER_TOP1_BEFORE_PPO"             --learning-rate "$PPO_LEARNING_RATE"             --baseline-anchor-coef "$PPO_BASELINE_ANCHOR_COEF"             --learner-floor-delta "$LEARNER_FLOOR_DELTA"             --champion-check-interval "$CHAMPION_CHECK_INTERVAL"             --max-stagnation "$MAX_STAGNATION" \\\n            $([ "$RESET_STAGNATION" = "1" ] && echo "--reset-stagnation")
+          loop_args=(
+            --baseline-v0 "$RUNNER_TEMP/sts1-loop-v2/student-v0.json"
+            --module-dir external/sts_lightspeed/source/build-probe
+            --armg-root .cache/sts1-armg
+            --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt
+            "${armg_map_args[@]}"
+            --eval-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt
+            --state-dir "$RUNNER_TEMP/sts1-loop-v2-state"
+            --output-dir evidence/sts1/self-improve-v2
+            --rounds "$LOOP_ROUNDS"
+            --teacher-seeds-per-round "$TEACHER_SEEDS"
+            --ppo-seeds-per-round "$PPO_SEEDS"
+            --shadow-eval-seeds "$SHADOW_EVAL_SEEDS"
+            --rng-seed "$LOOP_RNG_SEED"
+            --teacher-mcts-sims "$TEACHER_MCTS_SIMS"
+            --distill-epochs "$DISTILL_EPOCHS"
+            --distill-batch-size "$DISTILL_BATCH_SIZE"
+            --teacher-top1-before-ppo "$TEACHER_TOP1_BEFORE_PPO"
+            --learning-rate "$PPO_LEARNING_RATE"
+            --baseline-anchor-coef "$PPO_BASELINE_ANCHOR_COEF"
+            --learner-floor-delta "$LEARNER_FLOOR_DELTA"
+            --champion-check-interval "$CHAMPION_CHECK_INTERVAL"
+            --max-stagnation "$MAX_STAGNATION"
+          )
+          if [ "$RESET_STAGNATION" = "1" ]; then
+            loop_args+=(--reset-stagnation)
+          fi
+          python scripts/sts1/sts1_self_improve_loop_v2.py "${loop_args[@]}"
 
       - name: Upload durable loop state
         if: success()

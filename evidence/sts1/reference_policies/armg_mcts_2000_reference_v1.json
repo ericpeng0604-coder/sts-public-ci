@@ -1,0 +1,62 @@
+{
+  "schema_version": "sts1-reference-policy-benchmark-v1",
+  "policy_id": "armg+mcts2000-reference-v1",
+  "role": "teacher_reference",
+  "status": "REGISTERED_REFERENCE_NOT_CHAMPION",
+  "configuration": {
+    "character": "IRONCLAD",
+    "ascension": 0,
+    "combat_policy": "mcts",
+    "mcts_sims": 2000,
+    "noncombat_policy": "armg",
+    "simulator_sha": "7476a81954020087da31d41d16fddf475746ec2d",
+    "armg_repository": "https://github.com/Jialeiv/sts-rl-agent",
+    "armg_upstream_commit": "b20eb2cac2f52b22fbb6c79900c309b51ea0a1db",
+    "armg_weight_path": "weights/armG_model_G128x128_15k.pt",
+    "armg_weight_git_blob_sha": "6666fb690fcceb592a1aa8dc74fa27bfee4575f0"
+  },
+  "benchmark": {
+    "source_repository": "ericpeng0604-coder/sts-public-ci",
+    "source_run_id": 36093194941,
+    "source_job_id": 107939931746,
+    "fixed_eval_seeds": 50,
+    "champion": {
+      "victories_30": 0,
+      "victories_50": 0,
+      "mean_final_floor_30": 18.733333333333334,
+      "mean_final_floor_50": 19.38,
+      "illegal_action_count": 0,
+      "crash_count": 0,
+      "timeout_count": 0
+    },
+    "reference_policy": {
+      "victories_30": 2,
+      "victories_50": 3,
+      "mean_final_floor_30": 39.266666666666666,
+      "mean_final_floor_50": 38.98,
+      "illegal_action_count": 0,
+      "crash_count": 0,
+      "timeout_count": 0
+    },
+    "champion_gate_30": {
+      "status": "HOLD",
+      "win_delta": 2,
+      "required_win_delta": 4
+    },
+    "champion_gate_50": {
+      "status": "SKIPPED",
+      "reason": "fast_30_seed_gate_did_not_pass"
+    }
+  },
+  "usage": {
+    "allowed": [
+      "teacher_data_collection",
+      "reference_evaluation",
+      "student_distillation"
+    ],
+    "forbidden": [
+      "silent_champion_replacement",
+      "claiming_this_is_a_neural_network_checkpoint"
+    ]
+  }
+}

@@ -98,6 +98,8 @@ jobs:
       SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
       STUDENT_V0_GZIP_B64: ${{ needs.rebuild-v0-windows.outputs.student_v0_gzip_b64 }}
       EXPECTED_V0_PAYLOAD_SHA256: ${{ needs.rebuild-v0-windows.outputs.student_v0_payload_sha256 }}
+      TRAINING_SEED_COUNT: '64'
+      TRAINING_RNG_SEED: '20260926'
 
     steps:
       - uses: actions/checkout@v4
@@ -195,7 +197,7 @@ jobs:
               encoding="utf-8",
           )
           assert not (set(values) & eval_seeds)
-          print("PASS_TRAINING_SEEDS", len(values), values[:5])
+          print("PASS_TRAINING_SEEDS", len(values), values[:5], "rng_seed", os.environ["TRAINING_RNG_SEED"])
           PY
 
       - name: Collect fail-closed PPO rollout shard

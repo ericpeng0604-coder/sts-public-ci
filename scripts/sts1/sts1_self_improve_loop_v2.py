@@ -242,6 +242,7 @@ def main() -> int:
     parser.add_argument("--module-dir", type=Path, required=True)
     parser.add_argument("--armg-root", type=Path, required=True)
     parser.add_argument("--armg-weight", type=Path, required=True)
+    parser.add_argument("--armg-map-weight", type=Path)
     parser.add_argument("--eval-seed-file", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -284,7 +285,16 @@ def main() -> int:
     )
 
     sts = _load_sts(args.module_dir)
-    armg = ArmGNoncombatPolicy(root=args.armg_root, weight_path=args.armg_weight)
+    armg_map_weight = (
+        args.armg_map_weight
+        if args.armg_map_weight is not None and args.armg_map_weight.is_file()
+        else None
+    )
+    armg = ArmGNoncombatPolicy(
+        root=args.armg_root,
+        weight_path=args.armg_weight,
+        map_weight_path=armg_map_weight,
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     learner_path = args.state_dir / "learner.pt"
@@ -551,6 +561,11 @@ def main() -> int:
             "schema_version": "sts1-self-improve-round-v2",
             "round": round_no,
             "base_policy": "armg+mcts2000-base-v1",
+            "armg_map_weight_sha256": (
+                file_sha256(armg_map_weight)
+                if armg_map_weight is not None
+                else file_sha256(args.armg_weight)
+            ),
             "hybrid_runtime_id": HYBRID_RUNTIME_ID,
             "hybrid_mcts_budgets": list(DEFAULT_HYBRID_MCTS_BUDGETS),
             "learner_model_manifest": learner_manifest,
@@ -578,6 +593,11 @@ def main() -> int:
     summary = {
         "schema_version": "sts1-self-improve-run-v2",
         "base_policy": "armg+mcts2000-base-v1",
+        "armg_map_weight_sha256": (
+            file_sha256(armg_map_weight)
+            if armg_map_weight is not None
+            else file_sha256(args.armg_weight)
+        ),
         "hybrid_runtime_id": HYBRID_RUNTIME_ID,
         "hybrid_mcts_budgets": list(DEFAULT_HYBRID_MCTS_BUDGETS),
         "rounds_executed": len(run_reports),

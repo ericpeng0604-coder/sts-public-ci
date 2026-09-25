@@ -14,6 +14,7 @@ from roguelike_ai.sts1_phase3.self_improve_loop import (
     attach_candidate,
     build_rollout_manifest,
     load_checkpoint,
+    promote_candidate_artifact,
     write_checkpoint_atomic,
 )
 
@@ -107,3 +108,51 @@ def test_candidate_must_differ_from_champion() -> None:
     checkpoint = LoopCheckpoint(generation=2, champion_sha256=_sha("same"))
     with pytest.raises(SelfImproveLoopError, match="must differ"):
         attach_candidate(checkpoint, _sha("same"))
+
+
+def test_promote_candidate_installs_immutable_artifact(tmp_path) -> None:
+    candidate = tmp_path / "candidate.pt"
+    candidate.write_bytes(b"candidate-v1")
+    candidate_sha = _sha("candidate-v1")
+    checkpoint = LoopCheckpoint(
+        generation=0,
+        champion_sha256=_sha("champion-v0"),
+        candidate_sha256=candidate_sha,
+        phase="real_game_gate",
+    )
+    promotion = {"decision": "PROMOTE", "all_gates_passed": True}
+    next_checkpoint, champion_path = promote_candidate_artifact(
+        candidate,
+        tmp_path / "champions",
+        checkpoint,
+        promotion,
+    )
+    assert next_checkpoint.generation == 1
+    assert next_checkpoint.champion_sha256 == candidate_sha
+    assert champion_path.read_bytes() == b"candidate-v1"
+    assert "champion-gen0001-" in champion_path.name
+
+
+def test_promote_candidate_refuses_hold_or_sha_mismatch(tmp_path) -> None:
+    candidate = tmp_path / "candidate.pt"
+    candidate.write_bytes(b"candidate-v1")
+    checkpoint = LoopCheckpoint(
+        generation=0,
+        champion_sha256=_sha("champion-v0"),
+        candidate_sha256=_sha("different"),
+        phase="real_game_gate",
+    )
+    with pytest.raises(SelfImproveLoopError, match="passed all promotion gates"):
+        promote_candidate_artifact(
+            candidate,
+            tmp_path / "champions",
+            checkpoint,
+            {"decision": "HOLD", "all_gates_passed": False},
+        )
+    with pytest.raises(SelfImproveLoopError, match="SHA mismatch"):
+        promote_candidate_artifact(
+            candidate,
+            tmp_path / "champions",
+            checkpoint,
+            {"decision": "PROMOTE", "all_gates_passed": True},
+        )

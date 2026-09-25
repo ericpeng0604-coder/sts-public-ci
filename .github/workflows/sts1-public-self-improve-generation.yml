@@ -1,21 +1,12 @@
 name: STS1 Public Self-Improve Generation
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - gpt/sts1-self-improve-loop-20260925
     paths:
-      - '.github/workflows/sts1-public-self-improve-generation.yml'
-      - 'scripts/sts1/sts1_public_ppo_smoke.py'
-      - 'scripts/sts1/sts1_phase3_rebuild_student_v0.py'
-      - 'scripts/sts1/sts1_phase2_dataset_factory_pilot.py'
-      - 'scripts/sts1/sts1_phase2_student_v0_holdout_eval.py'
-      - 'scripts/sts1/hydrate_jialeiv_baseline_v0.py'
-      - 'scripts/sts1/build_probe.py'
-      - 'src/roguelike_ai/behavior_cloning.py'
-      - 'src/roguelike_ai/sts1_training/**'
-      - 'src/roguelike_ai/sts1_phase3/**'
-  workflow_dispatch:
+      - 'control/sts1-self-improve-generation.request'
 
 permissions:
   contents: read

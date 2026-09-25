@@ -259,7 +259,8 @@ def main() -> int:
     parser.add_argument("--baseline-anchor-coef", type=float, default=0.05)
     parser.add_argument("--learner-floor-delta", type=float, default=0.5)
     parser.add_argument("--champion-check-interval", type=int, default=3)
-    parser.add_argument("--max-stagnation", type=int, default=5)\n    parser.add_argument("--reset-stagnation", action="store_true")
+    parser.add_argument("--max-stagnation", type=int, default=5)
+    parser.add_argument("--reset-stagnation", action="store_true")
     args = parser.parse_args()
 
     if args.rounds < 1 or args.teacher_seeds_per_round < 1 or args.shadow_eval_seeds < 2:
@@ -283,6 +284,16 @@ def main() -> int:
         state_dir=args.state_dir,
         config=config,
     )
+    if args.reset_stagnation and state.stagnation_count:
+        state = LoopV2State(
+            round_index=state.round_index,
+            accepted_rounds=state.accepted_rounds,
+            rejected_rounds=state.rejected_rounds,
+            stagnation_count=0,
+            used_teacher_seeds=state.used_teacher_seeds,
+            used_ppo_seeds=state.used_ppo_seeds,
+        )
+        state.write(args.state_dir / "loop-state.json")
 
     sts = _load_sts(args.module_dir)
     armg_map_weight = (

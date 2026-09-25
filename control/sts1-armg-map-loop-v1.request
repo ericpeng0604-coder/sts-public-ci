@@ -1,4 +1,4 @@
-attempt=4
+attempt=5
 mode=full
 training_seeds=8
 rng_seed=20261002
@@ -9,4 +9,4 @@ anchor_coef=0.01
 temperature=2.0
 max_replay_examples=5000
 max_stagnation=5
-reason=retry_after_deep_map_clone_fix
+reason=retry_after_patch_hunk_fix

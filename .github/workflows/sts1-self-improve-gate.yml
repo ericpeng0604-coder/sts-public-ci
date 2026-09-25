@@ -12,6 +12,7 @@ on:
       - 'tests/test_sts1_self_improve_loop.py'
       - 'tests/test_sts1_ppo_rollout.py'
       - 'tests/test_sts1_student_v1_ppo.py'
+      - 'tests/test_sts1_simulator_ppo_mode.py'
   pull_request:
     branches:
       - main
@@ -23,6 +24,7 @@ on:
       - 'tests/test_sts1_self_improve_loop.py'
       - 'tests/test_sts1_ppo_rollout.py'
       - 'tests/test_sts1_student_v1_ppo.py'
+      - 'tests/test_sts1_simulator_ppo_mode.py'
   workflow_dispatch:
 
 permissions:
@@ -42,6 +44,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
           python -m pip install numpy torch==2.11.0
+      - name: Compile offline simulator
+        run: python -m py_compile src/roguelike_ai/sts1_phase3/simulator.py
       - name: Test self-improvement contracts
         run: >-
           pytest -q
@@ -49,3 +53,4 @@ jobs:
           tests/test_sts1_self_improve_loop.py
           tests/test_sts1_ppo_rollout.py
           tests/test_sts1_student_v1_ppo.py
+          tests/test_sts1_simulator_ppo_mode.py

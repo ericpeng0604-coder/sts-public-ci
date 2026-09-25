@@ -229,6 +229,8 @@ jobs:
             ${{ runner.temp }}/sts1-loop-v2-state/loop-state.json
             ${{ runner.temp }}/sts1-loop-v2-state/learner.pt
             ${{ runner.temp }}/sts1-loop-v2-state/offline-champion.pt
+            ${{ runner.temp }}/sts1-loop-v2-state/model-manifest.json
+            ${{ runner.temp }}/sts1-loop-v2-state/offline-champion-manifest.json
           if-no-files-found: error
           retention-days: 90
 

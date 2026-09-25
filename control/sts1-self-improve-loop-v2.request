@@ -1,5 +1,5 @@
-attempt=2
-rounds=2
+attempt=3
+rounds=1
 teacher_seeds=32
 ppo_seeds=64
 shadow_eval_seeds=20
@@ -13,4 +13,4 @@ baseline_anchor_coef=0.05
 learner_floor_delta=0.5
 champion_check_interval=3
 max_stagnation=5
-reason=continue_with_evolved_armg_map_gen1
+reason=github_native_reporting_validation

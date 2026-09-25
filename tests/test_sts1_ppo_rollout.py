@@ -9,6 +9,7 @@ from roguelike_ai.sts1_phase3.ppo_rollout import (
     PPOEpisode,
     episode_from_simulator_evidence,
     make_transition,
+    public_progress_reward,
     read_rollout_shard,
     write_rollout_shard,
 )
@@ -213,3 +214,31 @@ def test_blocked_simulator_evidence_is_never_training_data(tmp_path) -> None:
     )
     with pytest.raises(PPORolloutError, match="cannot become PPO training data"):
         episode_from_simulator_evidence(evidence, episode_id="blocked")
+
+
+def test_dense_reward_prefers_enemy_damage_and_penalizes_player_damage() -> None:
+    before = _state()
+    after_attack = _state()
+    after_attack["enemies"] = [{"name": "Jaw Worm", "hp": 34, "intent": "ATTACK"}]
+
+    noop = public_progress_reward(
+        before,
+        after_hp=70,
+        after_floor=1,
+        after_state=_state(),
+    )
+    attack = public_progress_reward(
+        before,
+        after_hp=70,
+        after_floor=1,
+        after_state=after_attack,
+    )
+    hurt = public_progress_reward(
+        before,
+        after_hp=64,
+        after_floor=1,
+        after_state=_state(),
+    )
+
+    assert attack > noop
+    assert hurt < noop

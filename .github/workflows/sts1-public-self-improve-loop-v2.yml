@@ -140,6 +140,7 @@ jobs:
               "learner_floor_delta": "0.5",
               "champion_check_interval": "3",
               "max_stagnation": "5",
+              "reset_stagnation": "0",
           }
           defaults.update(values)
           env = {
@@ -157,6 +158,7 @@ jobs:
               "LEARNER_FLOOR_DELTA": str(float(defaults["learner_floor_delta"])),
               "CHAMPION_CHECK_INTERVAL": str(int(defaults["champion_check_interval"])),
               "MAX_STAGNATION": str(int(defaults["max_stagnation"])),
+              "RESET_STAGNATION": str(int(defaults["reset_stagnation"])),
           }
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
               for key, value in env.items():

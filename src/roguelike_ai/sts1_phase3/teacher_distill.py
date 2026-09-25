@@ -36,6 +36,9 @@ class TeacherExample:
     legal_action_ids: tuple[str, ...]
     teacher_action_index: int
     teacher_action_id: str
+    sample_weight: float = 1.0
+    run_outcome: str | None = None
+    final_floor: int | None = None
 
     def __post_init__(self) -> None:
         if not self.legal_actions:
@@ -46,9 +49,29 @@ class TeacherExample:
             raise TeacherDistillError("teacher action index outside legal actions")
         if self.teacher_action_id != self.legal_action_ids[self.teacher_action_index]:
             raise TeacherDistillError("teacher action identity mismatch")
+        if not 0.0 < float(self.sample_weight) <= 4.0:
+            raise TeacherDistillError("teacher sample_weight must be in (0, 4]")
 
 
-def _example_from_row(row: Mapping[str, Any]) -> TeacherExample:
+def teacher_run_quality_weight(*, outcome: str | None, final_floor: int | None) -> float:
+    """Weight all valid Teacher decisions while emphasizing proven good runs."""
+    if outcome == "victory":
+        return 3.0
+    floor = int(final_floor or 0)
+    if floor >= 40:
+        return 2.0
+    if floor >= 30:
+        return 1.5
+    return 1.0
+
+
+def _example_from_row(
+    row: Mapping[str, Any],
+    *,
+    sample_weight: float = 1.0,
+    run_outcome: str | None = None,
+    final_floor: int | None = None,
+) -> TeacherExample:
     state = row.get("public_state")
     if not isinstance(state, Mapping):
         raise TeacherDistillError("teacher row is missing public_state")
@@ -86,11 +109,14 @@ def _example_from_row(row: Mapping[str, Any]) -> TeacherExample:
         legal_action_ids=tuple(action_ids),
         teacher_action_index=index,
         teacher_action_id=action_id,
+        sample_weight=sample_weight,
+        run_outcome=run_outcome,
+        final_floor=final_floor,
     )
 
 
 def read_teacher_evidence(path: Path) -> tuple[TeacherExample, ...]:
-    examples: list[TeacherExample] = []
+    rows: list[Mapping[str, Any]] = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
@@ -105,9 +131,24 @@ def read_teacher_evidence(path: Path) -> tuple[TeacherExample, ...]:
             raise TeacherDistillError(f"invalid teacher evidence JSONL: {exc}") from exc
         if not isinstance(row, Mapping):
             raise TeacherDistillError("teacher evidence row must be an object")
-        if row.get("type") == "mcts_teacher_decision":
-            examples.append(_example_from_row(row))
+        rows.append(row)
 
+    summary = next((row for row in reversed(rows) if row.get("type") == "summary"), None)
+    outcome = str(summary.get("outcome")) if isinstance(summary, Mapping) and summary.get("outcome") is not None else None
+    raw_floor = summary.get("final_floor") if isinstance(summary, Mapping) else None
+    final_floor = int(raw_floor) if isinstance(raw_floor, (int, float)) and not isinstance(raw_floor, bool) else None
+    weight = teacher_run_quality_weight(outcome=outcome, final_floor=final_floor)
+
+    examples = [
+        _example_from_row(
+            row,
+            sample_weight=weight,
+            run_outcome=outcome,
+            final_floor=final_floor,
+        )
+        for row in rows
+        if row.get("type") == "mcts_teacher_decision"
+    ]
     if not examples:
         raise TeacherDistillError("teacher evidence contains no MCTS decisions")
     return tuple(examples)
@@ -174,8 +215,9 @@ def distill_mcts_teacher(
                 ce, anchor, _ = _teacher_loss(policy, examples[index])
                 ce_rows.append(ce)
                 anchor_rows.append(anchor)
+                weight = float(examples[index].sample_weight)
                 losses.append(
-                    ce + policy.config.baseline_anchor_coef * anchor
+                    weight * ce + policy.config.baseline_anchor_coef * anchor
                 )
             loss = torch.stack(losses).mean()
             policy.optimizer.zero_grad()
@@ -205,6 +247,9 @@ def distill_mcts_teacher(
         "epochs": epochs,
         "batches": batches,
         "teacher_top1_accuracy": correct / len(examples),
+        "mean_sample_weight": sum(float(example.sample_weight) for example in examples) / len(examples),
+        "victory_examples": sum(int(example.run_outcome == "victory") for example in examples),
+        "high_floor_examples": sum(int((example.final_floor or 0) >= 40) for example in examples),
         "cross_entropy": total_ce / batches,
         "baseline_anchor_kl": total_anchor / batches,
     }
@@ -216,4 +261,5 @@ __all__ = [
     "TeacherExample",
     "distill_mcts_teacher",
     "read_teacher_evidence",
+    "teacher_run_quality_weight",
 ]

@@ -15,6 +15,12 @@ on:
       - 'tests/test_sts1_teacher_distill.py'
       - 'tests/test_sts1_simulator_teacher_mode.py'
       - 'tests/test_sts1_simulator_ppo_mode.py'
+      - 'tests/test_sts1_hybrid_mcts_vote.py'
+      - 'tests/test_sts1_hybrid_model.py'
+      - 'tests/test_sts1_reference_policy.py'
+      - 'tests/test_sts1_base_policy.py'
+      - 'tests/test_sts1_self_improve_v2.py'
+      - 'scripts/sts1/sts1_self_improve_loop_v2.py'
   pull_request:
     branches:
       - main
@@ -58,3 +64,8 @@ jobs:
           tests/test_sts1_teacher_distill.py
           tests/test_sts1_simulator_teacher_mode.py
           tests/test_sts1_simulator_ppo_mode.py
+          tests/test_sts1_hybrid_mcts_vote.py
+          tests/test_sts1_hybrid_model.py
+          tests/test_sts1_reference_policy.py
+          tests/test_sts1_base_policy.py
+          tests/test_sts1_self_improve_v2.py

@@ -1,0 +1,39 @@
+name: STS1 Public Self-Improve Gate
+
+on:
+  push:
+    branches:
+      - gpt/sts1-self-improve-loop-20260925
+    paths:
+      - '.github/workflows/sts1-self-improve-gate.yml'
+      - 'src/roguelike_ai/sts1_phase3/**'
+      - 'scripts/sts1/sts1_champion_gate.py'
+      - 'tests/test_sts1_champion_gate.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/sts1-self-improve-gate.yml'
+      - 'src/roguelike_ai/sts1_phase3/**'
+      - 'scripts/sts1/sts1_champion_gate.py'
+      - 'tests/test_sts1_champion_gate.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  champion-gate-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+      - name: Test Champion Gate
+        run: pytest -q tests/test_sts1_champion_gate.py

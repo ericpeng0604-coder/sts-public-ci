@@ -137,6 +137,8 @@ jobs:
               "learning_rate": "1e-4",
               "anchor_coef": "0.01",
               "temperature": "2.0",
+              "max_replay_examples": "5000",
+              "max_stagnation": "5",
           }
           defaults.update(values)
           env = {
@@ -149,6 +151,8 @@ jobs:
               "ARMG_LEARNING_RATE": str(float(defaults["learning_rate"])),
               "ARMG_ANCHOR_COEF": str(float(defaults["anchor_coef"])),
               "ARMG_TEMPERATURE": str(float(defaults["temperature"])),
+              "ARMG_MAX_REPLAY_EXAMPLES": str(int(defaults["max_replay_examples"])),
+              "ARMG_MAX_STAGNATION": str(int(defaults["max_stagnation"])),
           }
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
               for key, value in env.items():
@@ -261,7 +265,7 @@ jobs:
             smoke_args=()
           fi
 
-          python scripts/sts1/sts1_armg_map_round_v1.py             --baseline-v0 "$RUNNER_TEMP/sts1-armg/student-v0.json"             "${student_args[@]}"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --armg-base-weight .cache/sts1-armg/armG_model_G128x128_15k.pt             --eval-seed-file fixtures/sts1/armg_map_eval_seeds_50.txt             --state-dir "$RUNNER_TEMP/sts1-armg-map-state"             --output-dir evidence/sts1/armg-map-v1             --training-seeds "$training_seeds"             --rng-seed "$ARMG_RNG_SEED"             --max-branch-points-per-game "$branch_points"             --temperature "$ARMG_TEMPERATURE"             --epochs "$ARMG_EPOCHS"             --learning-rate "$ARMG_LEARNING_RATE"             --anchor-coef "$ARMG_ANCHOR_COEF"             "${smoke_args[@]}"
+          python scripts/sts1/sts1_armg_map_round_v1.py             --baseline-v0 "$RUNNER_TEMP/sts1-armg/student-v0.json"             "${student_args[@]}"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --armg-base-weight .cache/sts1-armg/armG_model_G128x128_15k.pt             --eval-seed-file fixtures/sts1/armg_map_eval_seeds_50.txt             --state-dir "$RUNNER_TEMP/sts1-armg-map-state"             --output-dir evidence/sts1/armg-map-v1             --training-seeds "$training_seeds"             --rng-seed "$ARMG_RNG_SEED"             --max-branch-points-per-game "$branch_points"             --temperature "$ARMG_TEMPERATURE"             --epochs "$ARMG_EPOCHS"             --learning-rate "$ARMG_LEARNING_RATE"             --anchor-coef "$ARMG_ANCHOR_COEF"             --max-replay-examples "$ARMG_MAX_REPLAY_EXAMPLES"             --max-stagnation "$ARMG_MAX_STAGNATION"             "${smoke_args[@]}"
 
       - name: Upload durable ArmG map state
         if: success()
@@ -271,6 +275,7 @@ jobs:
           path: |
             ${{ runner.temp }}/sts1-armg-map-state/current-map.pt
             ${{ runner.temp }}/sts1-armg-map-state/armg-map-state.json
+            ${{ runner.temp }}/sts1-armg-map-state/map-replay.jsonl
           if-no-files-found: error
           retention-days: 90
 

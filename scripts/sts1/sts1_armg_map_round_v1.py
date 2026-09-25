@@ -105,6 +105,7 @@ def _load_or_init_state(state_dir: Path, base_weight: Path) -> dict[str, Any]:
         "generation": 0,
         "accepted_rounds": 0,
         "rejected_rounds": 0,
+        "stagnation_count": 0,
         "used_training_seeds": [],
         "current_map_sha256": _sha256(current),
         "base_nonmap_sha256": _sha256(base_weight),
@@ -429,6 +430,47 @@ def _collect_dataset(
     }
 
 
+def _merge_replay(
+    replay_path: Path,
+    new_dataset_path: Path,
+    *,
+    max_examples: int,
+) -> int:
+    if max_examples < 1:
+        raise RuntimeError("max replay examples must be positive")
+    rows: list[dict[str, Any]] = []
+    if replay_path.is_file():
+        for line in replay_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    for line in new_dataset_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+
+    dedup: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        identity = hashlib.sha256(
+            json.dumps(
+                {
+                    "seed": row.get("seed"),
+                    "floor": row.get("floor"),
+                    "obs": row.get("obs"),
+                    "descs": row.get("descs"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        dedup[identity] = row
+    kept = list(dedup.values())[-max_examples:]
+    replay_path.parent.mkdir(parents=True, exist_ok=True)
+    replay_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in kept),
+        encoding="utf-8",
+    )
+    return len(kept)
+
+
 def _read_examples(path: Path) -> list[dict[str, Any]]:
     rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -589,6 +631,8 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--anchor-coef", type=float, default=0.01)
+    parser.add_argument("--max-replay-examples", type=int, default=5000)
+    parser.add_argument("--max-stagnation", type=int, default=5)
     parser.add_argument("--smoke-eval-count", type=int, default=0)
     args = parser.parse_args()
 
@@ -635,11 +679,25 @@ def main() -> int:
         temperature=args.temperature,
     )
 
+    replay_path = args.state_dir / "map-replay.jsonl"
+    if args.smoke_eval_count:
+        train_dataset_path = dataset_path
+        replay_example_count = (
+            len(_read_examples(replay_path)) if replay_path.is_file() else 0
+        )
+    else:
+        replay_example_count = _merge_replay(
+            replay_path,
+            dataset_path,
+            max_examples=args.max_replay_examples,
+        )
+        train_dataset_path = replay_path
+
     candidate_path = round_dir / "candidate-map.pt"
     train_report = _train_map_candidate(
         armg=armg,
         source_weight=current_map,
-        dataset_path=dataset_path,
+        dataset_path=train_dataset_path,
         output_weight=candidate_path,
         epochs=args.epochs,
         learning_rate=args.learning_rate,
@@ -749,6 +807,7 @@ def main() -> int:
                 **state,
                 "generation": int(state["generation"]) + 1,
                 "accepted_rounds": int(state["accepted_rounds"]) + 1,
+                "stagnation_count": 0,
                 "used_training_seeds": list(state.get("used_training_seeds", [])) + list(training_seeds),
                 "current_map_sha256": _sha256(current_map),
             }
@@ -756,6 +815,7 @@ def main() -> int:
             state = {
                 **state,
                 "rejected_rounds": int(state["rejected_rounds"]) + 1,
+                "stagnation_count": int(state.get("stagnation_count", 0)) + 1,
                 "used_training_seeds": list(state.get("used_training_seeds", [])) + list(training_seeds),
                 "current_map_sha256": _sha256(current_map),
             }
@@ -770,6 +830,7 @@ def main() -> int:
         "map_generation_after": int(state.get("generation", 0)),
         "training_seeds": list(training_seeds),
         "dataset": dataset_report,
+        "replay_example_count": replay_example_count,
         "training": train_report,
         "promotion": promotion,
         "current_map_sha256": _sha256(current_map),
@@ -781,6 +842,10 @@ def main() -> int:
             else "student-v1-gen0-from-frozen-v0"
         ),
         "hybrid_mcts_budgets": list(DEFAULT_HYBRID_MCTS_BUDGETS),
+        "stagnation_count": int(state.get("stagnation_count", 0)),
+        "paused_for_stagnation": (
+            int(state.get("stagnation_count", 0)) >= args.max_stagnation
+        ),
     }
     (round_dir / "round-report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

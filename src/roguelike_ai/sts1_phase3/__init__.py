@@ -16,6 +16,13 @@ from .ppo_rollout import (
     read_rollout_shard,
     write_rollout_shard,
 )
+from .student_v1_ppo import (
+    StudentV1Config,
+    StudentV1Decision,
+    StudentV1Error,
+    StudentV1PPO,
+    ppo_update,
+)
 from .self_improve_loop import (
     LoopCheckpoint,
     RolloutIdentity,
@@ -38,7 +45,7 @@ __all__ = [
     "PPOEpisode",
     "PPOTransition",
     "RolloutIdentity",
-    "SelfImproveLoopError",
+    "SelfImproveLoopError",\n    "StudentV1Config",\n    "StudentV1Decision",\n    "StudentV1Error",\n    "StudentV1PPO",
     "StaleRolloutError",
     "accept_current_rollouts",
     "apply_promotion_decision",
@@ -48,7 +55,7 @@ __all__ = [
     "evaluate_real_game_gate",
     "load_checkpoint",
     "make_transition",
-    "promotion_decision",
+    "promotion_decision",\n    "ppo_update",
     "read_rollout_shard",
     "write_checkpoint_atomic",
     "write_rollout_shard",

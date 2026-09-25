@@ -1,0 +1,74 @@
+name: STS1 Public Frozen V0 Rebuild Smoke
+
+on:
+  push:
+    branches:
+      - gpt/sts1-self-improve-loop-20260925
+    paths:
+      - '.github/workflows/sts1-public-v0-rebuild-smoke.yml'
+      - 'scripts/sts1/sts1_phase3_rebuild_student_v0.py'
+      - 'scripts/sts1/sts1_phase2_dataset_factory_pilot.py'
+      - 'scripts/sts1/sts1_phase2_student_v0_holdout_eval.py'
+      - 'src/roguelike_ai/behavior_cloning.py'
+      - 'src/roguelike_ai/sts1_training/**'
+      - 'src/roguelike_ai/sts1_phase3/frozen_student.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rebuild-v0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: '1'
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MODEL_SHA256: 'e15604b95247615a6d424f834e8b8a1e9fd680af4fe9e22a6754372027e89513'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+
+      - name: Install exact rebuild dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Verify frozen public Phase-1 evidence is reachable
+        run: |
+          gh api repos/ericpeng0604-coder/sts-public-ci/actions/artifacts/9710934904 --jq '.id,.expired,.name'
+
+      - name: Rebuild frozen Student v0 in runner scratch space
+        run: |
+          mkdir -p "$RUNNER_TEMP/sts1-v0"
+          python scripts/sts1/sts1_phase3_rebuild_student_v0.py             --phase2-root .             --output "$RUNNER_TEMP/sts1-v0/student-v0.json"
+
+      - name: Verify exact frozen Student v0 identity
+        run: |
+          MODEL_PATH="$RUNNER_TEMP/sts1-v0/student-v0.json" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.frozen_student import (
+              EXPECTED_MODEL_SHA256,
+              FrozenStudentV0,
+          )
+
+          path = Path(os.environ["MODEL_PATH"])
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          assert payload["student_model_sha256"] == EXPECTED_MODEL_SHA256
+          model = FrozenStudentV0.from_path(path)
+          assert len(model.weights) == 3028
+          print("PASS_EXACT_PUBLIC_REBUILD", EXPECTED_MODEL_SHA256, model.artifact_sha256)
+          PY
+
+      - name: Delete rebuilt weights
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/sts1-v0"
+          test ! -e "$RUNNER_TEMP/sts1-v0/student-v0.json"

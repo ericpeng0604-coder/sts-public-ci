@@ -1,0 +1,420 @@
+name: STS1 Public Self-Improve Generation
+
+on:
+  push:
+    branches:
+      - gpt/sts1-self-improve-loop-20260925
+    paths:
+      - '.github/workflows/sts1-public-self-improve-generation.yml'
+      - 'scripts/sts1/sts1_public_ppo_smoke.py'
+      - 'scripts/sts1/sts1_phase3_rebuild_student_v0.py'
+      - 'scripts/sts1/sts1_phase2_dataset_factory_pilot.py'
+      - 'scripts/sts1/sts1_phase2_student_v0_holdout_eval.py'
+      - 'scripts/sts1/hydrate_jialeiv_baseline_v0.py'
+      - 'scripts/sts1/build_probe.py'
+      - 'src/roguelike_ai/behavior_cloning.py'
+      - 'src/roguelike_ai/sts1_training/**'
+      - 'src/roguelike_ai/sts1_phase3/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rebuild-v0-windows:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    outputs:
+      student_v0_gzip_b64: ${{ steps.pack.outputs.student_v0_gzip_b64 }}
+      student_v0_payload_sha256: ${{ steps.pack.outputs.student_v0_payload_sha256 }}
+    env:
+      PYTHONUNBUFFERED: '1'
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalize frozen source bytes
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          git reset --hard HEAD
+          $sha = (Get-FileHash src/roguelike_ai/sts1_training/student_v0.py -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne "06e206b7f04e6e7b77ad1fc8c35ba1bcdca1c978596fbb176933323e3940aed3") {
+            throw "Student v0 source SHA drift after LF normalization: $sha"
+          }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+
+      - name: Install exact rebuild dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Rebuild exact frozen Student v0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Join-Path $env:RUNNER_TEMP "sts1-v0"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          python scripts/sts1/sts1_phase3_rebuild_student_v0.py --phase2-root . --output (Join-Path $root "student-v0.json")
+
+      - name: Verify and pack v0 for dependent Linux job
+        id: pack
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP "sts1-v0\student-v0.json"
+          $env:MODEL_PATH = $path
+          @'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ["MODEL_PATH"])
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          assert payload["student_model_sha256"] == "e15604b95247615a6d424f834e8b8a1e9fd680af4fe9e22a6754372027e89513"
+          assert payload["feature_count"] == 3028
+          assert len(payload["weights"]) == 3028
+          print("PASS_EXACT_V0", payload["student_model_sha256"])
+          '@ | python -
+
+          $bytes = [System.IO.File]::ReadAllBytes($path)
+          $sha = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+          $ms = New-Object System.IO.MemoryStream
+          $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Compress)
+          $gz.Write($bytes, 0, $bytes.Length)
+          $gz.Close()
+          $b64 = [Convert]::ToBase64String($ms.ToArray())
+          "student_v0_payload_sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "student_v0_gzip_b64=$b64" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "v0 bytes=$($bytes.Length) gzip_bytes=$($ms.ToArray().Length) base64_chars=$($b64.Length)"
+
+      - name: Delete Windows v0 scratch file
+        if: always()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "sts1-v0"
+          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+
+  generation-0-to-1:
+    needs: rebuild-v0-windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      PYTHONUNBUFFERED: '1'
+      SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+      STUDENT_V0_GZIP_B64: ${{ needs.rebuild-v0-windows.outputs.student_v0_gzip_b64 }}
+      EXPECTED_V0_PAYLOAD_SHA256: ${{ needs.rebuild-v0-windows.outputs.student_v0_payload_sha256 }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install numpy torch==2.11.0
+
+      - name: Decode exact v0 into Linux scratch space
+        run: |
+          mkdir -p "$RUNNER_TEMP/sts1-loop"
+          python - <<'PY'
+          import base64, gzip, hashlib, json, os
+          from pathlib import Path
+          raw = gzip.decompress(base64.b64decode(os.environ["STUDENT_V0_GZIP_B64"]))
+          actual = hashlib.sha256(raw).hexdigest()
+          assert actual == os.environ["EXPECTED_V0_PAYLOAD_SHA256"]
+          payload = json.loads(raw.decode("utf-8"))
+          assert payload["student_model_sha256"] == "e15604b95247615a6d424f834e8b8a1e9fd680af4fe9e22a6754372027e89513"
+          path = Path(os.environ["RUNNER_TEMP"]) / "sts1-loop" / "student-v0.json"
+          path.write_bytes(raw)
+          print("PASS_V0_DECODE", actual, len(raw))
+          PY
+
+      - name: Hydrate and build pinned simulator plus ArmG
+        run: |
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=".cache/sts1-armg"
+          rm -rf "$root"
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -s "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Initialize Student v1 generation 0
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import torch
+          from roguelike_ai.sts1_phase3.frozen_student import FrozenStudentV0
+          from roguelike_ai.sts1_phase3.student_v1_ppo import StudentV1Config, StudentV1PPO, file_sha256
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sts1-loop"
+          torch.manual_seed(20260925)
+          baseline = FrozenStudentV0.from_path(root / "student-v0.json")
+          policy = StudentV1PPO(
+              baseline,
+              config=StudentV1Config(),
+              generation=0,
+              device="cpu",
+          )
+          path = root / "source-v1-gen0.pt"
+          policy.save(path)
+          print("PASS_V1_GEN0", file_sha256(path), policy.config.config_hash)
+          PY
+
+      - name: Generate 32 training-only seeds using upstream seed-stream rule
+        run: |
+          python - <<'PY'
+          import random
+          from pathlib import Path
+
+          eval_path = Path("external/sts-rl-agent/source/eval/eval_seeds_50.txt")
+          eval_seeds = {
+              int(line.strip())
+              for line in eval_path.read_text(encoding="utf-8").splitlines()
+              if line.strip() and not line.lstrip().startswith("#")
+          }
+          rng = random.Random(20260925)
+          values = []
+          seen = set()
+          while len(values) < 32:
+              value = rng.randint(1, 10**9)
+              if value in eval_seeds or value in seen:
+                  continue
+              seen.add(value)
+              values.append(value)
+          out = Path("evidence/sts1/self-improve")
+          out.mkdir(parents=True, exist_ok=True)
+          (out / "training-seeds.txt").write_text(
+              "\n".join(str(v) for v in values) + "\n",
+              encoding="utf-8",
+          )
+          assert not (set(values) & eval_seeds)
+          print("PASS_TRAINING_SEEDS", len(values), values[:5])
+          PY
+
+      - name: Collect fail-closed PPO rollout shard
+        run: |
+          python scripts/sts1/sts1_public_ppo_smoke.py             --mode collect             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt             --output-dir evidence/sts1/self-improve/rollout-gen0             --baseline-v0 "$RUNNER_TEMP/sts1-loop/student-v0.json"             --source-v1 "$RUNNER_TEMP/sts1-loop/source-v1-gen0.pt"             --training-seed-file evidence/sts1/self-improve/training-seeds.txt             --eval-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --shard-index 0             --shard-count 1
+
+      - name: Train Candidate generation 1 from exact gen0 rollout policy
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.frozen_student import ACTION_SCHEMA_VERSION, PUBLIC_STATE_SCHEMA_VERSION, FrozenStudentV0
+          from roguelike_ai.sts1_phase3.ppo_rollout import read_rollout_shard
+          from roguelike_ai.sts1_phase3.protocol import FROZEN_SIMULATOR_SHA
+          from roguelike_ai.sts1_phase3.self_improve_loop import RolloutIdentity
+          from roguelike_ai.sts1_phase3.student_v1_ppo import StudentV1PPO, file_sha256, ppo_update
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sts1-loop"
+          baseline = FrozenStudentV0.from_path(root / "student-v0.json")
+          source_path = root / "source-v1-gen0.pt"
+          source = StudentV1PPO.load(source_path, baseline, device="cpu")
+          source_sha = file_sha256(source_path)
+          identity = RolloutIdentity(
+              generation=source.generation,
+              policy_sha256=source_sha,
+              simulator_sha=FROZEN_SIMULATOR_SHA,
+              public_state_schema=PUBLIC_STATE_SCHEMA_VERSION,
+              action_schema=ACTION_SCHEMA_VERSION,
+          )
+          rollout_root = Path("evidence/sts1/self-improve/rollout-gen0")
+          episodes = read_rollout_shard(
+              rollout_root / "rollout.jsonl",
+              rollout_root / "manifest.json",
+              expected_identity=identity,
+          )
+          stats = ppo_update(source, episodes)
+          source.generation = 1
+          candidate_path = root / "candidate-v1-gen1.pt"
+          source.save(candidate_path)
+          report = {
+              "result": "PASS_CANDIDATE_TRAINED_NOT_PROMOTED",
+              "source_generation": 0,
+              "candidate_generation": 1,
+              "source_policy_sha256": source_sha,
+              "candidate_sha256": file_sha256(candidate_path),
+              "episodes": len(episodes),
+              "transitions": sum(len(ep.transitions) for ep in episodes),
+              "ppo": stats,
+              "promotion_status": "NOT_EVALUATED",
+          }
+          out = Path("evidence/sts1/self-improve")
+          (out / "train-report.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Paired deterministic evaluation on fixed 50 seeds
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.frozen_student import FrozenStudentV0
+          from roguelike_ai.sts1_phase3.simulator import ArmGNoncombatPolicy, _load_sts, run_simulator_game
+          from roguelike_ai.sts1_phase3.student_v1_ppo import StudentV1PPO
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sts1-loop"
+          baseline = FrozenStudentV0.from_path(root / "student-v0.json")
+          source = StudentV1PPO.load(root / "source-v1-gen0.pt", baseline, device="cpu")
+          candidate = StudentV1PPO.load(root / "candidate-v1-gen1.pt", baseline, device="cpu")
+          eval_path = Path("external/sts-rl-agent/source/eval/eval_seeds_50.txt")
+          seeds = tuple(
+              int(line.strip())
+              for line in eval_path.read_text(encoding="utf-8").splitlines()
+              if line.strip() and not line.lstrip().startswith("#")
+          )
+          assert len(seeds) == 50 and len(set(seeds)) == 50
+
+          sts = _load_sts(Path("external/sts_lightspeed/source/build-probe"))
+          armg = ArmGNoncombatPolicy(
+              root=Path(".cache/sts1-armg"),
+              weight_path=Path(".cache/sts1-armg/armG_model_G128x128_15k.pt"),
+          )
+          out = Path("evidence/sts1/self-improve/eval")
+          out.mkdir(parents=True, exist_ok=True)
+
+          for label, policy in (("champion", source), ("candidate", candidate)):
+              runs = []
+              for seed in seeds:
+                  summary = run_simulator_game(
+                      student=policy,
+                      sts=sts,
+                      seed=seed,
+                      armg_policy=armg,
+                      heldout_seeds=seeds,
+                      collect_ppo=False,
+                  )
+                  runs.append(summary)
+              aggregate = {
+                  "schema_version": "sts1-self-improve-eval-v1",
+                  "policy": label,
+                  "seeds": len(runs),
+                  "runs": runs,
+              }
+              (out / f"{label}-50.json").write_text(
+                  json.dumps(aggregate, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+              fast = dict(aggregate)
+              fast["seeds"] = 30
+              fast["runs"] = runs[:30]
+              (out / f"{label}-30.json").write_text(
+                  json.dumps(fast, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+              print(label, "victories", sum(r.get("outcome") == "victory" for r in runs))
+          PY
+
+      - name: Apply 30-seed then 50-seed Champion Gates
+        id: gates
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.champion_gate import (
+              FAST_GATE_POLICY,
+              FORMAL_GATE_POLICY,
+              evaluate_fixed_seed_gate,
+          )
+
+          root = Path("evidence/sts1/self-improve")
+          eval_root = root / "eval"
+          def load(name):
+              return json.loads((eval_root / name).read_text(encoding="utf-8"))
+
+          gate30 = evaluate_fixed_seed_gate(
+              load("champion-30.json"),
+              load("candidate-30.json"),
+              policy=FAST_GATE_POLICY,
+          )
+          (root / "gate-30.json").write_text(
+              json.dumps(gate30, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          if gate30["status"] == "PASS":
+              gate50 = evaluate_fixed_seed_gate(
+                  load("champion-50.json"),
+                  load("candidate-50.json"),
+                  policy=FORMAL_GATE_POLICY,
+              )
+          else:
+              gate50 = {
+                  "schema_version": "sts1-champion-gate-v1",
+                  "gate": "fixed-seed-50",
+                  "status": "SKIPPED",
+                  "reasons": ["fast_30_seed_gate_did_not_pass"],
+              }
+          (root / "gate-50.json").write_text(
+              json.dumps(gate50, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          offline_pass = gate30["status"] == "PASS" and gate50["status"] == "PASS"
+          final = {
+              "schema_version": "sts1-self-improve-generation-result-v1",
+              "generation": "0->1",
+              "gate_30": gate30,
+              "gate_50": gate50,
+              "offline_pass": offline_pass,
+              "real_game_gate": "NOT_RUN_ON_GITHUB",
+              "champion_replaced": False,
+              "decision": "AWAIT_REAL_GAME_GATE" if offline_pass else "HOLD",
+          }
+          (root / "generation-result.json").write_text(
+              json.dumps(final, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"offline_pass={'true' if offline_pass else 'false'}\n")
+          print(json.dumps(final, ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Upload generation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-self-improve-generation-0-to-1-reports
+          path: |
+            evidence/sts1/self-improve/training-seeds.txt
+            evidence/sts1/self-improve/rollout-gen0/collector-report.json
+            evidence/sts1/self-improve/rollout-gen0/manifest.json
+            evidence/sts1/self-improve/train-report.json
+            evidence/sts1/self-improve/eval/champion-30.json
+            evidence/sts1/self-improve/eval/candidate-30.json
+            evidence/sts1/self-improve/eval/champion-50.json
+            evidence/sts1/self-improve/eval/candidate-50.json
+            evidence/sts1/self-improve/gate-30.json
+            evidence/sts1/self-improve/gate-50.json
+            evidence/sts1/self-improve/generation-result.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload offline-passing Candidate only
+        if: steps.gates.outputs.offline_pass == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-candidate-gen1-offline-pass
+          path: ${{ runner.temp }}/sts1-loop/candidate-v1-gen1.pt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Delete transient v0/source/candidate files
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/sts1-loop"

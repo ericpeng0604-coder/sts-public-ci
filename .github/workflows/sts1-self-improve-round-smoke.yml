@@ -1,0 +1,211 @@
+name: STS1 Public Self-Improve Round Smoke
+
+on:
+  push:
+    branches:
+      - gpt/sts1-self-improve-loop-20260925
+    paths:
+      - '.github/workflows/sts1-self-improve-round-smoke.yml'
+      - 'scripts/sts1/sts1_init_student_v1.py'
+      - 'scripts/sts1/sts1_train_candidate.py'
+      - 'src/roguelike_ai/sts1_phase3/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rebuild-v0-windows:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    outputs:
+      student_v0_gzip_b64: ${{ steps.pack.outputs.student_v0_gzip_b64 }}
+      student_v0_payload_sha256: ${{ steps.pack.outputs.student_v0_payload_sha256 }}
+    env:
+      PYTHONUNBUFFERED: '1'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalize frozen source bytes
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          git reset --hard HEAD
+          $sha = (Get-FileHash src/roguelike_ai/sts1_training/student_v0.py -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne "06e206b7f04e6e7b77ad1fc8c35ba1bcdca1c978596fbb176933323e3940aed3") {
+            throw "Student v0 source SHA drift after LF normalization: $sha"
+          }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+
+      - name: Install frozen v0 rebuild dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Rebuild exact frozen Student v0
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "sts1-v0"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          python scripts/sts1/sts1_phase3_rebuild_student_v0.py --phase2-root . --output (Join-Path $root "student-v0.json")
+
+      - name: Pack v0 as private job output
+        id: pack
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP "sts1-v0\student-v0.json"
+          $bytes = [System.IO.File]::ReadAllBytes($path)
+          $sha = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+          $ms = New-Object System.IO.MemoryStream
+          $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Compress)
+          $gz.Write($bytes, 0, $bytes.Length)
+          $gz.Close()
+          $b64 = [Convert]::ToBase64String($ms.ToArray())
+          "student_v0_payload_sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "student_v0_gzip_b64=$b64" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Delete v0 scratch
+        if: always()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "sts1-v0"
+          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+
+  round-smoke-linux:
+    needs: rebuild-v0-windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      PYTHONUNBUFFERED: '1'
+      STUDENT_V0_GZIP_B64: ${{ needs.rebuild-v0-windows.outputs.student_v0_gzip_b64 }}
+      EXPECTED_V0_PAYLOAD_SHA256: ${{ needs.rebuild-v0-windows.outputs.student_v0_payload_sha256 }}
+      SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install public training runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install numpy torch==2.11.0
+
+      - name: Decode exact frozen v0
+        run: |
+          python - <<'PY'
+          import base64, gzip, hashlib, json, os
+          from pathlib import Path
+          raw = gzip.decompress(base64.b64decode(os.environ["STUDENT_V0_GZIP_B64"]))
+          actual = hashlib.sha256(raw).hexdigest()
+          assert actual == os.environ["EXPECTED_V0_PAYLOAD_SHA256"], (actual, os.environ["EXPECTED_V0_PAYLOAD_SHA256"])
+          payload = json.loads(raw.decode("utf-8"))
+          assert payload["student_model_sha256"] == "e15604b95247615a6d424f834e8b8a1e9fd680af4fe9e22a6754372027e89513"
+          assert len(payload["weights"]) == 3028
+          Path("work").mkdir(exist_ok=True)
+          Path("work/student-v0.json").write_bytes(raw)
+          print("PASS_DECODE_EXACT_V0", actual)
+          PY
+
+      - name: Initialize Student v1 generation 0
+        run: |
+          python scripts/sts1/sts1_init_student_v1.py             --baseline-v0 work/student-v0.json             --output work/student-v1-gen0.pt             --report work/init-report.json
+          cat work/init-report.json
+
+      - name: Hydrate pinned sts_lightspeed and ArmG
+        run: |
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=".cache/sts1-armg"
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -s "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Freeze smoke training seeds
+        run: |
+          mkdir -p work/rollouts/evidence
+          printf "930000001\n930000002\n930000003\n" > work/training-seeds.txt
+
+      - name: Collect three complete PPO training runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for seed in 930000001 930000002 930000003; do
+            echo "=== training seed $seed ==="
+            python -m roguelike_ai.sts1_phase3.simulator               --model work/student-v0.json               --student-v1-checkpoint work/student-v1-gen0.pt               --module-dir external/sts_lightspeed/source/build-probe               --training-seed-file work/training-seeds.txt               --collect-ppo               --seed "$seed"               --evidence "work/rollouts/evidence/evidence-$seed.ndjson"               --armg-root .cache/sts1-armg               --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt               > "work/rollouts/evidence/summary-$seed.json"
+            cat "work/rollouts/evidence/summary-$seed.json"
+          done
+
+      - name: Convert simulator evidence to a verified rollout shard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.frozen_student import ACTION_SCHEMA_VERSION, PUBLIC_STATE_SCHEMA_VERSION
+          from roguelike_ai.sts1_phase3.ppo_rollout import episode_from_simulator_evidence, write_rollout_shard
+          from roguelike_ai.sts1_phase3.protocol import FROZEN_SIMULATOR_SHA
+          from roguelike_ai.sts1_phase3.self_improve_loop import RolloutIdentity
+          from roguelike_ai.sts1_phase3.student_v1_ppo import file_sha256
+
+          root=Path("work/rollouts")
+          episodes=[]
+          for seed in ("930000001","930000002","930000003"):
+              episodes.append(episode_from_simulator_evidence(root/"evidence"/f"evidence-{seed}.ndjson", episode_id=f"train-{seed}"))
+          identity=RolloutIdentity(
+              generation=0,
+              policy_sha256=file_sha256(Path("work/student-v1-gen0.pt")),
+              simulator_sha=FROZEN_SIMULATOR_SHA,
+              public_state_schema=PUBLIC_STATE_SCHEMA_VERSION,
+              action_schema=ACTION_SCHEMA_VERSION,
+          )
+          shard=root/"shard-000"
+          write_rollout_shard(shard/"rollout.jsonl", shard/"manifest.json", identity=identity, shard_id="smoke-000", episodes=episodes)
+          print("PASS_ROLLOUT_SHARD", len(episodes), sum(len(x.transitions) for x in episodes), identity.identity_hash)
+          PY
+
+      - name: Train Candidate generation 1
+        run: |
+          python scripts/sts1/sts1_train_candidate.py             --baseline-v0 work/student-v0.json             --source-v1 work/student-v1-gen0.pt             --rollout-root work/rollouts             --simulator-sha "$SIM_HEAD"             --generation 0             --output work/student-v1-candidate-gen1.pt             --report work/candidate-report.json
+          cat work/candidate-report.json
+
+      - name: Verify trained Candidate can play a complete simulator run
+        run: |
+          python -m roguelike_ai.sts1_phase3.simulator             --model work/student-v0.json             --student-v1-checkpoint work/student-v1-candidate-gen1.pt             --module-dir external/sts_lightspeed/source/build-probe             --seed 347001             --evidence work/candidate-smoke.ndjson             --armg-root .cache/sts1-armg             --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt             > work/candidate-smoke-summary.json
+          cat work/candidate-smoke-summary.json
+          python - <<'PY'
+          import json
+          r=json.load(open("work/candidate-smoke-summary.json",encoding="utf-8"))
+          assert r["result"]=="PASS_SIMULATOR_COMPLETE_RUN", r
+          assert r.get("illegal_action_count",0)==0, r
+          assert r.get("crash_count",0)==0, r
+          assert r.get("timeout_count",0)==0, r
+          print("PASS_TRAINED_CANDIDATE_REENTERS_SIMULATOR", r["outcome"], r["final_floor"])
+          PY
+
+      - name: Upload reports only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-self-improve-round-smoke-reports
+          path: |
+            work/init-report.json
+            work/candidate-report.json
+            work/candidate-smoke-summary.json
+            work/rollouts/shard-000/manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Delete model scratch
+        if: always()
+        run: |
+          rm -f work/student-v0.json work/student-v1-gen0.pt work/student-v1-candidate-gen1.pt

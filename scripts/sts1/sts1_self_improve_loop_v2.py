@@ -30,6 +30,11 @@ from roguelike_ai.sts1_phase3.champion_gate import (
     evaluate_fixed_seed_gate,
 )
 from roguelike_ai.sts1_phase3.frozen_student import FrozenStudentV0
+from roguelike_ai.sts1_phase3.hybrid_model import (
+    DEFAULT_HYBRID_MCTS_BUDGETS,
+    HYBRID_RUNTIME_ID,
+    write_hybrid_model_manifest,
+)
 from roguelike_ai.sts1_phase3.ppo_rollout import episode_from_simulator_evidence
 from roguelike_ai.sts1_phase3.self_improve_v2 import (
     LearnerGatePolicy,
@@ -108,6 +113,7 @@ def _evaluate(
             seed=seed,
             armg_policy=armg,
             heldout_seeds=heldout_seeds,
+            hybrid_mcts_budgets=DEFAULT_HYBRID_MCTS_BUDGETS,
             collect_ppo=False,
         )
         if summary.get("result") != "PASS_SIMULATOR_COMPLETE_RUN":
@@ -283,6 +289,18 @@ def main() -> int:
 
     learner_path = args.state_dir / "learner.pt"
     champion_path = args.state_dir / "offline-champion.pt"
+    learner_manifest_path = args.state_dir / "model-manifest.json"
+    champion_manifest_path = args.state_dir / "offline-champion-manifest.json"
+    write_hybrid_model_manifest(
+        learner_path,
+        learner_manifest_path,
+        loop_round=state.round_index,
+    )
+    write_hybrid_model_manifest(
+        champion_path,
+        champion_manifest_path,
+        loop_round=state.round_index,
+    )
     run_reports: list[dict[str, Any]] = []
 
     for _local_round in range(args.rounds):
@@ -518,11 +536,25 @@ def main() -> int:
                 used_ppo_seeds=state.used_ppo_seeds + ppo_seeds,
             )
         state.write(args.state_dir / "loop-state.json")
+        learner_manifest = write_hybrid_model_manifest(
+            learner_path,
+            learner_manifest_path,
+            loop_round=state.round_index,
+        )
+        champion_manifest = write_hybrid_model_manifest(
+            champion_path,
+            champion_manifest_path,
+            loop_round=state.round_index,
+        )
 
         report = {
             "schema_version": "sts1-self-improve-round-v2",
             "round": round_no,
             "base_policy": "armg+mcts2000-base-v1",
+            "hybrid_runtime_id": HYBRID_RUNTIME_ID,
+            "hybrid_mcts_budgets": list(DEFAULT_HYBRID_MCTS_BUDGETS),
+            "learner_model_manifest": learner_manifest,
+            "offline_champion_model_manifest": champion_manifest,
             "learner_sha_before": before_sha,
             "learner_sha_after": file_sha256(learner_path),
             "offline_champion_sha": file_sha256(champion_path),
@@ -546,6 +578,8 @@ def main() -> int:
     summary = {
         "schema_version": "sts1-self-improve-run-v2",
         "base_policy": "armg+mcts2000-base-v1",
+        "hybrid_runtime_id": HYBRID_RUNTIME_ID,
+        "hybrid_mcts_budgets": list(DEFAULT_HYBRID_MCTS_BUDGETS),
         "rounds_executed": len(run_reports),
         "learner_sha256": file_sha256(learner_path),
         "offline_champion_sha256": file_sha256(champion_path),

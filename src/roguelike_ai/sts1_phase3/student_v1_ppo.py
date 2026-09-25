@@ -363,6 +363,89 @@ class StudentV1PPO:
         return policy
 
 
+def teacher_bc_update(
+    policy: StudentV1PPO,
+    examples: Sequence[Any],
+    *,
+    epochs: int = 12,
+) -> dict[str, float | int]:
+    """Warm-start Student v1 from frozen public-state Teacher labels.
+
+    Only train examples are accepted by the caller. Tie labels are treated as
+    equally valid targets, so the residual actor is not forced to invent a
+    preference inside a frozen Teacher tie set.
+    """
+
+    if epochs < 1:
+        raise StudentV1Error("teacher BC epochs must be positive")
+    if not examples:
+        raise StudentV1Error("teacher BC requires at least one example")
+
+    def evaluate() -> tuple[float, float]:
+        exact = 0
+        tie_aware = 0
+        with torch.no_grad():
+            for example in examples:
+                observation = getattr(example, "observation", None)
+                actions = getattr(example, "action_payloads", None)
+                selected_index = int(getattr(example, "selected_index", -1))
+                tie_indices = tuple(int(x) for x in getattr(example, "tie_indices", ()))
+                if not isinstance(observation, Mapping) or not isinstance(actions, Sequence) or not actions:
+                    raise StudentV1Error("invalid Teacher BC example")
+                if not 0 <= selected_index < len(actions):
+                    raise StudentV1Error("Teacher selected_index is outside legal actions")
+                if not tie_indices or any(index < 0 or index >= len(actions) for index in tie_indices):
+                    raise StudentV1Error("Teacher tie_indices are invalid")
+                _, _, logits, _, _ = policy._policy_tensors(observation, actions)
+                pred = int(torch.argmax(logits).item())
+                exact += int(pred == selected_index)
+                tie_aware += int(pred in tie_indices)
+        total = len(examples)
+        return exact / total, tie_aware / total
+
+    before_exact, before_tie = evaluate()
+    losses: list[float] = []
+    updates = 0
+
+    for _ in range(epochs):
+        order = torch.randperm(len(examples)).tolist()
+        for index in order:
+            example = examples[index]
+            observation = getattr(example, "observation", None)
+            actions = getattr(example, "action_payloads", None)
+            tie_indices = tuple(int(x) for x in getattr(example, "tie_indices", ()))
+            if not isinstance(observation, Mapping) or not isinstance(actions, Sequence) or not actions:
+                raise StudentV1Error("invalid Teacher BC example")
+            if not tie_indices or any(i < 0 or i >= len(actions) for i in tie_indices):
+                raise StudentV1Error("Teacher tie_indices are invalid")
+
+            _, _, logits, _, _ = policy._policy_tensors(observation, actions)
+            log_probs = torch.log_softmax(logits, dim=0)
+            target = torch.tensor(tie_indices, dtype=torch.long, device=policy.device)
+            loss = -log_probs[target].mean()
+
+            policy.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                policy.model.actor.parameters(), policy.config.max_grad_norm
+            )
+            policy.optimizer.step()
+            losses.append(float(loss.item()))
+            updates += 1
+
+    after_exact, after_tie = evaluate()
+    return {
+        "examples": len(examples),
+        "epochs": epochs,
+        "updates": updates,
+        "mean_loss": sum(losses) / len(losses),
+        "before_top1_accuracy": before_exact,
+        "after_top1_accuracy": after_exact,
+        "before_tie_aware_accuracy": before_tie,
+        "after_tie_aware_accuracy": after_tie,
+    }
+
+
 def _transition_policy(
     policy: StudentV1PPO,
     transition: PPOTransition,
@@ -566,4 +649,5 @@ __all__ = [
     "encode_state",
     "file_sha256",
     "ppo_update",
+    "teacher_bc_update",
 ]

@@ -1,0 +1,5 @@
+attempt=1
+mcts_sims=2000
+candidate_policy=armg_plus_mcts_2000
+eval_seeds=fixed_50
+reason=direct_mcts_teacher_vs_current_champion

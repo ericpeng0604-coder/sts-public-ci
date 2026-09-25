@@ -1,4 +1,4 @@
-attempt=2
+attempt=3
 mode=full
 training_seeds=8
 rng_seed=20261002
@@ -9,4 +9,4 @@ anchor_coef=0.01
 temperature=2.0
 max_replay_examples=5000
 max_stagnation=5
-reason=start_full_after_smoke
+reason=retry_after_stable_action_bits_fix

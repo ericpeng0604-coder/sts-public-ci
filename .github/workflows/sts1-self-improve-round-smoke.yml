@@ -1,14 +1,6 @@
 name: STS1 Public Self-Improve Round Smoke
 
 on:
-  push:
-    branches:
-      - gpt/sts1-self-improve-loop-20260925
-    paths:
-      - '.github/workflows/sts1-self-improve-round-smoke.yml'
-      - 'scripts/sts1/sts1_init_student_v1.py'
-      - 'scripts/sts1/sts1_train_candidate.py'
-      - 'src/roguelike_ai/sts1_phase3/**'
   workflow_dispatch:
 
 permissions:

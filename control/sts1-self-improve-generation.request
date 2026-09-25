@@ -1,8 +1,9 @@
-attempt=1
-retry=1
+attempt=2
+retry=0
 training_seeds=128
-rng_seed=20260926
+rng_seed=20260928
 learning_rate=1e-4
 baseline_anchor_coef=0.05
 reward=dense-public-combat-v2
-reason=retry_after_seed_generator_import_fix
+teacher=mcts-public-distill-v1
+reason=student_v0_plus_armg_plus_mcts_teacher_distillation_then_ppo

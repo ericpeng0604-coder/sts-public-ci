@@ -37,6 +37,10 @@ from .self_improve_loop import (
 )
 
 __all__ = [
+    "STS1_BASE_POLICY_ID",
+    "STS1_BASE_POLICY",
+    "BasePolicySpec",
+    "BasePolicyError",
     "ARMG_MCTS_2000_REFERENCE_ID",
     "ARMG_MCTS_2000_REFERENCE_V1",
     "ChampionGateError",

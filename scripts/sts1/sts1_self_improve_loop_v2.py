@@ -259,7 +259,7 @@ def main() -> int:
     parser.add_argument("--baseline-anchor-coef", type=float, default=0.05)
     parser.add_argument("--learner-floor-delta", type=float, default=0.5)
     parser.add_argument("--champion-check-interval", type=int, default=3)
-    parser.add_argument("--max-stagnation", type=int, default=5)
+    parser.add_argument("--max-stagnation", type=int, default=5)\n    parser.add_argument("--reset-stagnation", action="store_true")
     args = parser.parse_args()
 
     if args.rounds < 1 or args.teacher_seeds_per_round < 1 or args.shadow_eval_seeds < 2:

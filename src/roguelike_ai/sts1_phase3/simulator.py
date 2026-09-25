@@ -420,10 +420,24 @@ def resolve_simulator_seed(
     seed: str | int,
     *,
     heldout_seeds: Sequence[int] | None = None,
+    training_seeds: Sequence[int] | None = None,
 ) -> tuple[str, int]:
-    """Resolve either a frozen UI seed or an explicitly allowlisted held-out internal seed."""
+    """Resolve frozen UI, held-out evaluation, or training-only internal seeds."""
+
+    if heldout_seeds is not None and training_seeds is not None:
+        raise SimulatorRunError("held-out and training seed allowlists are mutually exclusive")
 
     ui_seed = str(seed)
+    if training_seeds is not None:
+        try:
+            simulator_seed = int(seed)
+        except (TypeError, ValueError) as exc:
+            raise SimulatorRunError(f"training simulator seed must be an integer: {seed!r}") from exc
+        allowed = {int(value) for value in training_seeds}
+        if simulator_seed not in allowed:
+            raise SimulatorRunError("training simulator seed is not present in the training seed allowlist")
+        return ui_seed, simulator_seed
+
     if heldout_seeds is not None:
         try:
             simulator_seed = int(seed)
@@ -467,9 +481,20 @@ def run_simulator_game(
     combat_mcts_late_floor: int = 50,
     combat_mcts_exploration: float | None = None,
     heldout_seeds: Sequence[int] | None = None,
+    training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
 ) -> dict[str, Any]:
-    ui_seed, simulator_seed = resolve_simulator_seed(sts, seed, heldout_seeds=heldout_seeds)
+    ui_seed, simulator_seed = resolve_simulator_seed(
+        sts,
+        seed,
+        heldout_seeds=heldout_seeds,
+        training_seeds=training_seeds,
+    )
+    seed_contract = (
+        "training_internal"
+        if training_seeds is not None
+        else ("heldout_internal" if heldout_seeds is not None else "frozen_a0_ui")
+    )
     if max_game_steps < 1 or max_battle_steps < 1:
         raise SimulatorRunError("simulator step bounds must be positive")
     consensus_budgets = tuple(int(value) for value in (combat_mcts_budgets or ()))
@@ -519,7 +544,7 @@ def run_simulator_game(
         "manifest": frozen_a0_manifest(),
         "ui_seed": ui_seed,
         "simulator_seed_long": simulator_seed,
-        "seed_contract": "heldout_internal" if heldout_seeds is not None else "frozen_a0_ui",
+        "seed_contract": seed_contract,
     })
 
     try:
@@ -716,7 +741,7 @@ def run_simulator_game(
         "error": error,
         "seed": ui_seed,
         "simulator_seed_long": simulator_seed,
-        "seed_contract": "heldout_internal" if heldout_seeds is not None else "frozen_a0_ui",
+        "seed_contract": seed_contract,
         "outcome": outcome,
         "final_floor": int(_value(gc, "floor_num", 0) or 0),
         "max_floor": max_floor,
@@ -784,7 +809,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--heldout-seed-file",
         type=Path,
-        help="explicit allowlist of numeric internal seeds for held-out evaluation; formal frozen runs omit this",
+        help="explicit allowlist of exactly 50 numeric internal seeds for held-out evaluation",
+    )
+    parser.add_argument(
+        "--training-seed-file",
+        type=Path,
+        help="training-only numeric seed allowlist; must not overlap the held-out evaluation set",
     )
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--max-game-steps", type=int, default=MAX_GAME_STEPS)
@@ -814,6 +844,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"invalid --combat-mcts-budgets: {exc}")
         if not combat_mcts_budgets:
             parser.error("--combat-mcts-budgets must contain at least one positive integer")
+    if args.heldout_seed_file is not None and args.training_seed_file is not None:
+        parser.error("--heldout-seed-file and --training-seed-file are mutually exclusive")
+
     heldout_seeds: tuple[int, ...] | None = None
     if args.heldout_seed_file is not None:
         if not args.heldout_seed_file.is_file():
@@ -828,6 +861,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"invalid held-out seed file: {exc}")
         if len(heldout_seeds) != 50 or len(set(heldout_seeds)) != 50:
             parser.error("held-out seed file must contain exactly 50 unique numeric seeds")
+
+    training_seeds: tuple[int, ...] | None = None
+    if args.training_seed_file is not None:
+        if not args.training_seed_file.is_file():
+            parser.error(f"training seed file missing: {args.training_seed_file}")
+        try:
+            training_seeds = tuple(
+                int(line.strip())
+                for line in args.training_seed_file.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            )
+        except ValueError as exc:
+            parser.error(f"invalid training seed file: {exc}")
+        if not training_seeds or len(set(training_seeds)) != len(training_seeds):
+            parser.error("training seed file must contain one or more unique numeric seeds")
+        if any(seed < 1 or seed > 10**9 for seed in training_seeds):
+            parser.error("training seeds must be in the upstream-compatible range 1..1e9")
+        if args.collect_ppo is False:
+            parser.error("--training-seed-file is only valid with --collect-ppo")
 
     baseline_student = FrozenStudentV0.from_path(args.model)
     if args.student_v1_checkpoint is not None:
@@ -855,6 +907,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         combat_mcts_late_floor=args.combat_mcts_late_floor,
         combat_mcts_exploration=args.combat_mcts_exploration,
         heldout_seeds=heldout_seeds,
+        training_seeds=training_seeds,
         collect_ppo=args.collect_ppo,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))

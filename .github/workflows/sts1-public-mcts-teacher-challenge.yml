@@ -21,6 +21,7 @@ jobs:
       student_v0_payload_sha256: ${{ steps.pack.outputs.student_v0_payload_sha256 }}
     env:
       PYTHONUNBUFFERED: '1'
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@v4

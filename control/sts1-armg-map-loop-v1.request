@@ -1,0 +1,10 @@
+attempt=1
+mode=smoke
+training_seeds=8
+rng_seed=20261002
+max_branch_points=4
+epochs=4
+learning_rate=1e-4
+anchor_coef=0.01
+temperature=2.0
+reason=validate_exact_gamecontext_clone_and_map_branch_rollout

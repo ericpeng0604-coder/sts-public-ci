@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 from typing import Any, Mapping, Sequence
 
 
@@ -209,6 +210,63 @@ def load_checkpoint(path: Path) -> LoopCheckpoint:
         raise SelfImproveLoopError(f"invalid checkpoint: {exc}") from exc
 
 
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def promote_candidate_artifact(
+    candidate_path: Path,
+    champion_dir: Path,
+    checkpoint: LoopCheckpoint,
+    promotion: Mapping[str, Any],
+) -> tuple[LoopCheckpoint, Path]:
+    """Install a passed Candidate as an immutable Champion artifact."""
+
+    if checkpoint.candidate_sha256 is None:
+        raise SelfImproveLoopError("no Candidate is attached")
+    if promotion.get("decision") != "PROMOTE" or promotion.get("all_gates_passed") is not True:
+        raise SelfImproveLoopError("Candidate has not passed all promotion gates")
+    if not candidate_path.is_file():
+        raise SelfImproveLoopError(f"Candidate artifact missing: {candidate_path}")
+
+    actual_sha = file_sha256(candidate_path)
+    if actual_sha != checkpoint.candidate_sha256:
+        raise SelfImproveLoopError(
+            f"Candidate artifact SHA mismatch: expected={checkpoint.candidate_sha256} actual={actual_sha}"
+        )
+
+    next_checkpoint = apply_promotion_decision(checkpoint, promotion)
+    champion_dir.mkdir(parents=True, exist_ok=True)
+    suffix = candidate_path.suffix or ".bin"
+    target = champion_dir / (
+        f"champion-gen{next_checkpoint.generation:04d}-{actual_sha[:12]}{suffix}"
+    )
+    if target.exists():
+        if file_sha256(target) != actual_sha:
+            raise SelfImproveLoopError(f"existing Champion artifact hash mismatch: {target}")
+        return next_checkpoint, target
+
+    temp = target.with_name(target.name + ".tmp")
+    try:
+        with candidate_path.open("rb") as source, temp.open("wb") as dest:
+            shutil.copyfileobj(source, dest, length=1024 * 1024)
+            dest.flush()
+            os.fsync(dest.fileno())
+        if file_sha256(temp) != actual_sha:
+            raise SelfImproveLoopError("copied Champion artifact checksum mismatch")
+        os.replace(temp, target)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+    return next_checkpoint, target
+
+
 def attach_candidate(checkpoint: LoopCheckpoint, candidate_sha256: str) -> LoopCheckpoint:
     candidate_sha256 = _require_sha256(candidate_sha256, "candidate_sha256")
     if candidate_sha256 == checkpoint.champion_sha256:
@@ -250,6 +308,8 @@ __all__ = [
     "apply_promotion_decision",
     "attach_candidate",
     "build_rollout_manifest",
+    "file_sha256",
     "load_checkpoint",
+    "promote_candidate_artifact",
     "write_checkpoint_atomic",
 ]

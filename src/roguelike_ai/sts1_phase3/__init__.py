@@ -37,6 +37,13 @@ from .self_improve_loop import (
 )
 
 __all__ = [
+    "write_hybrid_model_manifest",
+    "build_hybrid_model_spec",
+    "HybridModelSpec",
+    "HybridModelError",
+    "HYBRID_RUNTIME_ID",
+    "HYBRID_FUSION_RULE",
+    "DEFAULT_HYBRID_MCTS_BUDGETS",
     "STS1_BASE_POLICY_ID",
     "STS1_BASE_POLICY",
     "BasePolicySpec",

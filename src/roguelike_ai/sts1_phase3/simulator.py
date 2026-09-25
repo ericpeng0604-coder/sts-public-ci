@@ -248,6 +248,32 @@ def _legal_actions(actions: Sequence[Any], hand: Sequence[Any]) -> list[dict[str
     return public_actions
 
 
+def _hybrid_vote_choice_bits(
+    mcts_votes: Sequence[tuple[int, int]],
+    *,
+    student_bits: int,
+) -> tuple[int, bool]:
+    """Choose among MCTS recommendations, using Student only to break MCTS ties."""
+    if len(mcts_votes) < 2:
+        raise SimulatorRunError("hybrid MCTS requires at least two MCTS budgets")
+    counts: dict[int, int] = {}
+    for budget, bits in mcts_votes:
+        if budget < 1:
+            raise SimulatorRunError("hybrid MCTS budget must be positive")
+        counts[bits] = counts.get(bits, 0) + 1
+    best_count = max(counts.values())
+    tied = {bits for bits, count in counts.items() if count == best_count}
+    if len(tied) == 1:
+        return next(iter(tied)), False
+    if student_bits in tied:
+        return student_bits, True
+    # Student chose outside the MCTS tie: prefer the highest-budget tied MCTS vote.
+    for budget, bits in sorted(mcts_votes, reverse=True):
+        if bits in tied:
+            return bits, False
+    raise SimulatorRunError("hybrid MCTS could not resolve tied recommendations")
+
+
 class SimulatorCombatAdapter:
     """Project a pinned BattleContext into the frozen Student public contract."""
 
@@ -477,6 +503,7 @@ def run_simulator_game(
     armg_policy: ArmGNoncombatPolicy | None = None,
     combat_mcts_sims: int | None = None,
     combat_mcts_budgets: Sequence[int] | None = None,
+    hybrid_mcts_budgets: Sequence[int] | None = None,
     combat_mcts_late_sims: int | None = None,
     combat_mcts_late_floor: int = 50,
     combat_mcts_exploration: float | None = None,
@@ -499,6 +526,14 @@ def run_simulator_game(
     if max_game_steps < 1 or max_battle_steps < 1:
         raise SimulatorRunError("simulator step bounds must be positive")
     consensus_budgets = tuple(int(value) for value in (combat_mcts_budgets or ()))
+    hybrid_budgets = tuple(int(value) for value in (hybrid_mcts_budgets or ()))
+    active_mcts_modes = sum(bool(value) for value in (
+        combat_mcts_sims is not None,
+        consensus_budgets,
+        hybrid_budgets,
+    ))
+    if active_mcts_modes > 1:
+        raise SimulatorRunError("choose exactly one MCTS combat mode")
     if combat_mcts_sims is not None and consensus_budgets:
         raise SimulatorRunError("choose either one MCTS budget or consensus budgets, not both")
     if combat_mcts_late_sims is not None and consensus_budgets:
@@ -517,14 +552,18 @@ def run_simulator_game(
         raise SimulatorRunError("tuned exploration cannot be combined with consensus budgets")
     if any(value < 1 for value in consensus_budgets):
         raise SimulatorRunError("all MCTS consensus budgets must be positive")
+    if hybrid_budgets and (len(hybrid_budgets) < 2 or any(value < 1 for value in hybrid_budgets)):
+        raise SimulatorRunError("hybrid MCTS requires at least two positive budgets")
     if collect_ppo and collect_teacher:
         raise SimulatorRunError("PPO and MCTS Teacher collection are mutually exclusive")
-    if collect_ppo and (combat_mcts_sims is not None or consensus_budgets):
+    if collect_ppo and (combat_mcts_sims is not None or consensus_budgets or hybrid_budgets):
         raise SimulatorRunError("PPO rollout collection cannot run with MCTS combat policy")
     if collect_ppo and not callable(getattr(student, "sample_action", None)):
         raise SimulatorRunError("PPO rollout collection requires a Student v1 sample_action policy")
     if collect_teacher and combat_mcts_sims is None and not consensus_budgets:
-        raise SimulatorRunError("MCTS Teacher collection requires an MCTS combat policy")
+        raise SimulatorRunError("MCTS Teacher collection requires a pure MCTS combat policy")
+    if collect_teacher and hybrid_budgets:
+        raise SimulatorRunError("MCTS Teacher collection cannot use Student-influenced hybrid MCTS")
 
     gc = sts.GameContext(sts.CharacterClass.IRONCLAD, simulator_seed, 0)
     agent = sts.Agent()
@@ -534,6 +573,8 @@ def run_simulator_game(
     fallback_count = 0
     armg_action_count = 0
     mcts_action_count = 0
+    hybrid_student_vote_count = 0
+    hybrid_student_tiebreak_count = 0
     illegal_actions = 0
     timeout_count = 0
     crash_count = 0
@@ -599,9 +640,21 @@ def run_simulator_game(
                         "native_action_count": len(native_actions),
                         "public_action_count": len(public_actions),
                     })
-                if combat_mcts_sims is not None or consensus_budgets:
+                if combat_mcts_sims is not None or consensus_budgets or hybrid_budgets:
                     teacher_public_state = None
-                    if collect_teacher:
+                    hybrid_public_state = None
+                    if collect_teacher or hybrid_budgets:
+                        hybrid_or_teacher_state = adapter.adapt(
+                            battle,
+                            legal_actions=native_actions,
+                            run_state=public_run_state(gc),
+                            projected_legal_actions=public_actions,
+                        )
+                        if collect_teacher:
+                            teacher_public_state = hybrid_or_teacher_state
+                        if hybrid_budgets:
+                            hybrid_public_state = hybrid_or_teacher_state
+                    if collect_teacher and teacher_public_state is None:
                         teacher_public_state = adapter.adapt(
                             battle,
                             legal_actions=native_actions,
@@ -618,8 +671,51 @@ def run_simulator_game(
                     started = time.perf_counter()
                     vote_bits: list[int] = []
                     vote_budgets: list[int] = []
+                    hybrid_student_bits = None
+                    hybrid_student_tiebreak_used = False
                     if len(native_actions) == 1:
                         chosen = native_actions[0]
+                    elif hybrid_budgets:
+                        if hybrid_public_state is None:
+                            raise SimulatorRunError("hybrid MCTS public state was not captured")
+                        recommendations: list[tuple[int, Any, int]] = []
+                        for budget in hybrid_budgets:
+                            recommendation = sts.mcts_recommend(battle, budget)
+                            if recommendation is None:
+                                raise SimulatorRunError(
+                                    f"hybrid MCTS returned no recommendation for budget={budget}"
+                                )
+                            bits = _value(recommendation, "bits")
+                            if not isinstance(bits, int):
+                                raise SimulatorRunError(
+                                    "hybrid MCTS recommendation did not expose integer action bits"
+                                )
+                            recommendations.append((budget, recommendation, bits))
+                            vote_budgets.append(budget)
+                            vote_bits.append(bits)
+
+                        decision = student.select_action(
+                            hybrid_public_state,
+                            require_command=False,
+                        )
+                        public_index = int(decision.action_index)
+                        if public_index < 0 or public_index >= len(native_index_map):
+                            raise SimulatorRunError("hybrid Student vote index is outside legal actions")
+                        student_native = native_actions[native_index_map[public_index]]
+                        hybrid_student_bits = _value(student_native, "bits")
+                        if not isinstance(hybrid_student_bits, int):
+                            raise SimulatorRunError("hybrid Student vote has no integer action bits")
+                        chosen_bits_vote, hybrid_student_tiebreak_used = _hybrid_vote_choice_bits(
+                            [(budget, bits) for budget, _, bits in recommendations],
+                            student_bits=hybrid_student_bits,
+                        )
+                        chosen = next(
+                            recommendation
+                            for _, recommendation, bits in reversed(recommendations)
+                            if bits == chosen_bits_vote
+                        )
+                        hybrid_student_vote_count += 1
+                        hybrid_student_tiebreak_count += int(hybrid_student_tiebreak_used)
                     elif consensus_budgets:
                         recommendations: list[tuple[int, Any, int]] = []
                         for budget in consensus_budgets:
@@ -689,13 +785,20 @@ def run_simulator_game(
                     _record(evidence_path, {
                         "type": "simulator_combat_action",
                         "floor": int(_value(gc, "floor_num", 0) or 0),
-                        "policy": "mcts_consensus" if consensus_budgets else "mcts",
+                        "policy": (
+                            "hybrid_mcts_student_tiebreak"
+                            if hybrid_budgets
+                            else ("mcts_consensus" if consensus_budgets else "mcts")
+                        ),
                         "mcts_sims": active_mcts_sims,
                         "mcts_base_sims": combat_mcts_sims,
                         "mcts_late_sims": combat_mcts_late_sims,
                         "mcts_late_floor": combat_mcts_late_floor if combat_mcts_late_sims is not None else None,
                         "mcts_exploration": combat_mcts_exploration,
                         "mcts_budgets": list(consensus_budgets),
+                        "hybrid_mcts_budgets": list(hybrid_budgets),
+                        "student_vote_bits": hybrid_student_bits,
+                        "student_tiebreak_used": hybrid_student_tiebreak_used,
                         "vote_budgets": vote_budgets,
                         "vote_bits": vote_bits,
                         "chosen_bits": chosen_bits,
@@ -792,10 +895,15 @@ def run_simulator_game(
         "fallback_count": fallback_count,
         "armg_action_count": armg_action_count,
         "mcts_action_count": mcts_action_count,
+        "hybrid_student_vote_count": hybrid_student_vote_count,
+        "hybrid_student_tiebreak_count": hybrid_student_tiebreak_count,
         "combat_policy": (
-            "mcts_consensus_" + "_".join(str(value) for value in consensus_budgets)
-            if consensus_budgets
+            "hybrid_mcts_" + "_".join(str(value) for value in hybrid_budgets) + "_student_tiebreak"
+            if hybrid_budgets
             else (
+                "mcts_consensus_" + "_".join(str(value) for value in consensus_budgets)
+                if consensus_budgets
+                else (
                 f"mcts_schedule_{combat_mcts_sims}_to_{combat_mcts_late_sims}_floor_{combat_mcts_late_floor}"
                 if combat_mcts_late_sims is not None
                 else (
@@ -815,6 +923,7 @@ def run_simulator_game(
                         )
                     )
                 )
+            )
             )
         ),
         "noncombat_policy": "armg" if armg_policy is not None else "legacy_fallback",
@@ -879,12 +988,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--collect-ppo", action="store_true")
     parser.add_argument("--collect-teacher", action="store_true")
     parser.add_argument(
+        "--hybrid-mcts-budgets",
+        help="comma-separated MCTS budgets; Student breaks ties between MCTS recommendations",
+    )
+    parser.add_argument(
         "--combat-mcts-budgets",
         help="comma-separated MCTS budgets; majority vote with highest-budget tie-break",
     )
     args = parser.parse_args(argv)
     if (args.armg_root is None) != (args.armg_weight is None):
         parser.error("--armg-root and --armg-weight must be supplied together")
+    hybrid_mcts_budgets: tuple[int, ...] = ()
+    if args.hybrid_mcts_budgets:
+        try:
+            hybrid_mcts_budgets = tuple(
+                int(value.strip())
+                for value in args.hybrid_mcts_budgets.split(",")
+                if value.strip()
+            )
+        except ValueError as exc:
+            parser.error(f"invalid --hybrid-mcts-budgets: {exc}")
+        if len(hybrid_mcts_budgets) < 2:
+            parser.error("--hybrid-mcts-budgets requires at least two positive integers")
+
     combat_mcts_budgets: tuple[int, ...] = ()
     if args.combat_mcts_budgets:
         try:
@@ -954,6 +1080,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         armg_policy=armg_policy,
         combat_mcts_sims=args.combat_mcts_sims,
         combat_mcts_budgets=combat_mcts_budgets,
+        hybrid_mcts_budgets=hybrid_mcts_budgets,
         combat_mcts_late_sims=args.combat_mcts_late_sims,
         combat_mcts_late_floor=args.combat_mcts_late_floor,
         combat_mcts_exploration=args.combat_mcts_exploration,

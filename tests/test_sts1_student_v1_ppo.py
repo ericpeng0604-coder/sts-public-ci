@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 
 import torch
 
@@ -15,6 +16,7 @@ from roguelike_ai.sts1_phase3.student_v1_ppo import (
     StudentV1PPO,
     file_sha256,
     ppo_update,
+    teacher_bc_update,
 )
 
 
@@ -148,3 +150,70 @@ def test_student_v1_checkpoint_roundtrip(tmp_path) -> None:
     right = restored.select_action(_state(), require_command=False)
     assert left.action_index == right.action_index
     assert left.action_id == right.action_id
+
+
+def test_teacher_bc_warm_start_improves_teacher_agreement_without_mutating_v0() -> None:
+    torch.manual_seed(11)
+    baseline = _baseline_prefers_end_turn()
+    frozen = dict(baseline.weights)
+    policy = StudentV1PPO(
+        baseline,
+        config=StudentV1Config(
+            state_dim=64,
+            action_dim=32,
+            hidden_dim=16,
+            learning_rate=5e-3,
+            epochs=1,
+            batch_size=2,
+        ),
+    )
+
+    state = _state()
+    actions = tuple(
+        normalize_action_payload(action)
+        for action in state["legal_actions"]
+    )
+    teacher_examples = tuple(
+        SimpleNamespace(
+            observation={key: value for key, value in state.items() if key != "legal_actions"},
+            action_payloads=actions,
+            selected_index=0,
+            tie_indices=(0,),
+        )
+        for _ in range(24)
+    )
+
+    stats = teacher_bc_update(policy, teacher_examples, epochs=20)
+    assert stats["after_top1_accuracy"] > stats["before_top1_accuracy"]
+    assert stats["after_tie_aware_accuracy"] >= stats["after_top1_accuracy"]
+    assert dict(baseline.weights) == frozen
+
+
+def test_teacher_bc_accepts_frozen_teacher_tie_set() -> None:
+    torch.manual_seed(12)
+    baseline = _baseline_prefers_end_turn()
+    policy = StudentV1PPO(
+        baseline,
+        config=StudentV1Config(
+            state_dim=64,
+            action_dim=32,
+            hidden_dim=16,
+            learning_rate=1e-3,
+            epochs=1,
+            batch_size=2,
+        ),
+    )
+    state = _state()
+    actions = tuple(
+        normalize_action_payload(action)
+        for action in state["legal_actions"]
+    )
+    example = SimpleNamespace(
+        observation={key: value for key, value in state.items() if key != "legal_actions"},
+        action_payloads=actions,
+        selected_index=0,
+        tie_indices=(0, 1),
+    )
+    stats = teacher_bc_update(policy, [example], epochs=2)
+    assert stats["examples"] == 1
+    assert stats["updates"] == 2

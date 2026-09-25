@@ -115,3 +115,52 @@ def test_teacher_evidence_strips_transport_and_keeps_action_identity(tmp_path) -
     assert "command" not in example.legal_actions[0]
     assert "legal_actions" not in example.observation
     assert example.teacher_action_id == example.legal_action_ids[0]
+
+
+def test_teacher_evidence_weights_victory_run_higher(tmp_path) -> None:
+    state = _state()
+    teacher_payload = normalize_action_payload(state["legal_actions"][0])
+    evidence = tmp_path / "teacher-win.ndjson"
+    evidence.write_text(
+        json.dumps({
+            "type": "mcts_teacher_decision",
+            "public_state": state,
+            "teacher_action_index": 0,
+            "teacher_action_id": sha256_json(teacher_payload),
+        }) + "\n" +
+        json.dumps({
+            "type": "summary",
+            "result": "PASS_SIMULATOR_COMPLETE_RUN",
+            "outcome": "victory",
+            "final_floor": 51,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    example = read_teacher_evidence(evidence)[0]
+    assert example.sample_weight == 3.0
+    assert example.run_outcome == "victory"
+    assert example.final_floor == 51
+
+
+def test_teacher_evidence_keeps_early_defeat_in_dataset(tmp_path) -> None:
+    state = _state()
+    teacher_payload = normalize_action_payload(state["legal_actions"][0])
+    evidence = tmp_path / "teacher-defeat.ndjson"
+    evidence.write_text(
+        json.dumps({
+            "type": "mcts_teacher_decision",
+            "public_state": state,
+            "teacher_action_index": 0,
+            "teacher_action_id": sha256_json(teacher_payload),
+        }) + "\n" +
+        json.dumps({
+            "type": "summary",
+            "result": "PASS_SIMULATOR_COMPLETE_RUN",
+            "outcome": "defeat",
+            "final_floor": 12,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    examples = read_teacher_evidence(evidence)
+    assert len(examples) == 1
+    assert examples[0].sample_weight == 1.0

@@ -1,4 +1,4 @@
-attempt=10
+attempt=11
 mode=full
 training_seeds=8
 rng_seed=20261002

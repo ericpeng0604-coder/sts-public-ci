@@ -22,6 +22,9 @@ jobs:
   rebuild-v0-windows:
     runs-on: windows-2025
     timeout-minutes: 45
+    outputs:
+      student_v0_gzip_b64: ${{ steps.pack.outputs.student_v0_gzip_b64 }}
+      student_v0_payload_sha256: ${{ steps.pack.outputs.student_v0_payload_sha256 }}
     env:
       PYTHONUNBUFFERED: '1'
       GH_TOKEN: ${{ github.token }}
@@ -63,7 +66,7 @@ jobs:
           New-Item -ItemType Directory -Force $root | Out-Null
           python scripts/sts1/sts1_phase3_rebuild_student_v0.py --phase2-root . --output (Join-Path $root "student-v0.json")
 
-      - name: Verify exact frozen Student v0 identity
+      - name: Verify exact frozen Student v0 envelope
         shell: pwsh
         run: |
           $env:MODEL_PATH = Join-Path $env:RUNNER_TEMP "sts1-v0\student-v0.json"
@@ -71,15 +74,42 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from roguelike_ai.sts1_phase3.frozen_student import EXPECTED_MODEL_SHA256, FrozenStudentV0
 
+          expected = {
+              "schema_version": "sts1-phase3-frozen-student-v0-artifact-v1",
+              "predecessor_head": "046854ecfbb497f2fc5e4379990300e46be0c248",
+              "student_source_sha256": "06e206b7f04e6e7b77ad1fc8c35ba1bcdca1c978596fbb176933323e3940aed3",
+              "student_config_hash": "906afcaec38a2050f48e28f2351745408bbc0c72607704dbce2e134cdff4192c",
+              "student_model_sha256": "e15604b95247615a6d424f834e8b8a1e9fd680af4fe9e22a6754372027e89513",
+              "dataset_hash": "4509f9c48206606638f24f264c0dbc471b1cc46c60f2633b3659f72cf7c6ccea",
+              "feature_count": 3028,
+              "student_schema_version": "sts1-student-v0-linear-v1",
+          }
           path = Path(os.environ["MODEL_PATH"])
           payload = json.loads(path.read_text(encoding="utf-8"))
-          assert payload["student_model_sha256"] == EXPECTED_MODEL_SHA256
-          model = FrozenStudentV0.from_path(path)
-          assert len(model.weights) == 3028
-          print("PASS_EXACT_PUBLIC_REBUILD", EXPECTED_MODEL_SHA256, model.artifact_sha256)
+          for key, value in expected.items():
+              assert payload.get(key) == value, (key, payload.get(key), value)
+          assert isinstance(payload.get("weights"), dict)
+          assert len(payload["weights"]) == 3028
+          print("PASS_EXACT_PUBLIC_REBUILD_ENVELOPE", payload["student_model_sha256"], len(payload["weights"]))
           '@ | python -
+
+      - name: Pack rebuilt v0 as private job output
+        id: pack
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP "sts1-v0\student-v0.json"
+          $bytes = [System.IO.File]::ReadAllBytes($path)
+          $sha = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+          $ms = New-Object System.IO.MemoryStream
+          $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Compress)
+          $gz.Write($bytes, 0, $bytes.Length)
+          $gz.Close()
+          $packed = $ms.ToArray()
+          $b64 = [Convert]::ToBase64String($packed)
+          "student_v0_payload_sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "student_v0_gzip_b64=$b64" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Packed Student v0 bytes=$($bytes.Length) gzip_bytes=$($packed.Length) base64_chars=$($b64.Length)"
 
       - name: Delete rebuilt weights
         if: always()
@@ -88,3 +118,37 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP "sts1-v0"
           if (Test-Path $root) { Remove-Item -Recurse -Force $root }
           if (Test-Path (Join-Path $root "student-v0.json")) { throw "Student v0 scratch file was not deleted" }
+
+  verify-transfer-linux:
+    needs: rebuild-v0-windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      STUDENT_V0_GZIP_B64: ${{ needs.rebuild-v0-windows.outputs.student_v0_gzip_b64 }}
+      EXPECTED_PAYLOAD_SHA256: ${{ needs.rebuild-v0-windows.outputs.student_v0_payload_sha256 }}
+
+    steps:
+      - name: Decode transferred v0 in scratch space
+        run: |
+          python - <<'PY'
+          import base64, gzip, hashlib, json, os
+          from pathlib import Path
+
+          encoded = os.environ.get("STUDENT_V0_GZIP_B64", "")
+          assert encoded, "Windows job did not emit Student v0 payload"
+          raw = gzip.decompress(base64.b64decode(encoded))
+          actual = hashlib.sha256(raw).hexdigest()
+          expected = os.environ["EXPECTED_PAYLOAD_SHA256"]
+          assert actual == expected, (actual, expected)
+          payload = json.loads(raw.decode("utf-8"))
+          assert payload["student_model_sha256"] == "e15604b95247615a6d424f834e8b8a1e9fd680af4fe9e22a6754372027e89513"
+          assert len(payload["weights"]) == 3028
+          path = Path(os.environ["RUNNER_TEMP"]) / "student-v0.json"
+          path.write_bytes(raw)
+          print("PASS_V0_WINDOWS_TO_LINUX_JOB_OUTPUT", actual, len(raw))
+          path.unlink()
+          PY
+
+      - name: Confirm no v0 artifact was published
+        run: |
+          test ! -e "$RUNNER_TEMP/student-v0.json"

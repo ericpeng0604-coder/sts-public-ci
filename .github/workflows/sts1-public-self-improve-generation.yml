@@ -172,6 +172,7 @@ jobs:
       - name: Generate attempt-1 training-only seeds
         run: |
           python - <<'PY'
+          import os
           import random
           from pathlib import Path
 

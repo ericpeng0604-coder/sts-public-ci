@@ -19,16 +19,30 @@ from typing import Sequence
 
 import polars as pl
 
-from .agents.hybrid_policy import FEATURE_SCHEMA_VERSION, make_artifact
-from .decision_training import (
-    DECISION_DATASET_SCHEMA,
-    DecisionTrainingConfig,
-    _assemble_examples,
-    _dataset_hash,
-    _read_candidates,
-    _read_decisions,
-    _training_context,
-)
+try:
+    from .agents.hybrid_policy import FEATURE_SCHEMA_VERSION, make_artifact
+    from .decision_training import (
+        DECISION_DATASET_SCHEMA,
+        DecisionTrainingConfig,
+        _assemble_examples,
+        _dataset_hash,
+        _read_candidates,
+        _read_decisions,
+        _training_context,
+    )
+except ModuleNotFoundError:
+    # The frozen STS1 v0 rebuild only needs masked_softmax. Keep that
+    # dependency-light path importable without publishing unrelated legacy
+    # HybridPolicy/decision-training modules into the public compute repo.
+    FEATURE_SCHEMA_VERSION = None
+    DECISION_DATASET_SCHEMA = None
+    DecisionTrainingConfig = None
+    make_artifact = None
+    _assemble_examples = None
+    _dataset_hash = None
+    _read_candidates = None
+    _read_decisions = None
+    _training_context = None
 
 
 class MaskedBehaviorCloningError(ValueError):
@@ -112,6 +126,12 @@ def train_masked_behavior_cloning(config: MaskedBehaviorCloningConfig) -> Masked
     shared decision-dataset assembler; no selected action is added to the
     mask during training.
     """
+
+    if DecisionTrainingConfig is None or make_artifact is None:
+        raise ModuleNotFoundError(
+            "legacy HybridPolicy decision-training modules are required for "
+            "train_masked_behavior_cloning but not for frozen Student v0 rebuild"
+        )
 
     if config.epochs <= 0 or config.batch_size <= 0:
         raise ValueError("epochs and batch_size must be positive")

@@ -1,0 +1,25 @@
+{
+  "schema_version": "sts1-base-policy-evidence-v1",
+  "base_policy_id": "armg+mcts2000-base-v1",
+  "source_reference_policy_id": "armg+mcts2000-reference-v1",
+  "status": "ACTIVE_PROJECT_BASE",
+  "effective_from": "2026-09-25",
+  "semantics": {
+    "primary_project_base": true,
+    "frozen_student_v0_role": "numerical_network_anchor_and_reproducibility_baseline_only",
+    "champion_status": "separate_learned_model_promotion_track",
+    "direct_runtime_policy": {
+      "combat": "mcts_2000",
+      "noncombat": "armg"
+    }
+  },
+  "validation": {
+    "run_id": 36093194941,
+    "fixed_seeds": 50,
+    "victories": 3,
+    "mean_final_floor": 38.98,
+    "illegal_action_count": 0,
+    "crash_count": 0,
+    "timeout_count": 0
+  }
+}

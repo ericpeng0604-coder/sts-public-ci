@@ -30,6 +30,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Normalize frozen source bytes
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          git reset --hard HEAD
+          $sha = (Get-FileHash src/roguelike_ai/sts1_training/student_v0.py -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne "06e206b7f04e6e7b77ad1fc8c35ba1bcdca1c978596fbb176933323e3940aed3") {
+            throw "Student v0 source SHA drift after LF normalization: $sha"
+          }
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11.9'

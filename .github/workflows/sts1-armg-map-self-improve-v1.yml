@@ -307,12 +307,7 @@ jobs:
           run_url="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
           if [ "$LOOP_JOB_STATUS" != "success" ]; then
-            body="## ArmG Map — Run failed
-
-- Run：$run_url
-- 結果：**FAILED**
-- 下一輪：**未接續**
-- 原因：workflow job 未成功完成；保留 artifacts/logs 供診斷。"
+            printf -v body '## ArmG Map — Run failed\n\n- Run：%s\n- 結果：**FAILED**\n- 下一輪：**未接續**\n- 原因：workflow job 未成功完成；保留 artifacts/logs 供診斷。' "$run_url"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$LOOP_REPORT_ISSUE/comments" -f body="$body"
             exit 0
           fi

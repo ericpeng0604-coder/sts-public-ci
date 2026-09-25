@@ -56,6 +56,8 @@ def student_comment(report: dict[str, Any], run_url: str) -> str:
     accepted = report.get("accepted_stages") or []
     result = "ACCEPT" if report.get("learner_changed") else "ROLLBACK"
     return "\n".join([
+        "@ericpeng0604-coder",
+        "",
         f"## Student + MCTS — Round {report.get('round')}",
         "",
         f"- 結果：**{result}**" + (f"（{', '.join(accepted)}）" if accepted else ""),
@@ -97,6 +99,8 @@ def armg_comment(report: dict[str, Any], run_url: str) -> str:
                         if formal.get("status") != "SKIPPED"
                         else (fast.get("candidate") or {}).get("safety"))
     return "\n".join([
+        "@ericpeng0604-coder",
+        "",
         f"## ArmG Map — Round {report.get('round')}",
         "",
         f"- Map Gen：**{report.get('map_generation_before')} → {report.get('map_generation_after')}**",

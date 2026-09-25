@@ -8,6 +8,14 @@ from .champion_gate import (
     evaluate_real_game_gate,
     promotion_decision,
 )
+from .ppo_rollout import (
+    PPORolloutError,
+    PPOEpisode,
+    PPOTransition,
+    make_transition,
+    read_rollout_shard,
+    write_rollout_shard,
+)
 from .self_improve_loop import (
     LoopCheckpoint,
     RolloutIdentity,
@@ -26,6 +34,9 @@ __all__ = [
     "FAST_GATE_POLICY",
     "FORMAL_GATE_POLICY",
     "LoopCheckpoint",
+    "PPORolloutError",
+    "PPOEpisode",
+    "PPOTransition",
     "RolloutIdentity",
     "SelfImproveLoopError",
     "StaleRolloutError",
@@ -36,6 +47,9 @@ __all__ = [
     "evaluate_fixed_seed_gate",
     "evaluate_real_game_gate",
     "load_checkpoint",
+    "make_transition",
     "promotion_decision",
+    "read_rollout_shard",
     "write_checkpoint_atomic",
+    "write_rollout_shard",
 ]

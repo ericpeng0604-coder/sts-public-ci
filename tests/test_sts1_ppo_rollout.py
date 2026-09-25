@@ -7,6 +7,7 @@ import pytest
 from roguelike_ai.sts1_phase3.ppo_rollout import (
     PPORolloutError,
     PPOEpisode,
+    episode_from_simulator_evidence,
     make_transition,
     read_rollout_shard,
     write_rollout_shard,
@@ -155,3 +156,60 @@ def test_rollout_shard_rejects_stale_generation(tmp_path) -> None:
     )
     with pytest.raises(PPORolloutError, match="stale rollout rejected"):
         read_rollout_shard(payload, manifest, expected_identity=_identity(generation=2))
+
+
+def test_simulator_evidence_becomes_complete_public_episode(tmp_path) -> None:
+    state = _state()
+    state2 = _state()
+    state2["hp"] = 65
+    state2["floor"] = 2
+    evidence = tmp_path / "sim.jsonl"
+    rows = [
+        {
+            "type": "ppo_decision",
+            "public_state": state,
+            "action_index": 0,
+            "old_log_prob": -0.5,
+            "old_value": 0.1,
+        },
+        {
+            "type": "ppo_decision",
+            "public_state": state2,
+            "action_index": 1,
+            "old_log_prob": -0.6,
+            "old_value": 0.2,
+        },
+        {
+            "type": "summary",
+            "result": "PASS_SIMULATOR_COMPLETE_RUN",
+            "ppo_collection": True,
+            "outcome": "victory",
+            "final_hp": 68,
+            "final_floor": 3,
+        },
+    ]
+    evidence.write_text(
+        "".join(__import__("json").dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    episode = episode_from_simulator_evidence(evidence, episode_id="sim-1")
+    assert episode.outcome == "victory"
+    assert len(episode.transitions) == 2
+    assert episode.transitions[0].done is False
+    assert episode.transitions[-1].done is True
+    assert episode.transitions[-1].reward > 1.0
+
+
+def test_blocked_simulator_evidence_is_never_training_data(tmp_path) -> None:
+    evidence = tmp_path / "blocked.jsonl"
+    evidence.write_text(
+        __import__("json").dumps({
+            "type": "summary",
+            "result": "BLOCKED_SIMULATOR",
+            "ppo_collection": True,
+            "outcome": "unknown",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PPORolloutError, match="cannot become PPO training data"):
+        episode_from_simulator_evidence(evidence, episode_id="blocked")

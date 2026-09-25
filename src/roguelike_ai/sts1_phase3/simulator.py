@@ -382,13 +382,21 @@ def deterministic_noncombat_step(gc: Any, sts: Any) -> str:
 
 
 class ArmGNoncombatPolicy:
-    """Exact frozen upstream ArmG inference for public non-combat decisions."""
+    """ArmG inference with an optional independently evolvable map scorer."""
 
-    def __init__(self, *, root: Path, weight_path: Path) -> None:
+    def __init__(
+        self,
+        *,
+        root: Path,
+        weight_path: Path,
+        map_weight_path: Path | None = None,
+    ) -> None:
         if not root.is_dir():
             raise SimulatorRunError(f"ArmG compatibility root missing: {root}")
         if not weight_path.is_file():
             raise SimulatorRunError(f"ArmG weight missing: {weight_path}")
+        if map_weight_path is not None and not map_weight_path.is_file():
+            raise SimulatorRunError(f"ArmG map weight missing: {map_weight_path}")
 
         os.environ["STS_BOT_DIR"] = str(root)
         root_text = str(root)
@@ -403,19 +411,53 @@ class ArmGNoncombatPolicy:
 
         # Freeze vocabulary lookup exactly like the accepted baseline lifecycle fix.
         module.card_idx = lambda name: module._vocab.get(name, module.VOCAB_CAP - 1)
-        try:
+
+        def load_net(path: Path) -> Any:
             net = module.Scorer((128, 128))
-            net.load_state_dict(torch.load(weight_path, weights_only=True, map_location="cpu"))
+            net.load_state_dict(torch.load(path, weights_only=True, map_location="cpu"))
             net.eval()
+            return net
+
+        try:
+            net = load_net(weight_path)
+            map_net = load_net(map_weight_path) if map_weight_path is not None else net
         except Exception as exc:
-            raise SimulatorRunError(f"could not load frozen ArmG weight: {exc}") from exc
+            raise SimulatorRunError(f"could not load ArmG weight: {exc}") from exc
 
         self.module = module
         self.torch = torch
         self.net = net
+        self.map_net = map_net
+        self.weight_path = weight_path
+        self.map_weight_path = map_weight_path or weight_path
+
+    def choices(self, gc: Any) -> tuple[str, list[Any], list[Any]]:
+        kind, descs, execs = self.module.build_choices(gc)
+        return str(kind), list(descs), list(execs)
+
+    def score_choices(self, gc: Any) -> tuple[str, list[Any], Any]:
+        kind, descs, _ = self.choices(gc)
+        if not descs:
+            return kind, descs, self.torch.empty(0, dtype=self.torch.float32)
+        obs = self.torch.tensor(self.module.obs_vec(gc), dtype=self.torch.float32)
+        net = self.map_net if kind == "map" else self.net
+        with self.torch.no_grad():
+            scores = net.score(obs, descs)
+        return kind, descs, scores
+
+    def choose_index(self, gc: Any, sts: Any) -> tuple[str, int, int]:
+        kind, descs, _ = self.choices(gc)
+        if not descs:
+            if gc.screen_state == sts.ScreenState.REWARDS:
+                return "reward_empty", -1, 0
+            raise SimulatorRunError(f"ArmG produced no legal choice on screen: {gc.screen_state}")
+        if len(descs) == 1:
+            return kind, 0, 1
+        _, _, scores = self.score_choices(gc)
+        return kind, int(self.torch.argmax(scores).item()), len(descs)
 
     def step(self, gc: Any, sts: Any) -> str:
-        kind, descs, execs = self.module.build_choices(gc)
+        kind, descs, execs = self.choices(gc)
         if not descs:
             if gc.screen_state == sts.ScreenState.REWARDS:
                 gc.skip_reward_cards()
@@ -424,10 +466,8 @@ class ArmGNoncombatPolicy:
         if len(descs) == 1:
             index = 0
         else:
-            with self.torch.no_grad():
-                obs = self.torch.tensor(self.module.obs_vec(gc), dtype=self.torch.float32)
-                scores = self.net.score(obs, descs)
-                index = int(self.torch.argmax(scores).item())
+            _, _, scores = self.score_choices(gc)
+            index = int(self.torch.argmax(scores).item())
         execs[index](gc)
         return f"armg:{kind}:{index}/{len(descs)}"
 

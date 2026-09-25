@@ -108,6 +108,47 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Load self-improve request
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          request = Path("control/sts1-self-improve-generation.request")
+          values = {}
+          for raw in request.read_text(encoding="utf-8").splitlines():
+              raw = raw.strip()
+              if not raw or raw.startswith("#"):
+                  continue
+              key, value = raw.split("=", 1)
+              values[key.strip()] = value.strip()
+
+          required = {
+              "attempt",
+              "training_seeds",
+              "rng_seed",
+              "learning_rate",
+              "baseline_anchor_coef",
+          }
+          missing = sorted(required - values.keys())
+          if missing:
+              raise SystemExit(f"missing control fields: {missing}")
+
+          env_values = {
+              "SELF_IMPROVE_ATTEMPT": str(int(values["attempt"])),
+              "TRAINING_SEED_COUNT": str(int(values["training_seeds"])),
+              "TRAINING_RNG_SEED": str(int(values["rng_seed"])),
+              "PPO_LEARNING_RATE": str(float(values["learning_rate"])),
+              "PPO_BASELINE_ANCHOR_COEF": str(float(values["baseline_anchor_coef"])),
+          }
+          if int(env_values["TRAINING_SEED_COUNT"]) < 1:
+              raise SystemExit("training_seeds must be positive")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              for key, value in env_values.items():
+                  handle.write(f"{key}={value}\n")
+          print("PASS_CONTROL_REQUEST", env_values)
+          PY
+
       - name: Install runtime
         run: |
           python -m pip install --upgrade pip
@@ -158,8 +199,8 @@ jobs:
           policy = StudentV1PPO(
               baseline,
               config=StudentV1Config(
-                  learning_rate=1e-4,
-                  baseline_anchor_coef=0.05,
+                  learning_rate=float(os.environ["PPO_LEARNING_RATE"]),
+                  baseline_anchor_coef=float(os.environ["PPO_BASELINE_ANCHOR_COEF"]),
               ),
               generation=0,
               device="cpu",
@@ -243,7 +284,7 @@ jobs:
           source.save(candidate_path)
           report = {
               "result": "PASS_CANDIDATE_TRAINED_NOT_PROMOTED",
-              "attempt": 1,
+              "attempt": int(os.environ["SELF_IMPROVE_ATTEMPT"]),
               "source_generation": 0,
               "candidate_generation": 1,
               "source_policy_sha256": source_sha,
@@ -371,7 +412,7 @@ jobs:
           final = {
               "schema_version": "sts1-self-improve-generation-result-v1",
               "generation": "0->1",
-              "attempt": 1,
+              "attempt": int(os.environ["SELF_IMPROVE_ATTEMPT"]),
               "gate_30": gate30,
               "gate_50": gate50,
               "offline_pass": offline_pass,

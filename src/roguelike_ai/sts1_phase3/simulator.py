@@ -763,7 +763,15 @@ def run_simulator_game(
                     else (
                         f"mcts_{combat_mcts_sims}"
                         if combat_mcts_sims is not None
-                        else ("student_v1_ppo_rollout" if collect_ppo else "student_v0")
+                        else (
+                            "student_v1_ppo_rollout"
+                            if collect_ppo
+                            else (
+                                "student_v1_ppo_deterministic"
+                                if callable(getattr(student, "sample_action", None))
+                                else "student_v0"
+                            )
+                        )
                     )
                 )
             )

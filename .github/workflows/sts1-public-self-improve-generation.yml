@@ -155,7 +155,10 @@ jobs:
           baseline = FrozenStudentV0.from_path(root / "student-v0.json")
           policy = StudentV1PPO(
               baseline,
-              config=StudentV1Config(),
+              config=StudentV1Config(
+                  learning_rate=1e-4,
+                  baseline_anchor_coef=0.05,
+              ),
               generation=0,
               device="cpu",
           )
@@ -164,7 +167,7 @@ jobs:
           print("PASS_V1_GEN0", file_sha256(path), policy.config.config_hash)
           PY
 
-      - name: Generate 32 training-only seeds using upstream seed-stream rule
+      - name: Generate 128 attempt-1 training-only seeds
         run: |
           python - <<'PY'
           import random
@@ -176,10 +179,10 @@ jobs:
               for line in eval_path.read_text(encoding="utf-8").splitlines()
               if line.strip() and not line.lstrip().startswith("#")
           }
-          rng = random.Random(20260925)
+          rng = random.Random(20260926)
           values = []
           seen = set()
-          while len(values) < 32:
+          while len(values) < 128:
               value = rng.randint(1, 10**9)
               if value in eval_seeds or value in seen:
                   continue
@@ -234,6 +237,7 @@ jobs:
           source.save(candidate_path)
           report = {
               "result": "PASS_CANDIDATE_TRAINED_NOT_PROMOTED",
+              "attempt": 1,
               "source_generation": 0,
               "candidate_generation": 1,
               "source_policy_sha256": source_sha,
@@ -361,6 +365,7 @@ jobs:
           final = {
               "schema_version": "sts1-self-improve-generation-result-v1",
               "generation": "0->1",
+              "attempt": 1,
               "gate_30": gate30,
               "gate_50": gate50,
               "offline_pass": offline_pass,

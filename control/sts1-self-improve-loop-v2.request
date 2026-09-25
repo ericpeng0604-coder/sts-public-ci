@@ -14,3 +14,4 @@ learner_floor_delta=0.5
 champion_check_interval=3
 max_stagnation=5
 reason=recover_distillation_after_stagnation
+reset_stagnation=1

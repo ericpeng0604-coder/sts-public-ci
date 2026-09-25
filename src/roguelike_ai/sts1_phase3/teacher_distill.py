@@ -12,6 +12,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .base_policy import STS1_BASE_POLICY_ID
 from .frozen_student import (
     FrozenStudentError,
     normalize_action_payload,
@@ -199,6 +200,7 @@ def distill_mcts_teacher(
 
     return {
         "schema_version": TEACHER_DATASET_SCHEMA_VERSION,
+        "base_policy_id": STS1_BASE_POLICY_ID,
         "examples": len(examples),
         "epochs": epochs,
         "batches": batches,

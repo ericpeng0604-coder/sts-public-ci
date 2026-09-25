@@ -26,6 +26,7 @@ import torch
 from torch import nn
 from torch.distributions import Categorical
 
+from .base_policy import STS1_BASE_POLICY_ID
 from .frozen_student import (
     EXPECTED_MODEL_SHA256,
     FrozenStudentError,
@@ -309,6 +310,7 @@ class StudentV1PPO:
             "student_schema_version": STUDENT_V1_SCHEMA_VERSION,
             "baseline_model_sha256": EXPECTED_MODEL_SHA256,
             "baseline_artifact_sha256": self.baseline.artifact_sha256,
+            "foundation_policy_id": STS1_BASE_POLICY_ID,
             "config": asdict(self.config),
             "config_hash": self.config.config_hash,
             "generation": self.generation,
@@ -342,6 +344,8 @@ class StudentV1PPO:
             raise StudentV1Error("Student v1 baseline model identity drift")
         if payload.get("baseline_artifact_sha256") != baseline.artifact_sha256:
             raise StudentV1Error("Student v1 baseline artifact identity drift")
+        if payload.get("foundation_policy_id") != STS1_BASE_POLICY_ID:
+            raise StudentV1Error("Student v1 foundation/base policy identity drift")
         raw_config = payload.get("config")
         if not isinstance(raw_config, Mapping):
             raise StudentV1Error("Student v1 checkpoint config missing")

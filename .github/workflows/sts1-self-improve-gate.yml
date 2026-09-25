@@ -15,6 +15,10 @@ on:
       - 'tests/test_sts1_teacher_distill.py'
       - 'tests/test_sts1_simulator_teacher_mode.py'
       - 'tests/test_sts1_simulator_ppo_mode.py'
+      - 'fixtures/sts1/armg_map_eval_seeds_50.txt'
+      - 'patches/sts1/armg_gamecontext_clone.patch'
+      - 'tests/test_sts1_armg_map_evolve.py'
+      - 'scripts/sts1/sts1_armg_map_round_v1.py'
       - 'tests/test_sts1_hybrid_mcts_vote.py'
       - 'tests/test_sts1_hybrid_model.py'
       - 'tests/test_sts1_reference_policy.py'
@@ -53,7 +57,9 @@ jobs:
           python -m pip install -e '.[dev]'
           python -m pip install numpy torch==2.11.0
       - name: Compile offline simulator
-        run: python -m py_compile src/roguelike_ai/sts1_phase3/simulator.py
+        run: |
+          python -m py_compile src/roguelike_ai/sts1_phase3/simulator.py
+          python -m py_compile scripts/sts1/sts1_armg_map_round_v1.py
       - name: Test self-improvement contracts
         run: >-
           pytest -q

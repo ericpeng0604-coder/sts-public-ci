@@ -399,7 +399,26 @@ def _collect_dataset(
                     # Follow the branch-rollout teacher's best path so later
                     # examples come from progressively stronger trajectories.
                     actions = list(sts.get_legal_game_actions(gc))
-                    actions[int(example["teacher_best_index"])].execute(gc)
+                    best_index = int(example["teacher_best_index"])
+                    branches = example.get("branches")
+                    if (
+                        not isinstance(branches, list)
+                        or best_index < 0
+                        or best_index >= len(branches)
+                    ):
+                        raise RuntimeError("teacher branch index is invalid")
+                    teacher_bits = branches[best_index].get("action_bits")
+                    matches = [
+                        action
+                        for action in actions
+                        if getattr(action, "bits", None) == teacher_bits
+                    ]
+                    if len(matches) != 1:
+                        raise RuntimeError(
+                            "teacher map action identity is no longer unique "
+                            f"after branch rollout: bits={teacher_bits!r} matches={len(matches)}"
+                        )
+                    matches[0].execute(gc)
                 else:
                     armg.step(gc, sts)
 

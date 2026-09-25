@@ -187,20 +187,56 @@ def _metric(state: Mapping[str, Any], name: str, default: float = 0.0) -> float:
     return result if math.isfinite(result) else float(default)
 
 
+def _enemy_stats(state: Mapping[str, Any]) -> tuple[float, int]:
+    enemies = state.get("enemies")
+    if not isinstance(enemies, Sequence) or isinstance(enemies, (str, bytes, bytearray)):
+        return 0.0, 0
+    total_hp = 0.0
+    alive = 0
+    for enemy in enemies:
+        if not isinstance(enemy, Mapping):
+            continue
+        hp = _metric(enemy, "hp", 0.0)
+        if hp > 0.0:
+            total_hp += hp
+            alive += 1
+    return total_hp, alive
+
+
 def public_progress_reward(
     before: Mapping[str, Any],
     after_hp: float,
     after_floor: float,
     *,
+    after_state: Mapping[str, Any] | None = None,
     terminal_outcome: str | None = None,
 ) -> float:
-    """Small public-only shaping plus a terminal win/loss reward."""
+    """Dense public-only combat shaping plus terminal win/loss reward.
+
+    No seed/RNG/future information is used. Same-combat enemy HP loss gives
+    immediate credit, while player HP loss is penalized and floor progress is
+    rewarded. Cross-combat transitions rely on floor/HP rather than pretending
+    the next room's enemies are the previous enemies.
+    """
 
     hp_delta = after_hp - _metric(before, "hp")
     floor_delta = max(0.0, after_floor - _metric(before, "floor"))
-    reward = 0.002 * hp_delta + 0.02 * floor_delta
+    enemy_damage = 0.0
+    enemy_kills = 0
+    if after_state is not None and floor_delta == 0.0:
+        before_enemy_hp, before_alive = _enemy_stats(before)
+        after_enemy_hp, after_alive = _enemy_stats(after_state)
+        enemy_damage = max(0.0, before_enemy_hp - after_enemy_hp)
+        enemy_kills = max(0, before_alive - after_alive)
+
+    reward = (
+        0.006 * enemy_damage
+        + 0.04 * enemy_kills
+        + 0.004 * hp_delta
+        + 0.03 * floor_delta
+    )
     if terminal_outcome == "victory":
-        reward += 1.0
+        reward += 1.5
     elif terminal_outcome == "defeat":
         reward -= 1.0
     return max(-2.0, min(2.0, reward))
@@ -268,6 +304,7 @@ def episode_from_simulator_evidence(
             state,
             after_hp,
             after_floor,
+            after_state=(next_state if not final else None),
             terminal_outcome=terminal,
         )
         transitions.append(

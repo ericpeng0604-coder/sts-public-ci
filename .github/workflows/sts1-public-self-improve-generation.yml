@@ -100,6 +100,11 @@ jobs:
       EXPECTED_V0_PAYLOAD_SHA256: ${{ needs.rebuild-v0-windows.outputs.student_v0_payload_sha256 }}
       TRAINING_SEED_COUNT: '128'
       TRAINING_RNG_SEED: '20260926'
+      TEACHER_SEED_COUNT: '8'
+      TEACHER_RNG_SEED: '20260927'
+      TEACHER_MCTS_SIMS: '2000'
+      TEACHER_DISTILL_EPOCHS: '2'
+      TEACHER_DISTILL_BATCH_SIZE: '32'
 
     steps:
       - uses: actions/checkout@v4
@@ -205,15 +210,22 @@ jobs:
               generation=0,
               device="cpu",
           )
-          path = root / "source-v1-gen0.pt"
-          policy.save(path)
-          print("PASS_V1_GEN0", file_sha256(path), policy.config.config_hash)
+          champion_path = root / "champion-v1-gen0.pt"
+          source_path = root / "source-v1-gen0.pt"
+          policy.save(champion_path)
+          source_path.write_bytes(champion_path.read_bytes())
+          assert file_sha256(source_path) == file_sha256(champion_path)
+          print(
+              "PASS_V1_GEN0",
+              "champion", file_sha256(champion_path),
+              "source", file_sha256(source_path),
+              policy.config.config_hash,
+          )
           PY
 
-      - name: Generate attempt-1 training-only seeds
+      - name: Generate disjoint Teacher and PPO training seeds
         run: |
           python - <<'PY'
-          import os
           import os
           import random
           from pathlib import Path
@@ -224,25 +236,123 @@ jobs:
               for line in eval_path.read_text(encoding="utf-8").splitlines()
               if line.strip() and not line.lstrip().startswith("#")
           }
-          import os
-          rng = random.Random(int(os.environ["TRAINING_RNG_SEED"]))
-          target = int(os.environ["TRAINING_SEED_COUNT"])
-          values = []
-          seen = set()
-          while len(values) < target:
-              value = rng.randint(1, 10**9)
-              if value in eval_seeds or value in seen:
-                  continue
-              seen.add(value)
-              values.append(value)
+
+          def generate(count: int, rng_seed: int, forbidden: set[int]) -> list[int]:
+              rng = random.Random(rng_seed)
+              values = []
+              seen = set()
+              while len(values) < count:
+                  value = rng.randint(1, 10**9)
+                  if value in forbidden or value in seen:
+                      continue
+                  seen.add(value)
+                  values.append(value)
+              return values
+
+          teacher = generate(
+              int(os.environ["TEACHER_SEED_COUNT"]),
+              int(os.environ["TEACHER_RNG_SEED"]),
+              set(eval_seeds),
+          )
+          training = generate(
+              int(os.environ["TRAINING_SEED_COUNT"]),
+              int(os.environ["TRAINING_RNG_SEED"]),
+              set(eval_seeds) | set(teacher),
+          )
+
+          assert not (set(teacher) & eval_seeds)
+          assert not (set(training) & eval_seeds)
+          assert not (set(training) & set(teacher))
+
           out = Path("evidence/sts1/self-improve")
           out.mkdir(parents=True, exist_ok=True)
-          (out / "training-seeds.txt").write_text(
-              "\n".join(str(v) for v in values) + "\n",
+          (out / "teacher-seeds.txt").write_text(
+              "\n".join(str(v) for v in teacher) + "\n",
               encoding="utf-8",
           )
-          assert not (set(values) & eval_seeds)
-          print("PASS_TRAINING_SEEDS", len(values), values[:5], "rng_seed", os.environ["TRAINING_RNG_SEED"])
+          (out / "training-seeds.txt").write_text(
+              "\n".join(str(v) for v in training) + "\n",
+              encoding="utf-8",
+          )
+          print(
+              "PASS_DISJOINT_SEEDS",
+              "teacher", len(teacher), teacher[:3],
+              "ppo", len(training), training[:3],
+              "eval", len(eval_seeds),
+          )
+          PY
+
+      - name: Collect public MCTS Teacher demonstrations
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/self-improve/teacher
+          while IFS= read -r seed; do
+            [ -n "$seed" ] || continue
+            python -m roguelike_ai.sts1_phase3.simulator \
+              --model "$RUNNER_TEMP/sts1-loop/student-v0.json" \
+              --module-dir external/sts_lightspeed/source/build-probe \
+              --seed "$seed" \
+              --training-seed-file evidence/sts1/self-improve/teacher-seeds.txt \
+              --evidence "evidence/sts1/self-improve/teacher/teacher-$seed.ndjson" \
+              --armg-root .cache/sts1-armg \
+              --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt \
+              --combat-mcts-sims "$TEACHER_MCTS_SIMS" \
+              --collect-teacher
+          done < evidence/sts1/self-improve/teacher-seeds.txt
+
+      - name: Distill MCTS Teacher into trainable Student v1 source
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.frozen_student import FrozenStudentV0
+          from roguelike_ai.sts1_phase3.student_v1_ppo import StudentV1PPO, file_sha256
+          from roguelike_ai.sts1_phase3.teacher_distill import (
+              distill_mcts_teacher,
+              read_teacher_evidence,
+          )
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sts1-loop"
+          baseline = FrozenStudentV0.from_path(root / "student-v0.json")
+          source_path = root / "source-v1-gen0.pt"
+          champion_path = root / "champion-v1-gen0.pt"
+          before_sha = file_sha256(source_path)
+          assert before_sha == file_sha256(champion_path)
+
+          examples = []
+          for path in sorted(Path("evidence/sts1/self-improve/teacher").glob("teacher-*.ndjson")):
+              examples.extend(read_teacher_evidence(path))
+          if not examples:
+              raise SystemExit("MCTS Teacher produced no distillation examples")
+
+          policy = StudentV1PPO.load(source_path, baseline, device="cpu")
+          stats = distill_mcts_teacher(
+              policy,
+              examples,
+              epochs=int(os.environ["TEACHER_DISTILL_EPOCHS"]),
+              batch_size=int(os.environ["TEACHER_DISTILL_BATCH_SIZE"]),
+              seed=int(os.environ["TEACHER_RNG_SEED"]),
+          )
+          policy.save(source_path)
+          after_sha = file_sha256(source_path)
+          if after_sha == before_sha:
+              raise SystemExit("Teacher distillation did not change source checkpoint")
+
+          report = {
+              "result": "PASS_MCTS_TEACHER_DISTILLED_NOT_PROMOTED",
+              "teacher_seed_count": int(os.environ["TEACHER_SEED_COUNT"]),
+              "teacher_mcts_sims": int(os.environ["TEACHER_MCTS_SIMS"]),
+              "source_sha_before": before_sha,
+              "source_sha_after": after_sha,
+              "champion_sha_unchanged": file_sha256(champion_path),
+              "distillation": stats,
+          }
+          out = Path("evidence/sts1/self-improve/teacher-report.json")
+          out.write_text(
+              json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(report, ensure_ascii=False, sort_keys=True))
           PY
 
       - name: Collect fail-closed PPO rollout shard
@@ -313,7 +423,7 @@ jobs:
 
           root = Path(os.environ["RUNNER_TEMP"]) / "sts1-loop"
           baseline = FrozenStudentV0.from_path(root / "student-v0.json")
-          source = StudentV1PPO.load(root / "source-v1-gen0.pt", baseline, device="cpu")
+          champion = StudentV1PPO.load(root / "champion-v1-gen0.pt", baseline, device="cpu")
           candidate = StudentV1PPO.load(root / "candidate-v1-gen1.pt", baseline, device="cpu")
           eval_path = Path("external/sts-rl-agent/source/eval/eval_seeds_50.txt")
           seeds = tuple(
@@ -331,7 +441,7 @@ jobs:
           out = Path("evidence/sts1/self-improve/eval")
           out.mkdir(parents=True, exist_ok=True)
 
-          for label, policy in (("champion", source), ("candidate", candidate)):
+          for label, policy in (("champion", champion), ("candidate", candidate)):
               runs = []
               for seed in seeds:
                   summary = run_simulator_game(
@@ -435,7 +545,10 @@ jobs:
         with:
           name: sts1-self-improve-generation-0-to-1-reports
           path: |
+            evidence/sts1/self-improve/teacher-seeds.txt
             evidence/sts1/self-improve/training-seeds.txt
+            evidence/sts1/self-improve/teacher-report.json
+            evidence/sts1/self-improve/teacher/teacher-*.ndjson
             evidence/sts1/self-improve/rollout-gen0/collector-report.json
             evidence/sts1/self-improve/rollout-gen0/manifest.json
             evidence/sts1/self-improve/train-report.json

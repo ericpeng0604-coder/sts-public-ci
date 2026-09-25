@@ -1,4 +1,4 @@
-attempt=1
+attempt=2
 rounds=2
 teacher_seeds=32
 ppo_seeds=64
@@ -13,4 +13,4 @@ baseline_anchor_coef=0.05
 learner_floor_delta=0.5
 champion_check_interval=3
 max_stagnation=5
-reason=start_continuous_self_improve_loop_v2
+reason=continue_with_evolved_armg_map_gen1

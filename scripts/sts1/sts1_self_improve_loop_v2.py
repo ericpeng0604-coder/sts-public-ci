@@ -304,11 +304,13 @@ def main() -> int:
     write_hybrid_model_manifest(
         learner_path,
         learner_manifest_path,
+        armg_map_weight=armg_map_weight,
         loop_round=state.round_index,
     )
     write_hybrid_model_manifest(
         champion_path,
         champion_manifest_path,
+        armg_map_weight=armg_map_weight,
         loop_round=state.round_index,
     )
     run_reports: list[dict[str, Any]] = []

@@ -37,6 +37,8 @@ from .self_improve_loop import (
 )
 
 __all__ = [
+    "ARMG_MCTS_2000_REFERENCE_ID",
+    "ARMG_MCTS_2000_REFERENCE_V1",
     "ChampionGateError",
     "FAST_GATE_POLICY",
     "FORMAL_GATE_POLICY",

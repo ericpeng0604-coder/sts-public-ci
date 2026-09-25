@@ -1,0 +1,77 @@
+name: STS1 Public PPO Simulator Smoke
+
+on:
+  push:
+    branches:
+      - gpt/sts1-self-improve-loop-20260925
+    paths:
+      - '.github/workflows/sts1-public-ppo-simulator-smoke.yml'
+      - 'scripts/sts1/sts1_public_ppo_smoke.py'
+      - 'scripts/sts1/hydrate_jialeiv_baseline_v0.py'
+      - 'scripts/sts1/build_probe.py'
+      - 'src/roguelike_ai/sts1_phase3/**'
+      - 'external/sts_lightspeed/UPSTREAM.json'
+      - 'external/sts-rl-agent/UPSTREAM.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-ppo-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: '1'
+      SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install numpy torch==2.11.0
+
+      - name: Hydrate exact pinned simulator and ArmG
+        run: |
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          test -f external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt
+
+      - name: Build native simulator binding
+        run: |
+          python scripts/sts1/build_probe.py
+          find external/sts_lightspeed/source/build-probe -maxdepth 1 -type f -name 'slaythespire*.so' -print
+
+      - name: Prepare ArmG compatibility root
+        run: |
+          root=".cache/sts1-armg"
+          rm -rf "$root"
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -s "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+          test -f "$root/armG_model_G128x128_15k.pt"
+
+      - name: Run end-to-end PPO rollout smoke
+        run: |
+          python scripts/sts1/sts1_public_ppo_smoke.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt             --output-dir evidence/public-ppo-smoke
+          cat evidence/public-ppo-smoke/smoke-summary.json
+
+      - name: Upload synthetic smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-public-ppo-simulator-smoke
+          path: |
+            evidence/public-ppo-smoke/smoke-summary.json
+            evidence/public-ppo-smoke/shard-000/manifest.json
+            evidence/public-ppo-smoke/shard-000/rollout.jsonl
+          if-no-files-found: warn
+          retention-days: 14

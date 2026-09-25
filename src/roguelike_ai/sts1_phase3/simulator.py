@@ -483,6 +483,7 @@ def run_simulator_game(
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
+    collect_teacher: bool = False,
 ) -> dict[str, Any]:
     ui_seed, simulator_seed = resolve_simulator_seed(
         sts,
@@ -516,10 +517,14 @@ def run_simulator_game(
         raise SimulatorRunError("tuned exploration cannot be combined with consensus budgets")
     if any(value < 1 for value in consensus_budgets):
         raise SimulatorRunError("all MCTS consensus budgets must be positive")
+    if collect_ppo and collect_teacher:
+        raise SimulatorRunError("PPO and MCTS Teacher collection are mutually exclusive")
     if collect_ppo and (combat_mcts_sims is not None or consensus_budgets):
         raise SimulatorRunError("PPO rollout collection cannot run with MCTS combat policy")
     if collect_ppo and not callable(getattr(student, "sample_action", None)):
         raise SimulatorRunError("PPO rollout collection requires a Student v1 sample_action policy")
+    if collect_teacher and combat_mcts_sims is None and not consensus_budgets:
+        raise SimulatorRunError("MCTS Teacher collection requires an MCTS combat policy")
 
     gc = sts.GameContext(sts.CharacterClass.IRONCLAD, simulator_seed, 0)
     agent = sts.Agent()
@@ -595,6 +600,14 @@ def run_simulator_game(
                         "public_action_count": len(public_actions),
                     })
                 if combat_mcts_sims is not None or consensus_budgets:
+                    teacher_public_state = None
+                    if collect_teacher:
+                        teacher_public_state = adapter.adapt(
+                            battle,
+                            legal_actions=native_actions,
+                            run_state=public_run_state(gc),
+                            projected_legal_actions=public_actions,
+                        )
                     floor_now = int(_value(gc, "floor_num", 0) or 0)
                     active_mcts_sims = combat_mcts_sims
                     if (
@@ -643,6 +656,34 @@ def run_simulator_game(
                     latency_ms = (time.perf_counter() - started) * 1000.0
                     latencies_ms.append(latency_ms)
                     chosen_bits = _value(chosen, "bits")
+                    if collect_teacher:
+                        if teacher_public_state is None:
+                            raise SimulatorRunError("MCTS Teacher public state was not captured")
+                        chosen_public = _public_action(chosen, hand_raw)
+                        chosen_identity = canonical_json(chosen_public)
+                        matches = [
+                            index
+                            for index, action in enumerate(public_actions)
+                            if canonical_json(action) == chosen_identity
+                        ]
+                        if len(matches) != 1:
+                            raise SimulatorRunError(
+                                f"MCTS Teacher action mapping is not unique: matches={matches}"
+                            )
+                        teacher_index = matches[0]
+                        teacher_action_id = sha256_json(
+                            normalize_action_payload(public_actions[teacher_index])
+                        )
+                        _record(evidence_path, {
+                            "type": "mcts_teacher_decision",
+                            "floor": floor_now,
+                            "public_state": teacher_public_state,
+                            "teacher_action_index": teacher_index,
+                            "teacher_action_id": teacher_action_id,
+                            "mcts_sims": active_mcts_sims,
+                            "mcts_budgets": list(consensus_budgets),
+                            "chosen_bits": chosen_bits,
+                        })
                     chosen.execute(battle)
                     mcts_action_count += 1
                     _record(evidence_path, {
@@ -786,6 +827,7 @@ def run_simulator_game(
         "max_inference_latency_ms": max(latencies_ms) if latencies_ms else None,
         "game_steps": game_steps,
         "ppo_collection": collect_ppo,
+        "teacher_collection": collect_teacher,
     }
     _record(evidence_path, {"type": "summary", **summary})
     return summary
@@ -835,6 +877,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--combat-mcts-exploration", type=float)
     parser.add_argument("--student-v1-checkpoint", type=Path)
     parser.add_argument("--collect-ppo", action="store_true")
+    parser.add_argument("--collect-teacher", action="store_true")
     parser.add_argument(
         "--combat-mcts-budgets",
         help="comma-separated MCTS budgets; majority vote with highest-budget tie-break",
@@ -886,8 +929,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("training seed file must contain one or more unique numeric seeds")
         if any(seed < 1 or seed > 10**9 for seed in training_seeds):
             parser.error("training seeds must be in the upstream-compatible range 1..1e9")
-        if args.collect_ppo is False:
-            parser.error("--training-seed-file is only valid with --collect-ppo")
+        if not (args.collect_ppo or args.collect_teacher):
+            parser.error("--training-seed-file requires --collect-ppo or --collect-teacher")
 
     baseline_student = FrozenStudentV0.from_path(args.model)
     if args.student_v1_checkpoint is not None:
@@ -917,6 +960,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         heldout_seeds=heldout_seeds,
         training_seeds=training_seeds,
         collect_ppo=args.collect_ppo,
+        collect_teacher=args.collect_teacher,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0 if summary["result"] == "PASS_SIMULATOR_COMPLETE_RUN" else 3

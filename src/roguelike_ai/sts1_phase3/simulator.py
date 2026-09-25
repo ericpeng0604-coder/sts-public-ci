@@ -561,7 +561,7 @@ def run_simulator_game(
     if collect_ppo and not callable(getattr(student, "sample_action", None)):
         raise SimulatorRunError("PPO rollout collection requires a Student v1 sample_action policy")
     if collect_teacher and combat_mcts_sims is None and not consensus_budgets:
-        raise SimulatorRunError("MCTS Teacher collection requires a pure MCTS combat policy")
+        raise SimulatorRunError("MCTS Teacher collection requires an MCTS combat policy; pure MCTS only")
     if collect_teacher and hybrid_budgets:
         raise SimulatorRunError("MCTS Teacher collection cannot use Student-influenced hybrid MCTS")
 

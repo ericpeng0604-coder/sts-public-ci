@@ -179,6 +179,124 @@ class PPOEpisode:
         }
 
 
+def _metric(state: Mapping[str, Any], name: str, default: float = 0.0) -> float:
+    value = state.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return float(default)
+    result = float(value)
+    return result if math.isfinite(result) else float(default)
+
+
+def public_progress_reward(
+    before: Mapping[str, Any],
+    after_hp: float,
+    after_floor: float,
+    *,
+    terminal_outcome: str | None = None,
+) -> float:
+    """Small public-only shaping plus a terminal win/loss reward."""
+
+    hp_delta = after_hp - _metric(before, "hp")
+    floor_delta = max(0.0, after_floor - _metric(before, "floor"))
+    reward = 0.002 * hp_delta + 0.02 * floor_delta
+    if terminal_outcome == "victory":
+        reward += 1.0
+    elif terminal_outcome == "defeat":
+        reward -= 1.0
+    return max(-2.0, min(2.0, reward))
+
+
+def episode_from_simulator_evidence(
+    evidence_path: Path,
+    *,
+    episode_id: str,
+) -> PPOEpisode:
+    """Turn one completed --collect-ppo simulator evidence file into an episode."""
+
+    decisions: list[Mapping[str, Any]] = []
+    summary: Mapping[str, Any] | None = None
+    try:
+        lines = evidence_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise PPORolloutError(f"could not read simulator evidence: {exc}") from exc
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise PPORolloutError(f"invalid simulator evidence JSONL: {exc}") from exc
+        if not isinstance(row, Mapping):
+            raise PPORolloutError("simulator evidence row must be an object")
+        if row.get("type") == "ppo_decision":
+            decisions.append(row)
+        elif row.get("type") == "summary":
+            summary = row
+
+    if summary is None:
+        raise PPORolloutError("simulator evidence is missing summary")
+    if summary.get("result") != "PASS_SIMULATOR_COMPLETE_RUN":
+        raise PPORolloutError("incomplete/blocked simulator run cannot become PPO training data")
+    if summary.get("ppo_collection") is not True:
+        raise PPORolloutError("simulator evidence was not collected in PPO mode")
+    outcome = str(summary.get("outcome", ""))
+    if outcome not in {"victory", "defeat"}:
+        raise PPORolloutError("PPO episode requires terminal victory/defeat")
+    if not decisions:
+        raise PPORolloutError("simulator evidence contains no PPO decisions")
+
+    transitions: list[PPOTransition] = []
+    for index, row in enumerate(decisions):
+        state = row.get("public_state")
+        if not isinstance(state, Mapping):
+            raise PPORolloutError("PPO decision is missing public_state")
+
+        final = index == len(decisions) - 1
+        if final:
+            after_hp = _finite(summary.get("final_hp", 0.0), "summary.final_hp")
+            after_floor = _finite(summary.get("final_floor", 0.0), "summary.final_floor")
+            terminal = outcome
+        else:
+            next_state = decisions[index + 1].get("public_state")
+            if not isinstance(next_state, Mapping):
+                raise PPORolloutError("next PPO decision is missing public_state")
+            after_hp = _metric(next_state, "hp", _metric(state, "hp"))
+            after_floor = _metric(next_state, "floor", _metric(state, "floor"))
+            terminal = None
+
+        reward = public_progress_reward(
+            state,
+            after_hp,
+            after_floor,
+            terminal_outcome=terminal,
+        )
+        transitions.append(
+            make_transition(
+                state,
+                episode_id=episode_id,
+                step_index=index,
+                selected_action_index=int(row.get("action_index", -1)),
+                reward=reward,
+                done=final,
+                old_log_prob=_finite(row.get("old_log_prob"), "old_log_prob"),
+                old_value=_finite(row.get("old_value"), "old_value"),
+            )
+        )
+
+    final_floor_raw = summary.get("final_floor")
+    final_floor = (
+        int(final_floor_raw)
+        if isinstance(final_floor_raw, (int, float)) and not isinstance(final_floor_raw, bool)
+        else None
+    )
+    return PPOEpisode(
+        episode_id=episode_id,
+        transitions=tuple(transitions),
+        outcome=outcome,
+        final_floor=final_floor,
+    )
+
+
 def _payload_bytes(episodes: Sequence[PPOEpisode]) -> bytes:
     rows = [episode.to_dict() for episode in episodes]
     encoded = "\n".join(
@@ -318,7 +436,9 @@ __all__ = [
     "PPOEpisode",
     "PPOTransition",
     "TRANSITION_SCHEMA_VERSION",
+    "episode_from_simulator_evidence",
     "make_transition",
+    "public_progress_reward",
     "read_rollout_shard",
     "write_rollout_shard",
 ]

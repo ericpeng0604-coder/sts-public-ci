@@ -173,6 +173,7 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import os
           import random
           from pathlib import Path
 

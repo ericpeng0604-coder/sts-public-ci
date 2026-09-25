@@ -12,6 +12,7 @@ on:
       - 'tests/test_sts1_self_improve_loop.py'
       - 'tests/test_sts1_ppo_rollout.py'
       - 'tests/test_sts1_student_v1_ppo.py'
+      - 'tests/test_sts1_teacher_distill.py'
       - 'tests/test_sts1_simulator_ppo_mode.py'
   pull_request:
     branches:
@@ -53,4 +54,5 @@ jobs:
           tests/test_sts1_self_improve_loop.py
           tests/test_sts1_ppo_rollout.py
           tests/test_sts1_student_v1_ppo.py
+          tests/test_sts1_teacher_distill.py
           tests/test_sts1_simulator_ppo_mode.py

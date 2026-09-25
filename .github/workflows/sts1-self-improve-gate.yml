@@ -8,7 +8,7 @@ on:
       - '.github/workflows/sts1-self-improve-gate.yml'
       - 'src/roguelike_ai/sts1_phase3/**'
       - 'scripts/sts1/sts1_champion_gate.py'
-      - 'tests/test_sts1_champion_gate.py'
+      - 'tests/test_sts1_champion_gate.py'\n      - 'tests/test_sts1_self_improve_loop.py'\n      - 'tests/test_sts1_self_improve_loop.py'
   pull_request:
     branches:
       - main
@@ -36,4 +36,4 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
       - name: Test Champion Gate
-        run: pytest -q tests/test_sts1_champion_gate.py
+        run: pytest -q tests/test_sts1_champion_gate.py tests/test_sts1_self_improve_loop.py

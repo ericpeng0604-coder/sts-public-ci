@@ -1,7 +1,7 @@
 diff --git a/bindings/slaythespire.cpp b/bindings/slaythespire.cpp
 --- a/bindings/slaythespire.cpp
 +++ b/bindings/slaythespire.cpp
-@@ -59,6 +59,8 @@ PYBIND11_MODULE(slaythespire, m) {
+@@ -59,6 +59,14 @@ PYBIND11_MODULE(slaythespire, m) {
  
      pybind11::class_<GameContext> gameContext(m, "GameContext");
      gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())

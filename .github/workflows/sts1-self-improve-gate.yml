@@ -70,6 +70,7 @@ jobs:
           tests/test_sts1_teacher_distill.py
           tests/test_sts1_simulator_teacher_mode.py
           tests/test_sts1_simulator_ppo_mode.py
+          tests/test_sts1_armg_map_evolve.py
           tests/test_sts1_hybrid_mcts_vote.py
           tests/test_sts1_hybrid_model.py
           tests/test_sts1_reference_policy.py

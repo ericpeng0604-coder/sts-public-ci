@@ -1,17 +1,6 @@
 name: STS1 Public PPO Simulator Smoke
 
 on:
-  push:
-    branches:
-      - gpt/sts1-self-improve-loop-20260925
-    paths:
-      - '.github/workflows/sts1-public-ppo-simulator-smoke.yml'
-      - 'scripts/sts1/sts1_public_ppo_smoke.py'
-      - 'scripts/sts1/hydrate_jialeiv_baseline_v0.py'
-      - 'scripts/sts1/build_probe.py'
-      - 'src/roguelike_ai/sts1_phase3/**'
-      - 'external/sts_lightspeed/UPSTREAM.json'
-      - 'external/sts-rl-agent/UPSTREAM.json'
   workflow_dispatch:
 
 permissions:

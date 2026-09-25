@@ -1,0 +1,16 @@
+attempt=1
+rounds=2
+teacher_seeds=32
+ppo_seeds=64
+shadow_eval_seeds=20
+rng_seed=20260930
+teacher_mcts_sims=2000
+distill_epochs=4
+distill_batch_size=64
+teacher_top1_before_ppo=0.55
+learning_rate=1e-4
+baseline_anchor_coef=0.05
+learner_floor_delta=0.5
+champion_check_interval=3
+max_stagnation=5
+reason=start_continuous_self_improve_loop_v2

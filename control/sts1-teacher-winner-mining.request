@@ -1,5 +1,5 @@
-attempt=5
+attempt=6
 seed_count=100
-rng_seed=20261005
+rng_seed=20261006
 mcts_sims=2000
-reason=semantic_deck_choice_path_and_combat_mining
+reason=validate_four_worker_parallel_semantic_mining

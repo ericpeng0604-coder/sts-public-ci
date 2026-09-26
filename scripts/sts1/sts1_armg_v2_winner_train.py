@@ -54,7 +54,7 @@ def main():
                 reg=sum((p-b).pow(2).mean() for p,b in zip(net.parameters(),base_params))
                 loss=loss+a.anchor*reg
         return loss, int(logits.argmax(1).item()==target.item())
-    history=[]
+    history=[]; best_val_loss=float("inf"); best_epoch=None; best_state=None
     for epoch in range(1,a.epochs+1):
         net.train(); total=correct=0; loss_sum=0.0
         for r in train:
@@ -65,8 +65,12 @@ def main():
             loss,ok=one(r,False); vt+=1; vc+=ok; vl+=float(loss.detach())
         row={"epoch":epoch,"train_loss":loss_sum/total,"train_acc":correct/total,"val_loss":vl/vt,"val_acc":vc/vt}
         history.append(row); print(json.dumps(row,sort_keys=True),flush=True)
-    a.output.parent.mkdir(parents=True,exist_ok=True); torch.save(net.state_dict(),a.output)
-    report={"schema_version":"sts1-armg-v2-winner-warmstart-v1","winner_games":len(games),"train_decisions":len(train),"val_decisions":len(val),"epochs":a.epochs,"lr":a.lr,"anchor":a.anchor,"history":history,"output":str(a.output)}
+        if row["val_loss"] < best_val_loss:
+            best_val_loss=row["val_loss"]; best_epoch=epoch
+            best_state={k:v.detach().cpu().clone() for k,v in net.state_dict().items()}
+    if best_state is None: raise SystemExit("no best validation checkpoint")
+    a.output.parent.mkdir(parents=True,exist_ok=True); torch.save(best_state,a.output)
+    report={"schema_version":"sts1-armg-v2-winner-warmstart-v2","winner_games":len(games),"train_decisions":len(train),"val_decisions":len(val),"epochs":a.epochs,"lr":a.lr,"anchor":a.anchor,"best_epoch":best_epoch,"best_val_loss":best_val_loss,"history":history,"output":str(a.output)}
     a.output.with_suffix(".json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
     print("ARMG_V2_TRAIN_RESULT",json.dumps(report,sort_keys=True))
 if __name__=="__main__": raise SystemExit(main())

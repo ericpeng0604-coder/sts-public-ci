@@ -1,5 +1,5 @@
-attempt=6
+attempt=7
 seed_count=100
-rng_seed=20261006
+rng_seed=20261007
 mcts_sims=2000
-reason=validate_four_worker_parallel_semantic_mining
+reason=validate_merge_and_auto_continue_loop

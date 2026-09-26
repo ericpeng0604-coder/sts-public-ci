@@ -1,5 +1,9 @@
 name: STS1 ArmG PPO Train Existing v1
-on:\n  workflow_dispatch:\n  push:\n    branches: [gpt/sts1-teacher-a0-50-20260926]\n    paths: ['control/sts1-armg-ppo-train-existing.request']
+on:
+  workflow_dispatch:
+  push:
+    branches: [gpt/sts1-teacher-a0-50-20260926]
+    paths: ['control/sts1-armg-ppo-train-existing.request']
 permissions: {contents: read, actions: read}
 jobs:
   train:

@@ -1,0 +1,98 @@
+name: STS1 ArmG v2 Winner Train
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install numpy torch==2.11.0
+      - name: Hydrate frozen simulator and ArmG
+        run: |
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=".cache/sts1-armg"; rm -rf "$root"; mkdir -p "$root/sim/sts_lightspeed"
+          ln -s "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+      - name: Recover known winning seeds from recent rich artifacts
+        run: |
+          mkdir -p "$RUNNER_TEMP/mining"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --paginate > "$RUNNER_TEMP/artifacts-pages.jsonl"
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          rows=[]
+          for line in Path(os.environ["RUNNER_TEMP"]+"/artifacts-pages.jsonl").read_text().splitlines():
+            try: rows += json.loads(line).get("artifacts",[])
+            except Exception: pass
+          rows=[x for x in rows if x.get("name","").startswith("sts1-teacher-winner-mining-") and x.get("name","").endswith("-merged") and not x.get("expired")]
+          rows=sorted(rows,key=lambda x:x.get("created_at",""),reverse=True)[:20]
+          root=Path(os.environ["RUNNER_TEMP"])/"mining"
+          for i,x in enumerate(rows):
+            z=root/f"a{i}.zip"
+            subprocess.run(["gh","api",f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{x['id']}/zip",">",str(z)],check=False)
+          print("artifact_candidates",len(rows))
+          PY
+          # gh cannot shell-redirect from Python argv; download with curl using IDs.
+          rm -f "$RUNNER_TEMP/mining/"*.zip
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --paginate --jq '.artifacts[] | select(.expired==false) | select(.name|startswith("sts1-teacher-winner-mining-")) | select(.name|endswith("-merged")) | .id' | head -20 > "$RUNNER_TEMP/ids.txt"
+          i=0; while read -r id; do curl --fail -L -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/mining/$i.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip"; i=$((i+1)); done < "$RUNNER_TEMP/ids.txt"
+          mkdir -p "$RUNNER_TEMP/unpacked"
+          for z in "$RUNNER_TEMP/mining/"*.zip; do d="$RUNNER_TEMP/unpacked/$(basename "$z" .zip)"; mkdir -p "$d"; unzip -q "$z" -d "$d"; done
+          python - <<'PY'
+          import json,os,hashlib
+          from pathlib import Path
+          seeds=[]
+          for p in Path(os.environ["RUNNER_TEMP"]+"/unpacked").rglob("winner-mining-summary.json"):
+            r=json.load(open(p))
+            for s in r.get("winning_seeds",[]):
+              if int(s) not in seeds: seeds.append(int(s))
+          # Keep a deterministic pilot while ensuring both hash train/val buckets exist.
+          picked=seeds[:24]
+          Path("evidence/sts1").mkdir(parents=True,exist_ok=True)
+          Path("evidence/sts1/armg-v2-known-winners.txt").write_text("\n".join(map(str,picked))+"\n")
+          print("known_winners",len(seeds),"pilot",len(picked))
+          if len(picked)<8: raise SystemExit("not enough known winners recovered")
+          PY
+      - name: Replay winners with exact vectors
+        run: |
+          python scripts/sts1/sts1_armg_v2_replay_winners.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt             --seed-file evidence/sts1/armg-v2-known-winners.txt             --output-dir evidence/sts1/armg-v2-replay             --mcts-sims 2000
+      - name: Train winner warm-start
+        run: |
+          python scripts/sts1/sts1_armg_v2_winner_train.py             --evidence evidence/sts1/armg-v2-replay             --armg-root .cache/sts1-armg             --base-weight .cache/sts1-armg/armG_model_G128x128_15k.pt             --output evidence/sts1/armg-v2/armg_model_v2_candidate.pt
+      - name: Check candidate loads
+        run: |
+          python - <<'PY'
+          import os,sys,torch
+          sys.path.insert(0,".cache/sts1-armg"); import armG_train as m
+          n=m.Scorer((128,128)); n.load_state_dict(torch.load("evidence/sts1/armg-v2/armg_model_v2_candidate.pt",weights_only=True,map_location="cpu")); n.eval()
+          print("candidate_load=PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-armg-v2-winner-train-${{ github.run_id }}
+          path: |
+            evidence/sts1/armg-v2/
+            evidence/sts1/armg-v2-replay/replay-summary.json
+            evidence/sts1/armg-v2-known-winners.txt
+          retention-days: 90

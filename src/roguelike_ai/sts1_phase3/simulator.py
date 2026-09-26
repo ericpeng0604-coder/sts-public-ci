@@ -456,18 +456,22 @@ class ArmGNoncombatPolicy:
         _, _, scores = self.score_choices(gc)
         return kind, int(self.torch.argmax(scores).item()), len(descs)
 
-    def step(self, gc: Any, sts: Any) -> str:
+    def decide(self, gc: Any, sts: Any) -> tuple[str, int, list[Any], list[Any], list[float]]:
         kind, descs, execs = self.choices(gc)
         if not descs:
             if gc.screen_state == sts.ScreenState.REWARDS:
-                gc.skip_reward_cards()
-                return "armg:reward:skip_empty"
+                return "reward_empty", -1, [], [], []
             raise SimulatorRunError(f"ArmG produced no legal choice on screen: {gc.screen_state}")
         if len(descs) == 1:
-            index = 0
-        else:
-            _, _, scores = self.score_choices(gc)
-            index = int(self.torch.argmax(scores).item())
+            return kind, 0, descs, execs, [0.0]
+        _, _, scores = self.score_choices(gc)
+        return kind, int(self.torch.argmax(scores).item()), descs, execs, [float(x) for x in scores.tolist()]
+
+    def step(self, gc: Any, sts: Any) -> str:
+        kind, index, descs, execs, _ = self.decide(gc, sts)
+        if index < 0:
+            gc.skip_reward_cards()
+            return "armg:reward:skip_empty"
         execs[index](gc)
         return f"armg:{kind}:{index}/{len(descs)}"
 
@@ -649,12 +653,37 @@ def run_simulator_game(
                     fallback_count += 1
                     policy_name = "legacy_fallback"
                 else:
-                    choice = armg_policy.step(gc, sts)
+                    kind, selected_index, descs, execs, scores = armg_policy.decide(gc, sts)
+                    before = public_run_state(gc)
+                    choice_descriptions = [repr(value) for value in descs]
+                    if selected_index < 0:
+                        gc.skip_reward_cards()
+                        choice = "armg:reward:skip_empty"
+                    else:
+                        choice = f"armg:{kind}:{selected_index}/{len(descs)}"
+                        execs[selected_index](gc)
                     armg_action_count += 1
                     policy_name = "armg"
+                    _record(evidence_path, {
+                        "type": "armg_noncombat_decision_v2",
+                        "floor": before.get("floor"),
+                        "act": before.get("act"),
+                        "gold_before": before.get("gold"),
+                        "screen": screen_before,
+                        "kind": kind,
+                        "selected_index": selected_index,
+                        "choice_count": len(descs),
+                        "choice_descriptions": choice_descriptions,
+                        "choice_scores": scores,
+                        "selected_description": (
+                            choice_descriptions[selected_index] if selected_index >= 0 else "skip_empty"
+                        ),
+                    })
                 _record(evidence_path, {
                     "type": "simulator_noncombat",
                     "floor": int(_value(gc, "floor_num", 0) or 0),
+                    "act": int(_value(gc, "act", 0) or 0),
+                    "gold": int(_value(gc, "gold", 0) or 0),
                     "screen": screen_before,
                     "policy": policy_name,
                     "choice": choice,

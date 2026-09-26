@@ -1,5 +1,5 @@
-attempt=29
+attempt=30
 seed_count=100
 rng_seed=20261029
 mcts_sims=2000
-reason=auto_continue_after_parallel_merge
+reason=retry_same_seeds_after_blocked_seed_isolation_fix

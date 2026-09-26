@@ -1,4 +1,4 @@
-attempt=25
+attempt=26
 rounds=1
 teacher_seeds=32
 ppo_seeds=64

@@ -1,0 +1,29 @@
+name: STS1 ArmG PPO Train Existing v1
+on: workflow_dispatch
+permissions: {contents: read, actions: read}
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    env: {GH_TOKEN: "${{ github.token }}"}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with: {python-version: '3.12'}
+    - run: |
+        pip install -e . numpy torch==2.11.0
+        python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+        python scripts/sts1/build_probe.py
+        mkdir -p evidence/sts1/ppo-rollouts
+        for i in 0 1 2 3; do
+          id=$(gh api repos/$GITHUB_REPOSITORY/actions/runs/36256316141/artifacts --jq ".artifacts[]|select(.name==\"armg-ppo-rollout-36256316141-$i\")|.id")
+          mkdir -p "evidence/sts1/ppo-rollouts/$i"
+          gh api repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip > "$RUNNER_TEMP/$i.zip"
+          unzip -q "$RUNNER_TEMP/$i.zip" -d "evidence/sts1/ppo-rollouts/$i"
+        done
+        root=.cache/sts1-armg; mkdir -p "$root"
+        ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+        ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+        python scripts/sts1/sts1_armg_ppo_train.py --rollouts evidence/sts1/ppo-rollouts --armg-root "$root" --base-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt --output evidence/sts1/ppo-candidate/armg_ppo_v1_candidate.pt --checkpoint-id armg-original-15k
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with: {name: "armg-ppo-candidate-existing-${{ github.run_id }}", path: evidence/sts1/ppo-candidate/, retention-days: 90}

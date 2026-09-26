@@ -472,15 +472,15 @@ class ArmGNoncombatPolicy:
         for d in descs:
             sem=self.describe_choice("card", d); name=sem.get("card_name"); adj=0.0
             if sem.get("choice")=="skip":
-                adj += min(0.18, 0.015*thick)
+                adj += min(0.45, 0.04*thick)
             elif name:
                 copies=deck.count(name)
-                if copies>=2: adj -= min(0.16, 0.05*(copies-1))
-                if name in draw and have_draw<2: adj += 0.10
-                if name in defense and have_def<3: adj += 0.08
-                if name in frontload and have_front>=5: adj -= 0.08
-                if name in exhaust and have_exhaust>=1: adj += 0.04
-                if thick and name in frontload and copies: adj -= min(0.10,0.02*thick)
+                if copies>=2: adj -= min(0.40, 0.12*(copies-1))
+                if name in draw and have_draw<2: adj += 0.28
+                if name in defense and have_def<3: adj += 0.22
+                if name in frontload and have_front>=5: adj -= 0.22
+                if name in exhaust and have_exhaust>=1: adj += 0.10
+                if thick and name in frontload and copies: adj -= min(0.28,0.05*thick)
             out.append(adj)
         return out
 
@@ -494,11 +494,15 @@ class ArmGNoncombatPolicy:
             return kind, 0, descs, execs, [0.0]
         _, _, scores = self.score_choices(gc)
         raw=[float(x) for x in scores.tolist()]
+        adjusted=list(raw)
         if self.contextual_card_rerank and kind == "card":
             adj=self._contextual_card_adjustments(gc, descs)
-            raw=[x+y for x,y in zip(raw,adj)]
-            scores=self.torch.tensor(raw,dtype=self.torch.float32)
-        return kind, int(self.torch.argmax(scores).item()), descs, execs, raw
+            adjusted=[x+y for x,y in zip(raw,adj)]
+            scores=self.torch.tensor(adjusted,dtype=self.torch.float32)
+            self.last_contextual_rerank={"raw_scores":raw,"adjustments":adj,"adjusted_scores":adjusted,"raw_index":max(range(len(raw)),key=raw.__getitem__),"adjusted_index":max(range(len(adjusted)),key=adjusted.__getitem__)}
+        else:
+            self.last_contextual_rerank=None
+        return kind, int(self.torch.argmax(scores).item()), descs, execs, adjusted
 
     def describe_choice(self, kind: str, desc: Any) -> dict[str, Any]:
         m = self.module

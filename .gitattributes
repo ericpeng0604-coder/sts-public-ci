@@ -1,0 +1,2 @@
+# Keep the frozen Student v0 source byte-stable across Windows and Linux runners.
+src/roguelike_ai/sts1_training/student_v0.py text eol=lf

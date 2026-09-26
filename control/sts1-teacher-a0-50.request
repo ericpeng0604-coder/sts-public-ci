@@ -1,0 +1,8 @@
+attempt=1
+mode=single
+mcts_sims=2000
+late_mcts_sims=8000
+late_floor=34
+exploration=
+consensus_budgets=1000,2000,4000
+reason=teacher_a0_50_baseline

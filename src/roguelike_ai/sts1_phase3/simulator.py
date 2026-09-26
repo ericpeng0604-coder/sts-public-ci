@@ -467,6 +467,49 @@ class ArmGNoncombatPolicy:
         _, _, scores = self.score_choices(gc)
         return kind, int(self.torch.argmax(scores).item()), descs, execs, [float(x) for x in scores.tolist()]
 
+    def describe_choice(self, kind: str, desc: Any) -> dict[str, Any]:
+        m = self.module
+        d = list(desc)
+        out: dict[str, Any] = {"kind": kind}
+        reverse_vocab = {int(v): str(k) for k, v in m._vocab.items()}
+        if kind == "card":
+            active = [i for i in range(m.W_CARD) if d[m.OFF_CARD + i] > 0.5]
+            out.update(choice="skip" if d[m.OFF_PASS] > 0.5 else "card")
+            if active: out["card_name"] = reverse_vocab.get(active[0], f"vocab:{active[0]}")
+        elif kind == "map":
+            reverse_room = {int(v): str(getattr(k, "name", k)) for k, v in m.ROOM_IDX.items()}
+            room = [i for i in range(m.W_MROOM) if d[m.OFF_MROOM + i] > 0.5]
+            out["room"] = reverse_room.get(room[0], str(room[0])) if room else None
+            out["lookahead_1"] = {reverse_room.get(i, str(i)): d[m.OFF_MLA1 + i] for i in range(m.W_MLA1) if d[m.OFF_MLA1 + i]}
+            out["lookahead_2"] = {reverse_room.get(i, str(i)): d[m.OFF_MLA2 + i] for i in range(m.W_MLA2) if d[m.OFF_MLA2 + i]}
+        elif kind == "shop":
+            reverse_item = {int(v): str(getattr(k, "name", k)) for k, v in m.SITEM_IDX.items()}
+            item = [i for i in range(m.W_SITEM) if d[m.OFF_SITEM + i] > 0.5]
+            out["item_type"] = reverse_item.get(item[0], str(item[0])) if item else None
+            out["price_normalized"] = d[m.OFF_SPRICE]
+            card = [i for i in range(m.W_CARD) if d[m.OFF_CARD + i] > 0.5]
+            if card: out["card_name"] = reverse_vocab.get(card[0], f"vocab:{card[0]}")
+            out["leave"] = bool(d[m.OFF_PASS] > 0.5)
+        elif kind == "rest":
+            opt = [i for i in range(m.W_REST) if d[m.OFF_REST + i] > 0.5]
+            out["option_index"] = opt[0] if opt else None
+        elif kind == "event":
+            evid = [i for i in range(m.EVENT_CAP) if d[m.OFF_EVID + i] > 0.5]
+            eopt = [i for i in range(m.EOPT_CAP) if d[m.OFF_EOPT + i] > 0.5]
+            out["event_id"] = evid[0] if evid else None
+            out["option_index"] = eopt[0] if eopt else None
+        return out
+
+    def deck_snapshot(self, gc: Any) -> list[dict[str, Any]]:
+        result = []
+        for i, card in enumerate(list(getattr(gc, "deck", []))):
+            result.append({
+                "position": i + 1,
+                "name": str(self.module.card_name(card)),
+                "upgrades": int(getattr(card, "upgrades", getattr(card, "upgrade_count", 0)) or 0),
+            })
+        return result
+
     def step(self, gc: Any, sts: Any) -> str:
         kind, index, descs, execs, _ = self.decide(gc, sts)
         if index < 0:
@@ -674,10 +717,17 @@ def run_simulator_game(
                         "selected_index": selected_index,
                         "choice_count": len(descs),
                         "choice_descriptions": choice_descriptions,
+                        "choice_semantics": [armg_policy.describe_choice(kind, value) for value in descs],
                         "choice_scores": scores,
                         "selected_description": (
                             choice_descriptions[selected_index] if selected_index >= 0 else "skip_empty"
                         ),
+                        "selected_semantics": (
+                            armg_policy.describe_choice(kind, descs[selected_index]) if selected_index >= 0 else {"choice": "skip_empty"}
+                        ),
+                        "deck_before": armg_policy.deck_snapshot(gc),
+                        "hp_before": _value(gc, "cur_hp"),
+                        "max_hp_before": _value(gc, "max_hp"),
                     })
                 _record(evidence_path, {
                     "type": "simulator_noncombat",

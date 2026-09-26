@@ -1,4 +1,4 @@
-attempt=29
+attempt=30
 rounds=1
 teacher_seeds=32
 ppo_seeds=64
@@ -13,5 +13,5 @@ baseline_anchor_coef=0.01
 learner_floor_delta=0.5
 champion_check_interval=3
 max_stagnation=5
-reason=repair_lf_checkout_resume_student
+reason=github_native_continue_student
 reset_stagnation=1

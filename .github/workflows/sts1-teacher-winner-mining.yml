@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 concurrency:
@@ -92,3 +92,63 @@ jobs:
           print(f"- Winning seeds：{r['winning_seeds']}")
           PY
           gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/c.md")"
+
+  merge:
+    needs: mine
+    if: success()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gpt/sts1-teacher-a0-50-20260926
+      - name: Download all shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sts1-teacher-winner-mining-${{ github.run_id }}-shard-*
+          path: merged-shards
+      - name: Merge evidence and summaries
+        run: |
+          python - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          root=Path("merged-shards"); out=Path("merged-evidence"); out.mkdir()
+          reports=[]; seen=set()
+          for p in sorted(root.glob("*/winner-mining-summary.json")):
+            r=json.load(open(p)); reports.append(r)
+            for ev in p.parent.glob("seed-*.ndjson"):
+              if ev.name in seen: raise SystemExit("duplicate seed evidence: "+ev.name)
+              seen.add(ev.name); shutil.copy2(ev,out/ev.name)
+          if len(reports)!=4: raise SystemExit(f"expected 4 shard reports, got {len(reports)}")
+          n=sum(r["seed_count"] for r in reports); wins=sum(r["victories"] for r in reports); near=sum(r["near_wins"] for r in reports)
+          floors=sum(r["mean_final_floor"]*r["seed_count"] for r in reports)/n
+          winning=sum((r["winning_seeds"] for r in reports),[])
+          merged={"schema_version":"sts1-teacher-winner-mining-merged-v1","seed_count":n,"mcts_sims":reports[0]["mcts_sims"],"victories":wins,"win_rate":wins/n,"near_wins":near,"mean_final_floor":floors,"winning_seeds":winning,"shards":reports}
+          (out/"winner-mining-summary.json").write_text(json.dumps(merged,indent=2,sort_keys=True)+"\n")
+          print(json.dumps(merged,indent=2))
+          PY
+      - name: Upload merged evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-teacher-winner-mining-${{ github.run_id }}-merged
+          path: merged-evidence/
+          retention-days: 90
+      - name: Continue next loop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("control/sts1-teacher-winner-mining.request")
+          d={}
+          for line in p.read_text().splitlines():
+            if "=" in line:
+              k,v=line.split("=",1); d[k]=v
+          attempt=int(d.get("attempt","0"))+1
+          rng=int(d.get("rng_seed","20261001"))+1
+          p.write_text(f"attempt={attempt}\nseed_count={d.get('seed_count','100')}\nrng_seed={rng}\nmcts_sims=2000\nreason=auto_continue_after_parallel_merge\n")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add control/sts1-teacher-winner-mining.request
+          git commit -m "control(sts1): auto-continue winner mining loop"
+          git push origin HEAD:gpt/sts1-teacher-a0-50-20260926

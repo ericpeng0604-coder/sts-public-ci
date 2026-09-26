@@ -70,6 +70,7 @@ jobs:
         run: |
           python - <<'PY'
           import os,sys,torch
+          sys.path.insert(0,"external/sts_lightspeed/source/build-probe")
           sys.path.insert(0,".cache/sts1-armg"); import armG_train as m
           n=m.Scorer((128,128)); n.load_state_dict(torch.load("evidence/sts1/armg-v2/armg_model_v2_candidate.pt",weights_only=True,map_location="cpu")); n.eval()
           print("candidate_load=PASS")

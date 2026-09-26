@@ -1,0 +1,90 @@
+name: STS1 Teacher Winner Mining
+
+on:
+  push:
+    branches: [gpt/sts1-teacher-a0-50-20260926]
+    paths: ['control/sts1-teacher-winner-mining.request']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: sts1-teacher-winner-mining
+  cancel-in-progress: false
+
+jobs:
+  mine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      PYTHONUNBUFFERED: '1'
+      GH_TOKEN: ${{ github.token }}
+      SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Read request
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          d={}
+          for x in Path("control/sts1-teacher-winner-mining.request").read_text().splitlines():
+            x=x.strip()
+            if x and not x.startswith("#"):
+              k,v=x.split("=",1); d[k]=v
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+            f.write("SEED_COUNT="+d.get("seed_count","100")+"\n")
+            f.write("RNG_SEED="+d.get("rng_seed","20261001")+"\n")
+            f.write("MCTS_SIMS="+d.get("mcts_sims","2000")+"\n")
+          PY
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install numpy torch==2.11.0
+      - name: Hydrate
+        run: |
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=".cache/sts1-armg"; rm -rf "$root"; mkdir -p "$root/sim/sts_lightspeed"
+          ln -s "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+      - name: Restore ArmG map
+        run: |
+          dst="$RUNNER_TEMP/armg"; mkdir -p "$dst"
+          id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=sts1-armg-map-v1-state&per_page=100" --jq '.artifacts|map(select(.expired==false))|sort_by(.created_at)|reverse|.[0].id//empty')"
+          if [ -n "$id" ]; then curl --fail -L -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/a.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip"; unzip -q "$RUNNER_TEMP/a.zip" -d "$dst"; fi
+      - name: Mine fresh seeds
+        run: |
+          args=(--module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-armg --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt --output-dir evidence/sts1/teacher-winner-mining --seed-count "$SEED_COUNT" --rng-seed "$RNG_SEED" --mcts-sims "$MCTS_SIMS")
+          if [ -f "$RUNNER_TEMP/armg/current-map.pt" ]; then args+=(--armg-map-weight "$RUNNER_TEMP/armg/current-map.pt"); fi
+          python scripts/sts1/sts1_teacher_winner_mining.py "${args[@]}"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-teacher-winner-mining-${{ github.run_id }}
+          path: evidence/sts1/teacher-winner-mining/
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Report
+        if: success()
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/c.md"
+          import json
+          r=json.load(open("evidence/sts1/teacher-winner-mining/winner-mining-summary.json"))
+          print("@ericpeng0604-coder\n\n## Teacher Winner Mining")
+          print(f"- Fresh seeds：{r['seed_count']}")
+          print(f"- Wins：**{r['victories']}** ({r['win_rate']:.1%})")
+          print(f"- Near wins (floor >=45)：{r['near_wins']}")
+          print(f"- Mean floor：{r['mean_final_floor']:.2f}")
+          print(f"- Winning seeds：{r['winning_seeds']}")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/c.md")"

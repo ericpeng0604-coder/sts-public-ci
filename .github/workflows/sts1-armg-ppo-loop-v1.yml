@@ -24,7 +24,7 @@ jobs:
         ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
         ln -sf "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
         set -a; source control/sts1-armg-ppo-v1.request; set +a
-        PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" python scripts/sts1/sts1_armg_ppo_rollout.py --module-dir external/sts_lightspeed/source/build-probe --armg-root "$root" --weight "$root/armG_model_G128x128_15k.pt" --out "evidence/sts1/ppo/worker-${{ matrix.worker }}" --seed-start "$((rng_seed + ${{ matrix.worker }} * 100003))" --games "$games_per_worker" --temperature "$temperature" --checkpoint-id "$checkpoint_id"
+        python scripts/sts1/sts1_armg_ppo_rollout.py --module-dir external/sts_lightspeed/source/build-probe --armg-root "$root" --weight "$root/armG_model_G128x128_15k.pt" --out "evidence/sts1/ppo/worker-${{ matrix.worker }}" --seed-start "$((rng_seed + ${{ matrix.worker }} * 100003))" --games "$games_per_worker" --temperature "$temperature" --checkpoint-id "$checkpoint_id"
     - uses: actions/upload-artifact@v4
       with: {name: "armg-ppo-rollout-${{ github.run_id }}-${{ matrix.worker }}", path: "evidence/sts1/ppo/worker-${{ matrix.worker }}/rollout.npz", retention-days: 30}
   train:

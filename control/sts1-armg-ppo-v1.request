@@ -1,4 +1,4 @@
-attempt=3
+attempt=4
 checkpoint_id=armg-original-15k
 games_per_worker=25
 rng_seed=2026092601

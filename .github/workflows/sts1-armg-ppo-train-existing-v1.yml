@@ -29,17 +29,8 @@ jobs:
         ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
         ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
         export PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH"
-        python - <<'PY'
-import slaythespire
-print("SMOKE_1_SIM_IMPORT_PASS")
-import sys, os
-root=".cache/sts1-armg"; os.environ["STS_BOT_DIR"]=root; sys.path.insert(0,root)
-import armG_train
-print("SMOKE_2_ARMG_IMPORT_PASS")
-import torch
-net=armG_train.Scorer((128,128)); net.load_state_dict(torch.load("external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt",weights_only=True,map_location="cpu"))
-print("SMOKE_3_BASE_WEIGHT_PASS")
-PY
+        python -c 'import slaythespire; print("SMOKE_1_SIM_IMPORT_PASS")'
+        STS_BOT_DIR="$root" python -c 'import sys,torch; sys.path.insert(0,".cache/sts1-armg"); import armG_train; print("SMOKE_2_ARMG_IMPORT_PASS"); net=armG_train.Scorer((128,128)); net.load_state_dict(torch.load("external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt",weights_only=True,map_location="cpu")); print("SMOKE_3_BASE_WEIGHT_PASS")'
         test "$(find evidence/sts1/ppo-rollouts -name rollout.npz | wc -l)" -eq 4
         echo "SMOKE_4_ROLLOUT_FILES_PASS"
         python scripts/sts1/sts1_armg_ppo_train.py --rollouts evidence/sts1/ppo-rollouts --armg-root "$root" --base-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt --output evidence/sts1/ppo-candidate/armg_ppo_v1_candidate.pt --checkpoint-id armg-original-15k

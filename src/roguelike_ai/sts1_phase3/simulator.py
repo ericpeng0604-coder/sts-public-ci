@@ -849,6 +849,39 @@ def run_simulator_game(
                             "mcts_budgets": list(consensus_budgets),
                             "chosen_bits": chosen_bits,
                         })
+                    # Record a human-readable, ordered combat trace before executing
+                    # the action. This preserves the exact card name while it is still
+                    # present in hand and makes winner/near-win play sequences auditable.
+                    trace_action = _public_action(chosen, hand_raw)
+                    trace_card = None
+                    trace_source_idx = _value(chosen, "source_idx", -1)
+                    if (
+                        _action_type(chosen) == "CARD"
+                        and isinstance(trace_source_idx, int)
+                        and 0 <= trace_source_idx < len(hand_raw)
+                    ):
+                        trace_card = _card(hand_raw[trace_source_idx], position=trace_source_idx + 1)
+                    trace_player = _value(battle, "player")
+                    _record(evidence_path, {
+                        "type": "combat_play_trace_v2",
+                        "floor": floor_now,
+                        "act": int(_value(gc, "act", 0) or 0),
+                        "turn": _value(battle, "turn"),
+                        "step": battle_steps,
+                        "hp_before": _value(trace_player, "cur_hp"),
+                        "block_before": _value(trace_player, "block"),
+                        "energy_before": _value(trace_player, "energy"),
+                        "action": trace_action,
+                        "action_type": _action_type(chosen),
+                        "card": trace_card,
+                        "target_index": _value(chosen, "target_idx", -1),
+                        "hand_before": [_card(card, position=i + 1) for i, card in enumerate(hand_raw)],
+                        "enemies_before": [
+                            _enemy(enemy, index=i, battle=battle)
+                            for i, enemy in enumerate(_sequence(_value(battle, "monsters", [])))
+                        ],
+                        "mcts_sims": active_mcts_sims,
+                    })
                     chosen.execute(battle)
                     mcts_action_count += 1
                     _record(evidence_path, {

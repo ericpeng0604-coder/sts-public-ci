@@ -1,5 +1,5 @@
-attempt=2
+attempt=3
 seed_count=100
-rng_seed=20261002
+rng_seed=20261003
 mcts_sims=2000
-reason=validate_winner_patterns_on_independent_fresh_seeds
+reason=rich_telemetry_archetype_damage_route_mining

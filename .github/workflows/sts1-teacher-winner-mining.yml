@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
   issues: write
+  actions: write
 
 concurrency:
   group: sts1-teacher-winner-mining
@@ -152,3 +153,4 @@ jobs:
           git add control/sts1-teacher-winner-mining.request
           git commit -m "control(sts1): auto-continue winner mining loop"
           git push origin HEAD:gpt/sts1-teacher-a0-50-20260926
+          gh workflow run sts1-teacher-winner-mining.yml --ref gpt/sts1-teacher-a0-50-20260926

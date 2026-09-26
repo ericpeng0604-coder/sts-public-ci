@@ -1,0 +1,39 @@
+name: STS1 ArmG PPO v1 Paired AB
+on:
+  push:
+    branches: [gpt/sts1-teacher-a0-50-20260926]
+    paths: ['control/sts1-armg-ppo-ab-v1.request']
+  workflow_dispatch:
+permissions: {contents: read, actions: read}
+jobs:
+  ab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env: {GH_TOKEN: "${{ github.token }}", SIM_HEAD: "7476a81954020087da31d41d16fddf475746ec2d"}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with: {python-version: '3.12'}
+    - name: Install and hydrate
+      run: |
+        pip install -e . numpy torch==2.11.0
+        python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+        test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+        python scripts/sts1/build_probe.py
+        root=.cache/sts1-armg; mkdir -p "$root/sim/sts_lightspeed"
+        ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+        ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+        ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+        ln -sf "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+    - name: Download PPO candidate
+      run: |
+        gh api repos/$GITHUB_REPOSITORY/actions/artifacts/10911123526/zip > "$RUNNER_TEMP/ppo.zip"
+        mkdir "$RUNNER_TEMP/ppo"; unzip -q "$RUNNER_TEMP/ppo.zip" -d "$RUNNER_TEMP/ppo"
+        CAND=$(find "$RUNNER_TEMP/ppo" -name armg_ppo_v1_candidate.pt -print -quit); test -n "$CAND"; echo "CAND_WEIGHT=$CAND" >> "$GITHUB_ENV"
+    - name: Run same 50 fresh paired seeds
+      run: |
+        set -a; source control/sts1-armg-ppo-ab-v1.request; set +a
+        python scripts/sts1/sts1_armg_v3_ab.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-armg --v1-weight .cache/sts1-armg/armG_model_G128x128_15k.pt --v3-weight "$CAND_WEIGHT" --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt --output-dir evidence/sts1/armg-ppo-ab-v1 --seed-count "$seed_count" --rng-seed "$rng_seed" --mcts-sims 2000
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with: {name: "sts1-armg-ppo-ab-v1-${{ github.run_id }}", path: "evidence/sts1/armg-ppo-ab-v1/", retention-days: 90}

@@ -1,5 +1,5 @@
-attempt=1
-mode=winner_replay_warmstart
+attempt=2
+mode=winner_replay_warmstart_best_val
 winner_pilot=24
 mcts_sims=2000
-reason=first_true_armg_v2_weight_training
+reason=fix_checkpoint_validation_and_best_val_selection

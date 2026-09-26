@@ -26,7 +26,7 @@ def main():
     p.add_argument("--weight",type=Path,required=True);p.add_argument("--out",type=Path,required=True)
     p.add_argument("--seed-start",type=int,required=True);p.add_argument("--games",type=int,default=25)
     p.add_argument("--temperature",type=float,default=1.0);p.add_argument("--checkpoint-id",required=True)
-    a=p.parse_args();sys.path.insert(0,str(a.module_dir));sts=importlib.import_module("sts_lightspeed")
+    a=p.parse_args();sys.path.insert(0,str(a.module_dir));sts=importlib.import_module("slaythespire")
     a.out.mkdir(parents=True,exist_ok=True); rng=random.Random(a.seed_start)
     seeds=[]; seen=set()
     while len(seeds)<a.games:

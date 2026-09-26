@@ -2,6 +2,9 @@ name: STS1 ArmG v2 Winner Train
 
 on:
   workflow_dispatch:
+  push:
+    branches: [gpt/sts1-teacher-a0-50-20260926]
+    paths: ['control/sts1-armg-v2-train.request']
 
 permissions:
   contents: read

@@ -1,5 +1,5 @@
-attempt=3
+attempt=4
 seed_count=100
-rng_seed=20261003
+rng_seed=20261004
 mcts_sims=2000
-reason=rich_telemetry_archetype_damage_route_mining
+reason=collect_ordered_card_play_and_rich_telemetry

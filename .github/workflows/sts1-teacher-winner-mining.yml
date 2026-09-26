@@ -16,6 +16,10 @@ concurrency:
 
 jobs:
   mine:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
@@ -63,24 +67,24 @@ jobs:
           if [ -n "$id" ]; then curl --fail -L -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/a.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip"; unzip -q "$RUNNER_TEMP/a.zip" -d "$dst"; fi
       - name: Mine fresh seeds
         run: |
-          args=(--module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-armg --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt --output-dir evidence/sts1/teacher-winner-mining --seed-count "$SEED_COUNT" --rng-seed "$RNG_SEED" --mcts-sims "$MCTS_SIMS")
+          args=(--module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-armg --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt --output-dir evidence/sts1/teacher-winner-mining --seed-count "$SEED_COUNT" --rng-seed "$RNG_SEED" --mcts-sims "$MCTS_SIMS" --shard-index "${{ matrix.shard }}" --shard-count 4)
           if [ -f "$RUNNER_TEMP/armg/current-map.pt" ]; then args+=(--armg-map-weight "$RUNNER_TEMP/armg/current-map.pt"); fi
           python scripts/sts1/sts1_teacher_winner_mining.py "${args[@]}"
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sts1-teacher-winner-mining-${{ github.run_id }}
+          name: sts1-teacher-winner-mining-${{ github.run_id }}-shard-${{ matrix.shard }}
           path: evidence/sts1/teacher-winner-mining/
           if-no-files-found: warn
           retention-days: 90
-      - name: Report
+      - name: Report shard
         if: success()
         run: |
           python - <<'PY' > "$RUNNER_TEMP/c.md"
           import json
           r=json.load(open("evidence/sts1/teacher-winner-mining/winner-mining-summary.json"))
-          print("@ericpeng0604-coder\n\n## Teacher Winner Mining")
+          print("@ericpeng0604-coder\n\n## Teacher Winner Mining shard ${{ matrix.shard }}")
           print(f"- Fresh seeds：{r['seed_count']}")
           print(f"- Wins：**{r['victories']}** ({r['win_rate']:.1%})")
           print(f"- Near wins (floor >=45)：{r['near_wins']}")

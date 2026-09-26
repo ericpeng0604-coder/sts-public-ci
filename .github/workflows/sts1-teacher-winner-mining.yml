@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
@@ -67,7 +67,7 @@ jobs:
           if [ -n "$id" ]; then curl --fail -L -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/a.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip"; unzip -q "$RUNNER_TEMP/a.zip" -d "$dst"; fi
       - name: Mine fresh seeds
         run: |
-          args=(--module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-armg --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt --output-dir evidence/sts1/teacher-winner-mining --seed-count "$SEED_COUNT" --rng-seed "$RNG_SEED" --mcts-sims "$MCTS_SIMS" --shard-index "${{ matrix.shard }}" --shard-count 4)
+          args=(--module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-armg --armg-weight .cache/sts1-armg/armG_model_G128x128_15k.pt --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt --output-dir evidence/sts1/teacher-winner-mining --seed-count "$SEED_COUNT" --rng-seed "$RNG_SEED" --mcts-sims "$MCTS_SIMS" --shard-index "${{ matrix.shard }}" --shard-count 8)
           if [ -f "$RUNNER_TEMP/armg/current-map.pt" ]; then args+=(--armg-map-weight "$RUNNER_TEMP/armg/current-map.pt"); fi
           python scripts/sts1/sts1_teacher_winner_mining.py "${args[@]}"
       - name: Upload evidence
@@ -118,7 +118,7 @@ jobs:
             for ev in p.parent.glob("seed-*.ndjson"):
               if ev.name in seen: raise SystemExit("duplicate seed evidence: "+ev.name)
               seen.add(ev.name); shutil.copy2(ev,out/ev.name)
-          if len(reports)!=4: raise SystemExit(f"expected 4 shard reports, got {len(reports)}")
+          if len(reports)!=8: raise SystemExit(f"expected 8 shard reports, got {len(reports)}")
           n=sum(r["seed_count"] for r in reports); wins=sum(r["victories"] for r in reports); near=sum(r["near_wins"] for r in reports)
           floors=sum(r["mean_final_floor"]*r["seed_count"] for r in reports)/n
           winning=sum((r["winning_seeds"] for r in reports),[])

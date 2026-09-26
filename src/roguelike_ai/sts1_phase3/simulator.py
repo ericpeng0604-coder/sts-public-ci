@@ -430,6 +430,7 @@ class ArmGNoncombatPolicy:
         self.map_net = map_net
         self.weight_path = weight_path
         self.map_weight_path = map_weight_path or weight_path
+        self.contextual_card_rerank = os.environ.get("STS1_TEACHER_V2_CONTEXTUAL_RERANK", "0") == "1"
 
     def choices(self, gc: Any) -> tuple[str, list[Any], list[Any]]:
         kind, descs, execs = self.module.build_choices(gc)
@@ -456,6 +457,33 @@ class ArmGNoncombatPolicy:
         _, _, scores = self.score_choices(gc)
         return kind, int(self.torch.argmax(scores).item()), len(descs)
 
+    def _contextual_card_adjustments(self, gc: Any, descs: list[Any]) -> list[float]:
+        """Small, auditable v2 card-reward adjustments derived from winner/near-win mining."""
+        deck = [str(self.module.card_name(c)) for c in list(getattr(gc, "deck", []))]
+        n = max(1, len(deck))
+        draw = {"Battle Trance","Pommel Strike","Burning Pact","Offering","Shrug It Off"}
+        defense = {"Shrug It Off","Impervious","Flame Barrier","Power Through","Ghostly Armor","True Grit","Second Wind"}
+        frontload = {"Carnage","Bludgeon","Perfected Strike","Hemokinesis","Uppercut","Wild Strike","Clothesline","Twin Strike"}
+        exhaust = {"Fiend Fire","Burning Pact","True Grit","Second Wind","Corruption"}
+        have_draw=sum(x in draw for x in deck); have_def=sum(x in defense for x in deck)
+        have_front=sum(x in frontload for x in deck); have_exhaust=sum(x in exhaust for x in deck)
+        thick=max(0, n-24)
+        out=[]
+        for d in descs:
+            sem=self.describe_choice("card", d); name=sem.get("card_name"); adj=0.0
+            if sem.get("choice")=="skip":
+                adj += min(0.18, 0.015*thick)
+            elif name:
+                copies=deck.count(name)
+                if copies>=2: adj -= min(0.16, 0.05*(copies-1))
+                if name in draw and have_draw<2: adj += 0.10
+                if name in defense and have_def<3: adj += 0.08
+                if name in frontload and have_front>=5: adj -= 0.08
+                if name in exhaust and have_exhaust>=1: adj += 0.04
+                if thick and name in frontload and copies: adj -= min(0.10,0.02*thick)
+            out.append(adj)
+        return out
+
     def decide(self, gc: Any, sts: Any) -> tuple[str, int, list[Any], list[Any], list[float]]:
         kind, descs, execs = self.choices(gc)
         if not descs:
@@ -465,7 +493,12 @@ class ArmGNoncombatPolicy:
         if len(descs) == 1:
             return kind, 0, descs, execs, [0.0]
         _, _, scores = self.score_choices(gc)
-        return kind, int(self.torch.argmax(scores).item()), descs, execs, [float(x) for x in scores.tolist()]
+        raw=[float(x) for x in scores.tolist()]
+        if self.contextual_card_rerank and kind == "card":
+            adj=self._contextual_card_adjustments(gc, descs)
+            raw=[x+y for x,y in zip(raw,adj)]
+            scores=self.torch.tensor(raw,dtype=self.torch.float32)
+        return kind, int(self.torch.argmax(scores).item()), descs, execs, raw
 
     def describe_choice(self, kind: str, desc: Any) -> dict[str, Any]:
         m = self.module

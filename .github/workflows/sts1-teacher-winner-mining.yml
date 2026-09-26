@@ -86,8 +86,10 @@ jobs:
           import json
           r=json.load(open("evidence/sts1/teacher-winner-mining/winner-mining-summary.json"))
           print("@ericpeng0604-coder\n\n## Teacher Winner Mining shard ${{ matrix.shard }}")
-          print(f"- Fresh seeds：{r['seed_count']}")
-          print(f"- Wins：**{r['victories']}** ({r['win_rate']:.1%})")
+          print(f"- Attempted seeds：{r.get('attempted_seed_count', r['seed_count'])}")
+          print(f"- Completed seeds：{r.get('completed_seed_count', r['seed_count'])}")
+          print(f"- Blocked seeds：{r.get('blocked_seed_count', 0)} {r.get('blocked_seeds', [])}")
+          print(f"- Wins：**{r['victories']}** ({r['win_rate']:.1%} of completed)")
           print(f"- Near wins (floor >=45)：{r['near_wins']}")
           print(f"- Mean floor：{r['mean_final_floor']:.2f}")
           print(f"- Winning seeds：{r['winning_seeds']}")
@@ -116,14 +118,22 @@ jobs:
           reports=[]; seen=set()
           for p in sorted(root.glob("*/winner-mining-summary.json")):
             r=json.load(open(p)); reports.append(r)
-            for ev in p.parent.glob("seed-*.ndjson"):
+            selected=[x["evidence"] for x in r.get("winners",[])] + [x["evidence"] for x in r.get("near_wins_detail",[])]
+            for name in selected:
+              ev=p.parent/name
+              if not ev.is_file(): raise SystemExit("missing selected evidence: "+str(ev))
               if ev.name in seen: raise SystemExit("duplicate seed evidence: "+ev.name)
               seen.add(ev.name); shutil.copy2(ev,out/ev.name)
           if len(reports)!=8: raise SystemExit(f"expected 8 shard reports, got {len(reports)}")
-          n=sum(r["seed_count"] for r in reports); wins=sum(r["victories"] for r in reports); near=sum(r["near_wins"] for r in reports)
-          floors=sum(r["mean_final_floor"]*r["seed_count"] for r in reports)/n
+          n=sum(r.get("completed_seed_count",r["seed_count"]) for r in reports)
+          attempted=sum(r.get("attempted_seed_count",r["seed_count"]) for r in reports)
+          blocked=sum(r.get("blocked_seed_count",0) for r in reports)
+          if n <= 0: raise SystemExit("no completed seeds across shards")
+          wins=sum(r["victories"] for r in reports); near=sum(r["near_wins"] for r in reports)
+          floors=sum(r["mean_final_floor"]*r.get("completed_seed_count",r["seed_count"]) for r in reports)/n
           winning=sum((r["winning_seeds"] for r in reports),[])
-          merged={"schema_version":"sts1-teacher-winner-mining-merged-v1","seed_count":n,"mcts_sims":reports[0]["mcts_sims"],"victories":wins,"win_rate":wins/n,"near_wins":near,"mean_final_floor":floors,"winning_seeds":winning,"shards":reports}
+          blocked_seeds=sum((r.get("blocked_seeds",[]) for r in reports),[])
+          merged={"schema_version":"sts1-teacher-winner-mining-merged-v2","seed_count":n,"completed_seed_count":n,"attempted_seed_count":attempted,"blocked_seed_count":blocked,"blocked_seeds":blocked_seeds,"mcts_sims":reports[0]["mcts_sims"],"victories":wins,"win_rate":wins/n,"win_rate_all_attempted":wins/attempted,"near_wins":near,"mean_final_floor":floors,"winning_seeds":winning,"selected_evidence_count":len(seen),"shards":reports}
           (out/"winner-mining-summary.json").write_text(json.dumps(merged,indent=2,sort_keys=True)+"\n")
           print(json.dumps(merged,indent=2))
           PY

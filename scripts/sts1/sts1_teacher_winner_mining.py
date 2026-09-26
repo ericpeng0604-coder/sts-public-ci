@@ -14,13 +14,16 @@ def main() -> int:
     p.add_argument("--armg-weight",type=Path,required=True); p.add_argument("--armg-map-weight",type=Path)
     p.add_argument("--formal-seed-file",type=Path,required=True); p.add_argument("--output-dir",type=Path,required=True)
     p.add_argument("--seed-count",type=int,default=100); p.add_argument("--rng-seed",type=int,default=20261001)
-    p.add_argument("--mcts-sims",type=int,default=2000)
+    p.add_argument("--mcts-sims",type=int,default=2000); p.add_argument("--shard-index",type=int,default=0); p.add_argument("--shard-count",type=int,default=1)
     a=p.parse_args()
     formal={int(x.strip()) for x in a.formal_seed_file.read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")}
     rng=random.Random(a.rng_seed); seeds=[]; seen=set(formal)
     while len(seeds)<a.seed_count:
         s=rng.randint(1,10**9)
         if s not in seen: seen.add(s); seeds.append(s)
+    if a.shard_count < 1 or not 0 <= a.shard_index < a.shard_count: raise ValueError("invalid shard")
+    all_seeds=list(seeds); seeds=all_seeds[a.shard_index::a.shard_count]
+    if not seeds: raise ValueError("empty shard")
     sts=_load_sts(a.module_dir)
     mw=a.armg_map_weight if a.armg_map_weight and a.armg_map_weight.is_file() else None
     armg=ArmGNoncombatPolicy(root=a.armg_root,weight_path=a.armg_weight,map_weight_path=mw)
@@ -37,7 +40,7 @@ def main() -> int:
         print(f"WINNER_MINING {i}/{len(seeds)} wins={len(winners)} near={len(near)} floor={row.get('final_floor')}",flush=True)
     floors=[float(r["final_floor"]) for r in rows if isinstance(r.get("final_floor"),(int,float))]
     report={"schema_version":"sts1-teacher-winner-mining-v1","seed_source":"fresh_random_excluding_formal_50",
-      "seed_count":len(seeds),"mcts_sims":a.mcts_sims,"victories":len(winners),"win_rate":len(winners)/len(seeds),
+      "seed_count":len(seeds),"requested_seed_count":a.seed_count,"shard_index":a.shard_index,"shard_count":a.shard_count,"mcts_sims":a.mcts_sims,"victories":len(winners),"win_rate":len(winners)/len(seeds),
       "near_wins":len(near),"mean_final_floor":mean(floors) if floors else None,
       "winning_seeds":[x["seed"] for x in winners],"near_win_seeds":[x["seed"] for x in near],
       "winners":winners,"near_wins_detail":near}

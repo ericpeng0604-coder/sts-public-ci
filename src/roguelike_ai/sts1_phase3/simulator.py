@@ -537,6 +537,13 @@ class ArmGNoncombatPolicy:
             out["option_index"] = eopt[0] if eopt else None
         return out
 
+    def training_vector_snapshot(self, gc: Any, descs: list[Any]) -> dict[str, Any]:
+        """Exact ArmG inputs needed for offline fine-tuning."""
+        return {
+            "obs_412": [float(x) for x in self.module.obs_vec(gc)],
+            "candidate_desc_368": [[float(x) for x in list(d)] for d in descs],
+        }
+
     def deck_snapshot(self, gc: Any) -> list[dict[str, Any]]:
         result = []
         for i, card in enumerate(list(getattr(gc, "deck", []))):
@@ -736,6 +743,8 @@ def run_simulator_game(
                     kind, selected_index, descs, execs, scores = armg_policy.decide(gc, sts)
                     before = public_run_state(gc)
                     choice_descriptions = [repr(value) for value in descs]
+                    deck_before = armg_policy.deck_snapshot(gc)
+                    training_vector = armg_policy.training_vector_snapshot(gc, descs)
                     if selected_index < 0:
                         gc.skip_reward_cards()
                         choice = "armg:reward:skip_empty"
@@ -745,7 +754,7 @@ def run_simulator_game(
                     armg_action_count += 1
                     policy_name = "armg"
                     _record(evidence_path, {
-                        "type": "armg_noncombat_decision_v2",
+                        "type": "armg_noncombat_decision_v3",
                         "floor": before.get("floor"),
                         "act": before.get("act"),
                         "gold_before": before.get("gold"),
@@ -756,13 +765,15 @@ def run_simulator_game(
                         "choice_descriptions": choice_descriptions,
                         "choice_semantics": [armg_policy.describe_choice(kind, value) for value in descs],
                         "choice_scores": scores,
+                        "obs_412": training_vector["obs_412"],
+                        "candidate_desc_368": training_vector["candidate_desc_368"],
                         "selected_description": (
                             choice_descriptions[selected_index] if selected_index >= 0 else "skip_empty"
                         ),
                         "selected_semantics": (
                             armg_policy.describe_choice(kind, descs[selected_index]) if selected_index >= 0 else {"choice": "skip_empty"}
                         ),
-                        "deck_before": armg_policy.deck_snapshot(gc),
+                        "deck_before": deck_before,
                         "hp_before": _value(gc, "cur_hp"),
                         "max_hp_before": _value(gc, "max_hp"),
                     })

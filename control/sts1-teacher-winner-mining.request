@@ -1,5 +1,5 @@
-attempt=4
+attempt=5
 seed_count=100
-rng_seed=20261004
+rng_seed=20261005
 mcts_sims=2000
-reason=collect_ordered_card_play_and_rich_telemetry
+reason=semantic_deck_choice_path_and_combat_mining

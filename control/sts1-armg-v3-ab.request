@@ -1,0 +1,5 @@
+attempt=1
+seed_count=50
+rng_seed=20263002
+mcts_sims=2000
+reason=armg_v3_first_fresh_paired_exam

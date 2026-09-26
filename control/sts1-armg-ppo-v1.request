@@ -1,0 +1,7 @@
+attempt=1
+checkpoint_id=armg-original-15k
+games_per_worker=25
+rng_seed=2026092601
+temperature=0.80
+mcts_sims=2000
+reason=first_on_policy_armg_ppo_loop

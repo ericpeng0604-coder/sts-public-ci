@@ -1,0 +1,5 @@
+attempt=1
+mode=outcome_contrastive
+base=original_armg
+mcts_sims=2000
+reason=end_to_end_v3_contrastive_training

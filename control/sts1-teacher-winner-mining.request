@@ -1,0 +1,5 @@
+attempt=1
+seed_count=100
+rng_seed=20261001
+mcts_sims=2000
+reason=mine_wins_and_near_wins_on_fresh_seeds

@@ -1,5 +1,5 @@
-attempt=7
+attempt=8
 seed_count=100
-rng_seed=20261007
+rng_seed=20261008
 mcts_sims=2000
-reason=validate_merge_and_auto_continue_loop
+reason=auto_continue_after_parallel_merge

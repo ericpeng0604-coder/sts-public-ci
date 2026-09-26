@@ -25,12 +25,14 @@ jobs:
         ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
         ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
         ln -sf "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
-    - name: Download v3
+    - name: Download latest weighted v3 candidate
       run: |
-        curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/v3.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/10907910016/zip"
+        id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '[.artifacts[] | select(.expired==false) | select(.name|startswith("sts1-armg-v3-")) | select((.name|startswith("sts1-armg-v3-ab-"))|not)] | sort_by(.created_at) | reverse | .[0].id // empty')"
+        test -n "$id"
+        curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/v3.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip"
         mkdir "$RUNNER_TEMP/v3"; unzip -q "$RUNNER_TEMP/v3.zip" -d "$RUNNER_TEMP/v3"
         V3=$(find "$RUNNER_TEMP/v3" -name armg_model_v3_candidate.pt -print -quit); test -n "$V3"; echo "V3_WEIGHT=$V3" >> "$GITHUB_ENV"
-    - name: Run 50 fresh paired seeds
+    - name: Run same 50 paired seeds
       run: |
         set -a; source control/sts1-armg-v3-ab.request; set +a
         python scripts/sts1/sts1_armg_v3_ab.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-armg --v1-weight .cache/sts1-armg/armG_model_G128x128_15k.pt --v3-weight "$V3_WEIGHT" --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt --output-dir evidence/sts1/armg-v3-ab --seed-count "$seed_count" --rng-seed "$rng_seed" --mcts-sims 2000

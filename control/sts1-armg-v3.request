@@ -1,5 +1,8 @@
-attempt=1
-mode=outcome_contrastive
+attempt=2
+mode=outcome_weighted
 base=original_armg
 mcts_sims=2000
-reason=end_to_end_v3_contrastive_training
+win_weight=2.0
+near_win_weight=0.5
+near_win_floor=45
+reason=upweight_wins_and_near_wins_then_same_50_exam

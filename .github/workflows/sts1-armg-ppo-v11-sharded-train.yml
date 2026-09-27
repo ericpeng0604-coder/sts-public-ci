@@ -18,15 +18,37 @@ jobs:
         run: |
           pip install numpy torch==2.11.0
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
-          root=.cache/sts1-armg; mkdir -p "$root"
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg; mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          echo "PYTHONPATH=$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" >> "$GITHUB_ENV"
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" python -c 'import slaythespire; print("SHARDED_SIM_IMPORT_PASS")'
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" STS_BOT_DIR=.cache/sts1-armg python -c 'import sys,torch;sys.path.insert(0,".cache/sts1-armg");import armG_train as m;n=m.Scorer((128,128));n.load_state_dict(torch.load("external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt",weights_only=True,map_location="cpu"));print("SHARDED_ARMG_LOAD_PASS")'
       - name: Download preprocessed shards
         run: |
           mkdir -p evidence/sts1/ppo-v11-preprocessed
           gh api repos/$GITHUB_REPOSITORY/actions/artifacts/10927301893/zip > "$RUNNER_TEMP/shards.zip"
           unzip -q "$RUNNER_TEMP/shards.zip" -d evidence/sts1/ppo-v11-preprocessed
           test "$(find evidence/sts1/ppo-v11-preprocessed -name 'shard_*.npz' | wc -l)" -eq 8
+          python - <<'PY'
+          import json,numpy as np
+          from pathlib import Path
+          fs=sorted(Path("evidence/sts1/ppo-v11-preprocessed").glob("shard_*.npz"))
+          assert len(fs)==8
+          total=0
+          for f in fs:
+              with np.load(f,allow_pickle=False) as d:
+                  assert str(d["checkpoint_id"][0])=="armg-original-15k-v11-r1", (f,d["checkpoint_id"])
+                  assert len(d["obs"])==len(d["action"])==len(d["reward"])==len(d["old_logp"])==len(d["done"])
+                  assert len(d["offsets"])==len(d["obs"])+1
+                  assert int(d["offsets"][-1])==len(d["desc"])
+                  total += len(d["obs"])
+          assert total==20533,total
+          print("SHARDED_DATA_PREFLIGHT_PASS",json.dumps({"shards":len(fs),"decisions":total}))
+          PY
       - name: Train candidate
         run: |
           set -a; source control/sts1-armg-ppo-v11-sharded-train.request; set +a

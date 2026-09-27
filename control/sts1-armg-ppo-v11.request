@@ -1,0 +1,5 @@
+games_per_worker=50
+rng_seed=2026092702
+temperature=1.0
+checkpoint_id=armg-original-15k-v11-r1
+attempt=1

@@ -1,0 +1,59 @@
+name: STS1 PPO v1.2 Sharded Train
+on:
+  push:
+    branches: [gpt/sts1-teacher-a0-50-20260926]
+    paths: [control/sts1-armg-ppo-v12-sharded-train.request]
+  workflow_dispatch:
+permissions: {actions: read, contents: read}
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env: {GH_TOKEN: "${{ github.token }}", SIM_HEAD: "7476a81954020087da31d41d16fddf475746ec2d"}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Prepare ArmG
+        run: |
+          pip install numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg; mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          echo "PYTHONPATH=$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" >> "$GITHUB_ENV"
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" python -c 'import slaythespire; print("SHARDED_SIM_IMPORT_PASS")'
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" STS_BOT_DIR=.cache/sts1-armg python -c 'import sys,torch;sys.path.insert(0,".cache/sts1-armg");import armG_train as m;n=m.Scorer((128,128));n.load_state_dict(torch.load("external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt",weights_only=True,map_location="cpu"));print("SHARDED_ARMG_LOAD_PASS")'
+      - name: Download preprocessed shards
+        run: |
+          mkdir -p evidence/sts1/ppo-v11-preprocessed
+          gh api repos/$GITHUB_REPOSITORY/actions/artifacts/10927301893/zip > "$RUNNER_TEMP/shards.zip"
+          unzip -q "$RUNNER_TEMP/shards.zip" -d evidence/sts1/ppo-v11-preprocessed
+          test "$(find evidence/sts1/ppo-v11-preprocessed -name 'shard_*.npz' | wc -l)" -eq 8
+          python - <<'PY'
+          import json,numpy as np
+          from pathlib import Path
+          fs=sorted(Path("evidence/sts1/ppo-v11-preprocessed").glob("shard_*.npz"))
+          assert len(fs)==8
+          total=0
+          for f in fs:
+              with np.load(f,allow_pickle=False) as d:
+                  assert str(d["checkpoint_id"][0])=="armg-original-15k-v11-r1", (f,d["checkpoint_id"])
+                  assert len(d["obs"])==len(d["action"])==len(d["reward"])==len(d["old_logp"])==len(d["done"])
+                  assert len(d["offsets"])==len(d["obs"])+1
+                  assert int(d["offsets"][-1])==len(d["desc"])
+                  total += len(d["obs"])
+          assert total==20533,total
+          print("SHARDED_DATA_PREFLIGHT_PASS",json.dumps({"shards":len(fs),"decisions":total}))
+          PY
+      - name: Train candidate
+        run: |
+          set -a; source control/sts1-armg-ppo-v12-sharded-train.request; set +a
+          python scripts/sts1/sts1_armg_ppo_train_v12_sharded.py --shards evidence/sts1/ppo-v11-preprocessed --armg-root .cache/sts1-armg --base-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt --output evidence/sts1/ppo-v12-candidate/armg_ppo_v12_candidate.pt --checkpoint-id "$checkpoint_id" --epochs 4 --lr 3e-5 --clip 0.20 --target-kl 0.02 --threads 4
+          STS_BOT_DIR=.cache/sts1-armg python -c 'import sys,torch;sys.path.insert(0,".cache/sts1-armg");import armG_train as m;n=m.Scorer((128,128));n.load_state_dict(torch.load("evidence/sts1/ppo-v12-candidate/armg_ppo_v12_candidate.pt",weights_only=True,map_location="cpu"));print("V12_CANDIDATE_LOAD_PASS")'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "armg-ppo-v12-sharded-candidate-${{ github.run_id }}", path: evidence/sts1/ppo-v12-candidate/, retention-days: 90}

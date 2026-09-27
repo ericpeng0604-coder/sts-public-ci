@@ -29,7 +29,7 @@ jobs:
       - name: Preprocess PPO tensors
         run: |
           set -a; source control/sts1-armg-ppo-v11-preprocess.request; set +a
-          python scripts/sts1/sts1_armg_ppo_preprocess_v11.py --rollouts evidence/sts1/ppo-v11-rollouts --output evidence/sts1/ppo-v11-preprocessed/training_dataset.npz --checkpoint-id "$checkpoint_id"
+          python scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py --rollouts evidence/sts1/ppo-v11-rollouts --output-dir evidence/sts1/ppo-v11-preprocessed --checkpoint-id "$checkpoint_id"
       - uses: actions/upload-artifact@v4
         with:
           name: armg-ppo-v11-preprocessed-${{ github.run_id }}

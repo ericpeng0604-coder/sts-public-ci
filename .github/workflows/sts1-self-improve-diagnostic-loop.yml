@@ -1,0 +1,31 @@
+name: STS1 Self Improve Diagnostic Loop v1
+on:
+  push:
+    branches: [gpt/sts1-teacher-a0-50-20260926]
+    paths: ['control/sts1-self-improve-diagnostic-loop.request']
+  workflow_dispatch:
+permissions: {contents: read, actions: read}
+jobs:
+  controller:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build round state
+      run: |
+        mkdir -p evidence/sts1/self-improve-loop
+        cat > evidence/sts1/self-improve-loop/input.json <<'JSON'
+        {"round":1,"margin_run_id":36334567589,"margin_artifact_id":10936803371,"decisions":20533,"margin_median":3.37835693359375,"margin_le_0_50_pct":10.251789801782496,"previous_v12_divergence_pct":0.11}
+        JSON
+        python scripts/sts1/sts1_self_improve_controller.py --input evidence/sts1/self-improve-loop/input.json --output evidence/sts1/self-improve-loop/decision.json
+    - name: Safety gate
+      run: |
+        python - <<'PY'
+        import json
+        d=json.load(open("evidence/sts1/self-improve-loop/decision.json"))
+        assert d["champion_mutation"] is False
+        assert d["decision"] in {"TRAIN_CANDIDATE","RETRAIN","PAIRED_AB_50","HOLD_SMOKE"}
+        print("LOOP_SAFETY_PASS",d["decision"])
+        PY
+    - uses: actions/upload-artifact@v4
+      with: {name: "sts1-self-improve-loop-state-${{ github.run_id }}", path: evidence/sts1/self-improve-loop/, retention-days: 90}

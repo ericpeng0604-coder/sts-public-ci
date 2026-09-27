@@ -23,7 +23,10 @@ jobs:
         root=.cache/sts1-armg; mkdir -p "$root"
         ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
         ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
-        PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" python -c 'import slaythespire; print("V13_SIM_IMPORT_PASS")'
+        echo "PYTHONPATH=$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH" >> "$GITHUB_ENV"
+        export PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe:$PYTHONPATH"
+        python -c 'import slaythespire; print("V13_SIM_IMPORT_PASS")'
+        STS_BOT_DIR=.cache/sts1-armg python -c 'import sys,torch;sys.path.insert(0,".cache/sts1-armg");import armG_train as m;n=m.Scorer((128,128));n.load_state_dict(torch.load("external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt",weights_only=True,map_location="cpu"));print("V13_ARMG_LOAD_PASS")'
     - name: Download preserved shards
       run: |
         mkdir -p evidence/sts1/ppo-v11-preprocessed
@@ -32,6 +35,8 @@ jobs:
         test "$(find evidence/sts1/ppo-v11-preprocessed -name 'shard_*.npz' | wc -l)" -eq 8
     - name: Measure margins
       run: |
+        python -c 'import slaythespire; print("V13_MARGIN_SIM_IMPORT_PASS")'
+        STS_BOT_DIR=.cache/sts1-armg python -c 'import sys;sys.path.insert(0,".cache/sts1-armg");import armG_train;print("V13_MARGIN_ARMG_IMPORT_PASS")'
         python scripts/sts1/sts1_armg_margin_diag.py --shards evidence/sts1/ppo-v11-preprocessed --armg-root .cache/sts1-armg --weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt --output evidence/sts1/ppo-v13-margin/report.json
     - uses: actions/upload-artifact@v4
       if: always()

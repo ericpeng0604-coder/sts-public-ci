@@ -13,13 +13,22 @@ sys.modules[SPEC.name] = mod
 SPEC.loader.exec_module(mod)
 
 
-def state(stagnation: int, *, decision: str = "HOLD", win_delta: int = 0):
+def state(
+    stagnation: int,
+    *,
+    decision: str = "HOLD",
+    win_delta: int = 0,
+    floor_delta: float = 0.0,
+):
     return {
         "schema_version": "sts1-armg-ppo-v13-loop-state-v1",
         "round_index": 7,
         "stagnation_count": stagnation,
         "last_decision": decision,
-        "last_dev_gate": {"win_delta": win_delta},
+        "last_dev_gate": {
+            "win_delta": win_delta,
+            "mean_paired_floor_delta": floor_delta,
+        },
     }
 
 
@@ -38,16 +47,21 @@ def test_profile_ladder_is_bounded():
         assert profile.entropy <= 0.005
 
 
-def test_long_plateau_uses_wide_exploration_when_not_close():
-    profile = mod.choose_profile(state(5, win_delta=0))
-    assert profile.name == "wide_explore"
-    assert profile.games_per_worker == 100
-    assert profile.temperature > 1.0
-    mod.validate_profile(profile)
+def test_long_plateau_alternates_explore_and_refine_when_not_close():
+    profile5 = mod.choose_profile(state(5, win_delta=-1, floor_delta=-1.0))
+    profile6 = mod.choose_profile(state(6, win_delta=-1, floor_delta=-1.0))
+    profile7 = mod.choose_profile(state(7, win_delta=-1, floor_delta=-1.0))
+    assert profile5.name == "wide_explore"
+    assert profile6.name == "near_miss_refine"
+    assert profile7.name == "wide_explore"
+    assert profile5.temperature > 1.0
+    assert profile6.temperature < 1.0
+    mod.validate_profile(profile5)
+    mod.validate_profile(profile6)
 
 
-def test_long_plateau_refines_a_near_miss():
-    profile = mod.choose_profile(state(8, win_delta=3))
+def test_long_plateau_refines_floor_near_miss_without_extra_win():
+    profile = mod.choose_profile(state(8, win_delta=0, floor_delta=0.5))
     assert profile.name == "near_miss_refine"
     assert profile.temperature < 1.0
     assert profile.learning_rate < mod.PROFILES["stable"].learning_rate

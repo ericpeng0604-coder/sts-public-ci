@@ -31,6 +31,7 @@ env:
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
   STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v3'
   BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v2'
+  BOOTSTRAP_ELITE_RUN: '36415222490'
 
 jobs:
   contract-tests:
@@ -246,6 +247,68 @@ jobs:
             rm -f "$state/strategy-state.json" "$state/current-strategy.pt" "$state/strategy-replay.jsonl" "$state/elite-pool.json"
             rm -rf "$state/elite-candidates"
             echo "NO_VALID_STRATEGY_STATE_START_FROM_UPSTREAM"
+          else
+            state_version="$(python - "$state/strategy-state.json" <<'PY'
+          import json, sys
+          print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("data_efficiency_version", 1)))
+          PY
+          )"
+            if [ "$state_version" -lt 3 ] && [ ! -f "$state/elite-pool.json" ]; then
+              echo "BOOTSTRAP_HISTORICAL_ELITE run=$BOOTSTRAP_ELITE_RUN"
+              elite_artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BOOTSTRAP_ELITE_RUN/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("sts1-armg-strategy-loop-report-")) | .id' | head -n1)"
+              if [ -n "$elite_artifact_id" ]; then
+                rm -rf "$RUNNER_TEMP/historical-elite"
+                mkdir -p "$RUNNER_TEMP/historical-elite/raw"
+                curl --fail --location                   -H "Authorization: Bearer $GH_TOKEN"                   -H "Accept: application/vnd.github+json"                   -o "$RUNNER_TEMP/historical-elite.zip"                   "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$elite_artifact_id/zip"
+                unzip -q "$RUNNER_TEMP/historical-elite.zip" -d "$RUNNER_TEMP/historical-elite/raw"
+                elite_report="$(find "$RUNNER_TEMP/historical-elite/raw" -name round-report.json -print -quit)"
+                elite_weight="$(find "$RUNNER_TEMP/historical-elite/raw" -name candidate-strategy.pt -print -quit)"
+                if [ -n "$elite_report" ] && [ -n "$elite_weight" ]; then
+                  python - "$state" "$elite_report" "$elite_weight" <<'PY'
+          import hashlib, json, shutil, sys
+          from pathlib import Path
+          state=Path(sys.argv[1]); report=json.load(open(sys.argv[2], encoding="utf-8")); src=Path(sys.argv[3])
+          state_payload=json.load(open(state/"strategy-state.json", encoding="utf-8"))
+          parent=str(report.get("current_strategy_sha_before",""))
+          current=str(state_payload.get("current_strategy_sha256",""))
+          fresh=report.get("fresh_gate") or {}
+          paired=fresh.get("paired") or {}
+          compatible=(parent == current and fresh.get("win_delta",0) >= 1 and paired.get("candidate_better",0) > paired.get("candidate_worse",0))
+          if not compatible:
+              print("HISTORICAL_ELITE_SKIPPED_INCOMPATIBLE", parent, current)
+              raise SystemExit(0)
+          sha=hashlib.sha256(src.read_bytes()).hexdigest()
+          expected=str(report.get("candidate_strategy_sha256",""))
+          if expected and sha != expected:
+              raise RuntimeError("historical Elite candidate SHA mismatch")
+          d=state/"elite-candidates"; d.mkdir(parents=True, exist_ok=True)
+          rel=f"elite-candidates/elite-round-{int(report.get('round',0)):04d}-{sha[:12]}.pt"
+          shutil.copy2(src, state/rel)
+          metrics={
+              "eligible": True,
+              "reason": "historical_near_miss_elite",
+              "win_delta": int(fresh.get("win_delta",0)),
+              "floor_delta": fresh.get("floor_delta"),
+              "candidate_better": int(paired.get("candidate_better",0)),
+              "candidate_worse": int(paired.get("candidate_worse",0)),
+              "one_sided_sign_p": paired.get("one_sided_sign_p"),
+          }
+          payload={
+              "schema_version":"sts1-strategy-elite-pool-v1",
+              "entries":[{
+                  "round":int(report.get("round",0)),
+                  "sha256":sha,
+                  "weight_file":rel,
+                  "parent_champion_sha256":parent,
+                  "metrics":metrics,
+              }],
+          }
+          (state/"elite-pool.json").write_text(json.dumps(payload,ensure_ascii=False,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          print("HISTORICAL_ELITE_BOOTSTRAPPED", sha, metrics)
+          PY
+                fi
+              fi
+            fi
           fi
           echo "STRATEGY_STATE_DIR=$state" >> "$GITHUB_ENV"
 

@@ -551,6 +551,7 @@ jobs:
               "PARITY_SECONDS": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("parity_elapsed_seconds",0.0) or 0.0),1),
               "PARALLELISM": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("observed_parallelism",1.0) or 1.0),2),
               "CPU_CORES": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("observed_cpu_cores",1.0) or 1.0),2),
+              "PROBE_SPEEDUP": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("parity_probe_speedup",0.0) or 0.0),2),
               "COLLECTION_FALLBACK": str(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("fallback_reason") or "none"),
               "COLLECTION_PARALLELISM": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("observed_parallelism",1.0)),2),
               "COLLECTION_PARITY": ((report.get("dataset") or {}).get("parallel_teacher") or {}).get("parity_status","unknown"),

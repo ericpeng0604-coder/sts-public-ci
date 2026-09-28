@@ -56,7 +56,8 @@ from roguelike_ai.sts1_phase3.simulator import (
 STATE_SCHEMA_VERSION = "sts1-armg-strategy-loop-state-v1"
 ROUND_SCHEMA_VERSION = "sts1-armg-strategy-round-v1"
 EVAL_SCHEMA_VERSION = "sts1-armg-strategy-eval-v1"
-DATA_EFFICIENCY_VERSION = 2
+DATA_EFFICIENCY_VERSION = 3
+ELITE_POOL_SCHEMA_VERSION = "sts1-strategy-elite-pool-v1"
 
 
 def _sha256(path: Path) -> str:
@@ -277,6 +278,206 @@ def _select_teacher_candidates(
         selected_buckets.add(str(choice["state_bucket"]))
 
     return selected
+
+
+def _elite_candidate_decision(
+    fresh_gate: Mapping[str, Any],
+    *,
+    promoted: bool,
+    max_sign_p: float,
+    min_win_delta: int,
+    min_floor_delta: float,
+) -> dict[str, Any]:
+    """Classify a near-miss Candidate without weakening the Champion gate."""
+    if promoted:
+        return {"eligible": False, "reason": "already_promoted"}
+    if fresh_gate.get("status") == "SKIPPED":
+        return {"eligible": False, "reason": "fresh_gate_not_reached"}
+
+    current = fresh_gate.get("current") or {}
+    candidate = fresh_gate.get("candidate") or {}
+    paired = fresh_gate.get("paired") or {}
+    reasons = set(str(v) for v in (fresh_gate.get("reasons") or []))
+    forbidden_reasons = {
+        "incomplete_eval",
+        "current_safety_failure",
+        "candidate_safety_failure",
+        "combat_policy_not_frozen_pure_mcts",
+    }
+    if reasons & forbidden_reasons:
+        return {
+            "eligible": False,
+            "reason": "unsafe_or_incomplete",
+            "blocking_reasons": sorted(reasons & forbidden_reasons),
+        }
+
+    win_delta = int(fresh_gate.get("win_delta", -10**9))
+    floor_delta_raw = fresh_gate.get("floor_delta")
+    floor_delta = (
+        float(floor_delta_raw)
+        if isinstance(floor_delta_raw, (int, float)) and not isinstance(floor_delta_raw, bool)
+        else None
+    )
+    better = int(paired.get("candidate_better", 0) or 0)
+    worse = int(paired.get("candidate_worse", 0) or 0)
+    sign_p = float(paired.get("one_sided_sign_p", 1.0) or 1.0)
+    expected = int(fresh_gate.get("expected_seed_count", 0) or 0)
+    complete = (
+        int(current.get("complete_runs", 0) or 0) == expected
+        and int(candidate.get("complete_runs", 0) or 0) == expected
+        and expected > 0
+    )
+    eligible = (
+        complete
+        and win_delta >= min_win_delta
+        and floor_delta is not None
+        and floor_delta >= min_floor_delta
+        and better > worse
+        and sign_p <= max_sign_p
+    )
+    return {
+        "eligible": bool(eligible),
+        "reason": "near_miss_elite" if eligible else "not_strong_enough",
+        "win_delta": win_delta,
+        "floor_delta": floor_delta,
+        "candidate_better": better,
+        "candidate_worse": worse,
+        "one_sided_sign_p": sign_p,
+        "max_sign_p": float(max_sign_p),
+        "min_win_delta": int(min_win_delta),
+        "min_floor_delta": float(min_floor_delta),
+    }
+
+
+def _elite_score(entry: Mapping[str, Any]) -> tuple[float, float, float]:
+    metrics = entry.get("metrics") or {}
+    win_delta = float(metrics.get("win_delta", 0.0) or 0.0)
+    floor_delta = float(metrics.get("floor_delta", 0.0) or 0.0)
+    better = float(metrics.get("candidate_better", 0.0) or 0.0)
+    worse = float(metrics.get("candidate_worse", 0.0) or 0.0)
+    sign_p = float(metrics.get("one_sided_sign_p", 1.0) or 1.0)
+    return (
+        10.0 * win_delta + floor_delta + 0.1 * (better - worse) - sign_p,
+        win_delta,
+        -sign_p,
+    )
+
+
+def _load_elite_pool(state_dir: Path) -> list[dict[str, Any]]:
+    pool_path = state_dir / "elite-pool.json"
+    if not pool_path.is_file():
+        _write_json(
+            pool_path,
+            {"schema_version": ELITE_POOL_SCHEMA_VERSION, "entries": []},
+        )
+        return []
+    payload = json.loads(pool_path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != ELITE_POOL_SCHEMA_VERSION:
+        raise RuntimeError("Strategy Elite pool schema mismatch")
+    entries = payload.get("entries", [])
+    if not isinstance(entries, list):
+        raise RuntimeError("Strategy Elite pool entries must be a list")
+    valid: list[dict[str, Any]] = []
+    for raw in entries:
+        if not isinstance(raw, Mapping):
+            raise RuntimeError("Strategy Elite pool entry must be an object")
+        entry = dict(raw)
+        rel = str(entry.get("weight_file", ""))
+        sha = str(entry.get("sha256", ""))
+        weight = state_dir / rel
+        if not rel or not weight.is_file() or len(sha) != 64 or _sha256(weight) != sha:
+            raise RuntimeError(f"Strategy Elite pool checkpoint invalid: {rel!r}")
+        valid.append(entry)
+    return valid
+
+
+def _write_elite_pool(state_dir: Path, entries: Sequence[Mapping[str, Any]]) -> None:
+    _write_json(
+        state_dir / "elite-pool.json",
+        {
+            "schema_version": ELITE_POOL_SCHEMA_VERSION,
+            "entries": [dict(row) for row in entries],
+        },
+    )
+
+
+def _save_elite_candidate(
+    *,
+    state_dir: Path,
+    candidate_weight: Path,
+    round_no: int,
+    parent_champion_sha: str,
+    metrics: Mapping[str, Any],
+    max_entries: int,
+) -> dict[str, Any]:
+    if max_entries < 1:
+        raise RuntimeError("elite max entries must be positive")
+    entries = _load_elite_pool(state_dir)
+    elite_dir = state_dir / "elite-candidates"
+    elite_dir.mkdir(parents=True, exist_ok=True)
+    candidate_sha = _sha256(candidate_weight)
+    rel = f"elite-candidates/elite-round-{round_no:04d}-{candidate_sha[:12]}.pt"
+    target = state_dir / rel
+    shutil.copy2(candidate_weight, target)
+    entry = {
+        "round": int(round_no),
+        "sha256": candidate_sha,
+        "weight_file": rel,
+        "parent_champion_sha256": str(parent_champion_sha),
+        "metrics": dict(metrics),
+    }
+    entries = [row for row in entries if row.get("sha256") != candidate_sha]
+    entries.append(entry)
+    entries.sort(key=_elite_score, reverse=True)
+    kept = entries[:max_entries]
+    keep_files = {str(row["weight_file"]) for row in kept}
+    for path in elite_dir.glob("*.pt"):
+        relpath = str(path.relative_to(state_dir))
+        if relpath not in keep_files:
+            path.unlink()
+    _write_elite_pool(state_dir, kept)
+    return {
+        "saved": True,
+        "entry": entry,
+        "pool_size": len(kept),
+        "best_sha256": kept[0]["sha256"] if kept else None,
+    }
+
+
+def _clear_elite_pool(state_dir: Path) -> None:
+    elite_dir = state_dir / "elite-candidates"
+    if elite_dir.is_dir():
+        shutil.rmtree(elite_dir)
+    _write_elite_pool(state_dir, [])
+
+
+def _elite_verified_example(
+    example: Mapping[str, Any],
+    *,
+    elite_index: int,
+    elite_sha256: str,
+    min_quality_margin: float,
+) -> dict[str, Any] | None:
+    current_index = int(example["current_armg_index"])
+    teacher_index = int(example["teacher_best_index"])
+    values = [float(v) for v in example["branch_quality"]]
+    if not (0 <= elite_index < len(values)):
+        raise RuntimeError("elite index outside branch values")
+    if elite_index == current_index or teacher_index != elite_index:
+        return None
+    margin = values[elite_index] - values[current_index]
+    if margin < min_quality_margin:
+        return None
+    row = dict(example)
+    row["source"] = "elite_candidate_verified_disagreement"
+    row["elite_candidate_sha256"] = str(elite_sha256)
+    row["elite_candidate_index"] = int(elite_index)
+    row["elite_quality_margin_over_champion"] = float(margin)
+    row["priority"] = min(
+        5.0,
+        max(float(row.get("priority", 1.0)), 3.5 + min(1.0, margin / 15.0)),
+    )
+    return row
 
 
 def _drive_pure_mcts_battle(
@@ -662,6 +863,122 @@ def _collect_dataset(
         "skipped_wide_decisions": skipped_wide,
         "skipped_single_choice_decisions": skipped_single,
         "games": games,
+    }
+
+
+def _mine_elite_replay(
+    *,
+    seeds: Sequence[int],
+    sts: Any,
+    armg_root: Path,
+    champion_weight: Path,
+    elite_weight: Path,
+    output: Path,
+    mcts_sims: int,
+    max_examples_per_seed: int,
+    max_choice_branches: int,
+    max_game_steps: int,
+    max_battle_steps: int,
+    temperature: float,
+    min_quality_margin: float,
+) -> dict[str, Any]:
+    """Mine only Teacher-verified Elite disagreements on training-only seeds."""
+    champion = ArmGNoncombatPolicy(root=armg_root, weight_path=champion_weight)
+    elite = ArmGNoncombatPolicy(root=armg_root, weight_path=elite_weight)
+    elite_sha = _sha256(elite_weight)
+    examples: list[dict[str, Any]] = []
+    disagreements = 0
+    checked = 0
+    by_kind: Counter[str] = Counter()
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with output.open("w", encoding="utf-8") as handle:
+        for seed in seeds:
+            gc = sts.GameContext(sts.CharacterClass.IRONCLAD, int(seed), 0)
+            agent = sts.Agent()
+            _set_pauses(agent)
+            steps = 0
+            mined_this_seed = 0
+            while gc.outcome == sts.GameOutcome.UNDECIDED and steps < max_game_steps:
+                steps += 1
+                agent.playout(gc)
+                if gc.outcome != sts.GameOutcome.UNDECIDED:
+                    break
+                if gc.screen_state == sts.ScreenState.BATTLE:
+                    _drive_pure_mcts_battle(
+                        gc,
+                        sts=sts,
+                        mcts_sims=mcts_sims,
+                        max_battle_steps=max_battle_steps,
+                    )
+                    continue
+
+                kind, descs, execs = champion.choices(gc)
+                choices = len(descs)
+                if choices == 0:
+                    champion.step(gc, sts)
+                    continue
+                if choices == 1:
+                    execs[0](gc)
+                    continue
+
+                _, elite_descs, elite_scores = elite.score_choices(gc)
+                if _desc_rows(elite_descs) != _desc_rows(descs):
+                    raise RuntimeError("Elite/Champion descriptor drift on identical state")
+                _, _, champion_scores = champion.score_choices(gc)
+                champion_index = int(torch.argmax(champion_scores).item())
+                elite_index = int(torch.argmax(elite_scores).item())
+                checked += 1
+
+                if elite_index != champion_index:
+                    disagreements += 1
+                    if (
+                        mined_this_seed < max_examples_per_seed
+                        and choices <= max_choice_branches
+                    ):
+                        teacher = _branch_example(
+                            gc,
+                            sts=sts,
+                            armg=champion,
+                            mcts_sims=mcts_sims,
+                            max_game_steps=max_game_steps,
+                            max_battle_steps=max_battle_steps,
+                            temperature=temperature,
+                        )
+                        row = _elite_verified_example(
+                            teacher,
+                            elite_index=elite_index,
+                            elite_sha256=elite_sha,
+                            min_quality_margin=min_quality_margin,
+                        )
+                        if row is not None:
+                            row["elite_mining_seed"] = int(seed)
+                            examples.append(row)
+                            by_kind[str(row.get("kind", "unknown"))] += 1
+                            mined_this_seed += 1
+                            handle.write(
+                                json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+                            )
+                            handle.flush()
+
+                # Stay on the Champion path. The Elite only proposes alternatives.
+                kind_now, descs_now, execs_now = champion.choices(gc)
+                if str(kind_now) != str(kind) or _desc_rows(descs_now) != _desc_rows(descs):
+                    raise RuntimeError("Champion choice identity changed during Elite mining")
+                execs_now[champion_index](gc)
+
+            if gc.outcome == sts.GameOutcome.UNDECIDED:
+                raise RuntimeError(f"Elite mining game step bound reached seed={seed}")
+
+    return {
+        "elite_candidate_sha256": elite_sha,
+        "training_seed_count": len(seeds),
+        "checked_multichoice_states": checked,
+        "disagreements": disagreements,
+        "verified_examples": len(examples),
+        "examples_by_kind": dict(sorted(by_kind.items())),
+        "min_quality_margin": float(min_quality_margin),
+        "combat_policy": f"mcts_{mcts_sims}",
     }
 
 
@@ -1080,6 +1397,13 @@ def main() -> int:
     parser.add_argument("--anchor-coef", type=float, default=0.01)
     parser.add_argument("--max-replay-examples", type=int, default=10000)
     parser.add_argument("--max-stagnation", type=int, default=5)
+    parser.add_argument("--elite-mining-seeds", type=int, default=2)
+    parser.add_argument("--elite-examples-per-seed", type=int, default=2)
+    parser.add_argument("--elite-min-quality-margin", type=float, default=1.0)
+    parser.add_argument("--elite-max-sign-p", type=float, default=0.25)
+    parser.add_argument("--elite-min-win-delta", type=int, default=1)
+    parser.add_argument("--elite-min-floor-delta", type=float, default=-0.5)
+    parser.add_argument("--elite-max-pool", type=int, default=3)
     args = parser.parse_args()
 
     if args.rounds < 1 or args.training_seeds < 1:
@@ -1098,6 +1422,12 @@ def main() -> int:
         raise RuntimeError("epochs/max-stagnation must be positive")
     if args.teacher_label_budget < 1 or args.min_labels_per_kind < 0:
         raise RuntimeError("Teacher selection limits are invalid")
+    if args.elite_mining_seeds < 0 or args.elite_examples_per_seed < 1:
+        raise RuntimeError("Elite mining limits are invalid")
+    if args.elite_min_quality_margin < 0 or not 0 < args.elite_max_sign_p <= 1:
+        raise RuntimeError("Elite thresholds are invalid")
+    if args.elite_min_win_delta < 1 or args.elite_max_pool < 1:
+        raise RuntimeError("Elite promotion-side thresholds are invalid")
 
     dev_all = _read_seeds(args.dev_seed_file)
     if len(dev_all) != 50:
@@ -1114,6 +1444,7 @@ def main() -> int:
         base_weight=args.armg_base_weight,
         combat_mcts_sims=args.combat_mcts_sims,
     )
+    elite_pool = _load_elite_pool(args.state_dir)
 
     sts = _load_sts(args.module_dir)
     clone_probe = sts.GameContext(sts.CharacterClass.IRONCLAD, 1, 0)
@@ -1172,6 +1503,47 @@ def main() -> int:
             dataset_path,
             max_examples=args.max_replay_examples,
         )
+
+        elite_mining_seeds: tuple[int, ...] = ()
+        elite_mining_report: dict[str, Any] = {
+            "status": "SKIPPED",
+            "reason": "elite_pool_empty",
+            "verified_examples": 0,
+        }
+        if elite_pool and args.elite_mining_seeds > 0:
+            # Elite mining gets dedicated training-only fresh seeds. Gate seeds are
+            # never recycled into Replay, preserving evaluation integrity.
+            elite_mining_seeds = _fresh_seeds(
+                count=args.elite_mining_seeds,
+                rng_seed=args.rng_seed + round_no * 1000 + 11,
+                forbidden=forbidden,
+            )
+            forbidden.update(elite_mining_seeds)
+            best_elite = sorted(elite_pool, key=_elite_score, reverse=True)[0]
+            elite_weight = args.state_dir / str(best_elite["weight_file"])
+            elite_dataset = round_dir / "elite-verified-replay.jsonl"
+            elite_mining_report = _mine_elite_replay(
+                seeds=elite_mining_seeds,
+                sts=sts,
+                armg_root=args.armg_root,
+                champion_weight=current_weight,
+                elite_weight=elite_weight,
+                output=elite_dataset,
+                mcts_sims=args.combat_mcts_sims,
+                max_examples_per_seed=args.elite_examples_per_seed,
+                max_choice_branches=args.max_choice_branches,
+                max_game_steps=args.max_game_steps,
+                max_battle_steps=args.max_battle_steps,
+                temperature=args.temperature,
+                min_quality_margin=args.elite_min_quality_margin,
+            )
+            elite_mining_report["status"] = "COMPLETE"
+            if int(elite_mining_report.get("verified_examples", 0)) > 0:
+                replay_report = _merge_replay(
+                    replay_path,
+                    elite_dataset,
+                    max_examples=args.max_replay_examples,
+                )
 
         candidate_weight = round_dir / "candidate-strategy.pt"
         train_report = _train_candidate(
@@ -1256,10 +1628,39 @@ def main() -> int:
         )
         promoted = promotion["decision"] == "PROMOTE_STRATEGY"
         before_sha = _sha256(current_weight)
+        elite_decision = _elite_candidate_decision(
+            fresh_gate,
+            promoted=promoted,
+            max_sign_p=args.elite_max_sign_p,
+            min_win_delta=args.elite_min_win_delta,
+            min_floor_delta=args.elite_min_floor_delta,
+        )
+        elite_pool_update: dict[str, Any] = {
+            "saved": False,
+            "pool_size": len(elite_pool),
+        }
         if promoted:
             shutil.copy2(candidate_weight, current_weight)
             if _sha256(current_weight) != _sha256(candidate_weight):
                 raise RuntimeError("Strategy promotion checkpoint checksum mismatch")
+            # Old near-miss Candidates were measured against the previous Champion.
+            _clear_elite_pool(args.state_dir)
+            elite_pool = []
+            elite_pool_update = {
+                "saved": False,
+                "cleared_after_promotion": True,
+                "pool_size": 0,
+            }
+        elif elite_decision.get("eligible") is True:
+            elite_pool_update = _save_elite_candidate(
+                state_dir=args.state_dir,
+                candidate_weight=candidate_weight,
+                round_no=round_no,
+                parent_champion_sha=before_sha,
+                metrics=elite_decision,
+                max_entries=args.elite_max_pool,
+            )
+            elite_pool = _load_elite_pool(args.state_dir)
 
         consumed_eval = list(hidden_seeds) + list(fresh_seeds)
         state = {
@@ -1269,10 +1670,13 @@ def main() -> int:
             "rejected_rounds": int(state.get("rejected_rounds", 0)) + int(not promoted),
             "stagnation_count": 0 if promoted else int(state.get("stagnation_count", 0)) + 1,
             "used_training_seeds": list(state.get("used_training_seeds", []))
-            + list(train_seeds),
+            + list(train_seeds)
+            + list(elite_mining_seeds),
             "used_evaluation_seeds": list(state.get("used_evaluation_seeds", []))
             + consumed_eval,
             "current_strategy_sha256": _sha256(current_weight),
+            "data_efficiency_version": DATA_EFFICIENCY_VERSION,
+            "elite_pool_count": len(elite_pool),
         }
         _write_json(args.state_dir / "strategy-state.json", state)
 
@@ -1287,10 +1691,17 @@ def main() -> int:
             "current_strategy_sha_after": _sha256(current_weight),
             "candidate_strategy_sha256": _sha256(candidate_weight),
             "training_seeds": list(train_seeds),
+            "elite_mining_seeds": list(elite_mining_seeds),
             "hidden_eval_seeds": list(hidden_seeds),
             "fresh_eval_seeds": list(fresh_seeds),
             "dataset": dataset_report,
             "replay": replay_report,
+            "elite_mining": elite_mining_report,
+            "elite_decision": elite_decision,
+            "elite_pool": {
+                "entries": len(elite_pool),
+                "update": elite_pool_update,
+            },
             "training": train_report,
             "dev_gate": dev_gate,
             "hidden_gate": hidden_gate,
@@ -1319,6 +1730,7 @@ def main() -> int:
             int(state.get("stagnation_count", 0)) >= args.max_stagnation
         ),
         "current_strategy_sha256": _sha256(current_weight),
+        "elite_pool_count": len(_load_elite_pool(args.state_dir)),
         "replay": (
             {
                 "examples": len(_read_examples(replay_path)),

@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Choose the next safe PPO v1.3 training profile after a completed loop round.
+
+The evaluator/gate never changes here. Only training-data volume and bounded PPO
+hyperparameters are adapted. Technical failures must bypass this script so a
+retry uses the exact same training profile.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any
+
+
+@dataclass(frozen=True)
+class Profile:
+    name: str
+    games_per_worker: int
+    temperature: float
+    epochs: int
+    learning_rate: float
+    clip: float
+    target_kl: float
+
+
+PROFILES = {
+    "stable": Profile("stable", 50, 1.00, 4, 3e-5, 0.20, 0.020),
+    "diversify": Profile("diversify", 60, 1.05, 5, 4e-5, 0.20, 0.018),
+    "broaden": Profile("broaden", 75, 1.10, 6, 5e-5, 0.18, 0.015),
+    "escape": Profile("escape", 100, 1.20, 6, 6e-5, 0.16, 0.012),
+    "wide_explore": Profile("wide_explore", 100, 1.25, 5, 4e-5, 0.15, 0.010),
+    "near_miss_refine": Profile("near_miss_refine", 80, 0.95, 6, 2.5e-5, 0.12, 0.008),
+}
+
+
+def parse_control(path: Path) -> tuple[list[str], dict[str, str]]:
+    order: list[str] = []
+    values: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise RuntimeError(f"invalid control line: {raw!r}")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise RuntimeError("empty control key")
+        if key not in values:
+            order.append(key)
+        values[key] = value.strip()
+    return order, values
+
+
+def render_control(order: list[str], values: dict[str, str]) -> str:
+    return "".join(f"{key}={values[key]}\n" for key in order)
+
+
+def _last_win_delta(state: dict[str, Any]) -> int:
+    gate = state.get("last_gate_30")
+    if not isinstance(gate, dict):
+        return 0
+    value = gate.get("win_delta", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+def choose_profile(state: dict[str, Any]) -> Profile:
+    stagnation = int(state.get("stagnation_count", 0))
+    if stagnation < 0:
+        raise RuntimeError("stagnation_count cannot be negative")
+
+    if state.get("last_decision") == "PROMOTE_OFFLINE" or stagnation <= 1:
+        return PROFILES["stable"]
+    if stagnation == 2:
+        return PROFILES["diversify"]
+    if stagnation == 3:
+        return PROFILES["broaden"]
+    if stagnation == 4:
+        return PROFILES["escape"]
+
+    # At a long plateau, distinguish a near miss from a clearly weak candidate.
+    # A +2/+3 win delta is refined conservatively; otherwise collect broader data.
+    if _last_win_delta(state) >= 2:
+        return PROFILES["near_miss_refine"]
+    return PROFILES["wide_explore"]
+
+
+def validate_profile(profile: Profile) -> None:
+    if not 20 <= profile.games_per_worker <= 120:
+        raise RuntimeError("games_per_worker outside safety bounds")
+    if not 0.70 <= profile.temperature <= 1.50:
+        raise RuntimeError("temperature outside safety bounds")
+    if not 2 <= profile.epochs <= 8:
+        raise RuntimeError("epochs outside safety bounds")
+    if not 1e-5 <= profile.learning_rate <= 8e-5:
+        raise RuntimeError("learning_rate outside safety bounds")
+    if not 0.10 <= profile.clip <= 0.25:
+        raise RuntimeError("clip outside safety bounds")
+    if not 0.005 <= profile.target_kl <= 0.020:
+        raise RuntimeError("target_kl outside safety bounds")
+
+
+def adapt(
+    *,
+    state: dict[str, Any],
+    control_order: list[str],
+    control: dict[str, str],
+) -> tuple[dict[str, str], dict[str, Any]]:
+    profile = choose_profile(state)
+    validate_profile(profile)
+
+    updated = dict(control)
+    updated.update({
+        "games_per_worker": str(profile.games_per_worker),
+        "temperature": f"{profile.temperature:g}",
+        "epochs": str(profile.epochs),
+        "learning_rate": f"{profile.learning_rate:g}",
+        "clip": f"{profile.clip:.2f}",
+        "target_kl": f"{profile.target_kl:g}",
+        "strategy_profile": profile.name,
+        "stagnation_seen": str(int(state.get("stagnation_count", 0))),
+        "reason": f"adaptive_stagnation_{profile.name}",
+    })
+
+    for key in (
+        "strategy_profile",
+        "stagnation_seen",
+        "reason",
+    ):
+        if key not in control_order:
+            control_order.append(key)
+
+    report = {
+        "schema_version": "sts1-armg-ppo-v13-adaptation-v1",
+        "round_index": int(state.get("round_index", 0)),
+        "stagnation_count": int(state.get("stagnation_count", 0)),
+        "last_decision": state.get("last_decision"),
+        "last_gate_30_win_delta": _last_win_delta(state),
+        "profile": asdict(profile),
+        "gate_policy_changed": False,
+        "production_champion_changed": False,
+    }
+    return updated, report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--control", type=Path, required=True)
+    parser.add_argument("--output-control", type=Path, required=True)
+    parser.add_argument("--report", type=Path, required=True)
+    args = parser.parse_args()
+
+    state = json.loads(args.state.read_text(encoding="utf-8"))
+    if state.get("schema_version") != "sts1-armg-ppo-v13-loop-state-v1":
+        raise RuntimeError("unexpected PPO v1.3 loop state schema")
+
+    order, control = parse_control(args.control)
+    updated, report = adapt(
+        state=state,
+        control_order=order,
+        control=control,
+    )
+
+    args.output_control.parent.mkdir(parents=True, exist_ok=True)
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    args.output_control.write_text(render_control(order, updated), encoding="utf-8")
+    args.report.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print("PPO_V13_ADAPTATION", json.dumps(report, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

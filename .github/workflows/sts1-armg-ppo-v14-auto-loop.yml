@@ -162,6 +162,10 @@ jobs:
             [ -z "$crit" ] || cp "$crit" "$state/training-critic.pt"
             pending="$(find "$state/raw" -name pending-real-game.pt -print -quit)"
             [ -z "$pending" ] || cp "$pending" "$state/pending-real-game.pt"
+            ppo_replay="$(find "$state/raw" -name ppo-replay.npz -print -quit)"
+            [ -z "$ppo_replay" ] || cp "$ppo_replay" "$state/ppo-replay.npz"
+            elite_replay="$(find "$state/raw" -name elite-replay.npz -print -quit)"
+            [ -z "$elite_replay" ] || cp "$elite_replay" "$state/elite-replay.npz"
           else
             cp external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt "$state/offline-champion.pt"
             printf '%s\n' '{"schema_version":"sts1-armg-ppo-v14-loop-state-v1","round_index":0,"generation":0,"parent_generation":0,"stagnation_count":0,"production_champion_replaced":false}' > "$state/state.json"
@@ -187,6 +191,16 @@ jobs:
       - name: Preprocess fresh shards
         run: |
           python scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py             --rollouts evidence/sts1/ppo-v14-rollouts             --output-dir evidence/sts1/ppo-v14-preprocessed             --checkpoint-id "$CHECKPOINT_ID"
+
+      - name: Build bounded replay buffers
+        run: |
+          round_index="$(python - "$STATE_DIR/state.json" <<'PY'
+          import json,sys
+          s=json.load(open(sys.argv[1],encoding="utf-8"))
+          print(int(s.get("round_index",0))+1)
+          PY
+          )"
+          python scripts/sts1/sts1_armg_ppo_v14_replay.py             --fresh-dir evidence/sts1/ppo-v14-preprocessed             --state-dir "$STATE_DIR"             --output-dir evidence/sts1/ppo-v14-replay             --checkpoint-id "$CHECKPOINT_ID"             --round-index "$round_index"             --max-ppo-games 1600             --replay-fraction 0.50             --max-elite-games 600             --elite-min-floor 45
 
       - name: Full preflight
         run: |
@@ -215,7 +229,7 @@ jobs:
           if [ -f "$STATE_DIR/training-critic.pt" ]; then
             extra+=(--base-critic "$STATE_DIR/training-critic.pt")
           fi
-          python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py             --shards evidence/sts1/ppo-v14-preprocessed             --armg-root .cache/sts1-armg             --base-weight "$CURRENT_WEIGHT"             --output evidence/sts1/ppo-v14-candidate/armg_ppo_v14_candidate.pt             --critic-output evidence/sts1/ppo-v14-candidate/training-critic.pt             --checkpoint-id "$CHECKPOINT_ID"             --epochs "$PPO_EPOCHS"             --lr "$PPO_LR"             --clip "$PPO_CLIP"             --target-kl "$PPO_TARGET_KL"             --entropy "$PPO_ENTROPY"             --anchor-coef "$PPO_ANCHOR"             --behavior-temperature "$PPO_TEMPERATURE"             --threads 4             "${extra[@]}"
+          python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py             --shards evidence/sts1/ppo-v14-preprocessed             --replay-shards evidence/sts1/ppo-v14-replay             --elite-replay "$STATE_DIR/elite-replay.npz"             --armg-root .cache/sts1-armg             --base-weight "$CURRENT_WEIGHT"             --output evidence/sts1/ppo-v14-candidate/armg_ppo_v14_candidate.pt             --critic-output evidence/sts1/ppo-v14-candidate/training-critic.pt             --checkpoint-id "$CHECKPOINT_ID"             --epochs "$PPO_EPOCHS"             --lr "$PPO_LR"             --clip "$PPO_CLIP"             --target-kl "$PPO_TARGET_KL"             --entropy "$PPO_ENTROPY"             --anchor-coef "$PPO_ANCHOR"             --behavior-temperature "$PPO_TEMPERATURE"             --bc-coef 0.01             --bc-max-decisions 1024             --threads 4             "${extra[@]}"
 
       - name: Two-level Dev and Final Gate
         run: |
@@ -234,6 +248,8 @@ jobs:
             ${{ runner.temp }}/ppo-v14-state/offline-champion.pt
             ${{ runner.temp }}/ppo-v14-state/training-critic.pt
             ${{ runner.temp }}/ppo-v14-state/pending-real-game.pt
+            ${{ runner.temp }}/ppo-v14-state/ppo-replay.npz
+            ${{ runner.temp }}/ppo-v14-state/elite-replay.npz
           if-no-files-found: error
           retention-days: 90
 
@@ -244,6 +260,7 @@ jobs:
           name: sts1-armg-ppo-v14-loop-report-${{ github.run_id }}
           path: |
             evidence/sts1/ppo-v14-preprocessed/manifest.json
+            evidence/sts1/ppo-v14-replay/replay-manifest.json
             evidence/sts1/ppo-v14-candidate/**
             evidence/sts1/ppo-v14-gate/**
           if-no-files-found: warn

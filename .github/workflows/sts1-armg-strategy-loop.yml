@@ -497,6 +497,7 @@ jobs:
           next_attempt="$((attempt + 1))"
           continue_loop=0
           next_retry="$retry_count"
+          next_collection_workers="$collection_workers"
           summary_text=""
 
           if [ "$CONTRACT_RESULT" = "success" ] && [ "$ROUND_RESULT" = "success" ]; then
@@ -566,6 +567,10 @@ jobs:
           )"
 
             next_retry=0
+            if [ "$COLLECTION_FALLBACK" != "none" ] && [ "$collection_workers" -gt 3 ]; then
+              next_collection_workers=3
+              echo "STRATEGY_COLLECTION_AUTO_DOWNSHIFT from=$collection_workers to=3 fallback=$COLLECTION_FALLBACK"
+            fi
             if [ "$PAUSED" != "true" ]; then
               if [ "$max_rounds" -eq 0 ] || [ "$ROUND" -lt "$max_rounds" ]; then
                 continue_loop=1
@@ -598,7 +603,7 @@ jobs:
           print(json.load(open(sys.argv[1], encoding="utf-8"))["sha"])
           PY
           )"
-            python - "$meta" "$RUNNER_TEMP/current.request" "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" <<'PY'
+            python - "$meta" "$RUNNER_TEMP/current.request" "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" "$next_collection_workers" <<'PY'
           import base64, json, sys
           from pathlib import Path
           meta=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -606,6 +611,7 @@ jobs:
           Path(sys.argv[2]).write_text(raw, encoding="utf-8")
           attempt=sys.argv[4]
           retry=sys.argv[5]
+          collection_workers=sys.argv[6]
           rows=[]
           seen=set()
           for line in raw.splitlines():
@@ -616,12 +622,16 @@ jobs:
                   v=attempt
               elif k=="retry_count":
                   v=retry
+              elif k=="collection_workers":
+                  v=collection_workers
               rows.append((k,v))
               seen.add(k)
           if "attempt" not in seen:
               rows.append(("attempt", attempt))
           if "retry_count" not in seen:
               rows.append(("retry_count", retry))
+          if "collection_workers" not in seen:
+              rows.append(("collection_workers", collection_workers))
           Path(sys.argv[3]).write_text(
               "".join(f"{k}={v}\n" for k,v in rows),
               encoding="utf-8",

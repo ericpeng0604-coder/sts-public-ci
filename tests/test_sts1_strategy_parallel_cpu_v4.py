@@ -99,4 +99,4 @@ def test_collection_workers_one_never_forks(monkeypatch) -> None:
     assert report["mode"] == "sequential"
     assert report["effective_workers"] == 1
 
-# Workflow trigger: validate v4 parallel CPU + parity control together.
+# Workflow trigger: validate fixed fresh-child v4 at full 2-worker load.

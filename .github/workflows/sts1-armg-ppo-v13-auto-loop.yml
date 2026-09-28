@@ -1,4 +1,4 @@
-name: STS1 ArmG PPO v1.3 Auto Loop
+name: STS1 ArmG PPO v1.4 Auto Loop
 
 on:
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
       - name: Load loop control
         run: |
           set -a
-          source control/sts1-armg-ppo-v13-auto-loop.request
+          source control/sts1-armg-ppo-v14-auto-loop.request
           set +a
           echo "PPO_GAMES_PER_WORKER=$games_per_worker" >> "$GITHUB_ENV"
           echo "PPO_RNG_SEED=$rng_seed" >> "$GITHUB_ENV"
@@ -146,7 +146,7 @@ jobs:
       - name: Load loop control
         run: |
           set -a
-          source control/sts1-armg-ppo-v13-auto-loop.request
+          source control/sts1-armg-ppo-v14-auto-loop.request
           set +a
           echo "PPO_EPOCHS=$epochs" >> "$GITHUB_ENV"
           echo "PPO_LR=$learning_rate" >> "$GITHUB_ENV"
@@ -380,7 +380,7 @@ jobs:
         run: |
           set -euo pipefail
           set -a
-          source control/sts1-armg-ppo-v13-auto-loop.request
+          source control/sts1-armg-ppo-v14-auto-loop.request
           set +a
 
           run_url="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -409,7 +409,7 @@ jobs:
 
             python scripts/sts1/sts1_armg_ppo_v13_adapt.py \
               --state "$state_file" \
-              --control control/sts1-armg-ppo-v13-auto-loop.request \
+              --control control/sts1-armg-ppo-v14-auto-loop.request \
               --output-control "$RUNNER_TEMP/next.request" \
               --report "$RUNNER_TEMP/adaptation.json"
 
@@ -483,7 +483,7 @@ jobs:
               reason="retry_limit_reached"
             fi
 
-            python - control/sts1-armg-ppo-v13-auto-loop.request "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" "$reason" <<'PY'
+            python - control/sts1-armg-ppo-v14-auto-loop.request "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" "$reason" <<'PY'
           import sys
           from pathlib import Path
           src, dst = Path(sys.argv[1]), Path(sys.argv[2])
@@ -516,7 +516,7 @@ jobs:
             exit 0
           fi
 
-          control_path="control/sts1-armg-ppo-v13-auto-loop.request"
+          control_path="control/sts1-armg-ppo-v14-auto-loop.request"
           current_sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$control_path?ref=$GITHUB_REF_NAME" --jq '.sha')"
           encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$control_path" \

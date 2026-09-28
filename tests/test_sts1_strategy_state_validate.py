@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
-from scripts.sts1.sts1_strategy_state_validate import validate_state_dir
+
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "sts1"
+    / "sts1_strategy_state_validate.py"
+)
+SPEC = importlib.util.spec_from_file_location("strategy_state_validate", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+_module = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(_module)
+validate_state_dir = _module.validate_state_dir
 
 
 def _write_valid(tmp_path: Path) -> Path:

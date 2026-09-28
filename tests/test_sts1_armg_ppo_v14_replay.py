@@ -138,7 +138,7 @@ def test_same_parent_replay_is_bounded_and_preserves_temperature(tmp_path: Path)
     assert m2["train_replay_games"] == 2
     assert m2["train_replay_fraction_of_fresh_games"] == 0.5
     with np.load(tmp_path / "out2" / "replay_00.npz", allow_pickle=False) as d:
-        assert set(np.round(d["behavior_temperature"], 2)) == {1.12}
+        assert np.allclose(d["behavior_temperature"], 1.12, atol=1e-6)
         assert set(map(int, d["game_seed"])).issubset({1, 2, 3, 4})
 
 

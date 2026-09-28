@@ -99,10 +99,25 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install -e . torch==2.11.0
+          python -m pip install -e . numpy torch==2.11.0
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
           test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          git -C external/sts_lightspeed/source apply --check "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          git -C external/sts_lightspeed/source apply "$PWD/patches/sts1/armg_gamecontext_clone.patch"
           python scripts/sts1/build_probe.py
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path("external/sts_lightspeed/source/build-probe").resolve()))
+          import slaythespire as sts
+          gc = sts.GameContext(sts.CharacterClass.IRONCLAD, 123456, 0)
+          clone = gc.clone()
+          assert clone.seed == gc.seed
+          assert clone.floor_num == gc.floor_num
+          clone.gold += 7
+          assert clone.gold != gc.gold
+          print("PASS_STRATEGY_GAMECONTEXT_CLONE")
+          PY
           root=".cache/sts1-armg-strategy"
           rm -rf "$root"
           mkdir -p "$root/sim/sts_lightspeed"

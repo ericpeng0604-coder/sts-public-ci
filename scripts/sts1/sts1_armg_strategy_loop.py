@@ -1797,8 +1797,8 @@ def main() -> int:
         or args.max_choice_branches < 2
     ):
         raise RuntimeError("branch limits are invalid")
-    if args.epochs < 1 or args.max_stagnation < 1:
-        raise RuntimeError("epochs/max-stagnation must be positive")
+    if args.epochs < 1 or args.max_stagnation < 0:
+        raise RuntimeError("epochs must be positive and max-stagnation non-negative")
     if args.teacher_label_budget < 1 or args.min_labels_per_kind < 0:
         raise RuntimeError("Teacher selection limits are invalid")
     if (
@@ -1842,7 +1842,10 @@ def main() -> int:
     reports: list[dict[str, Any]] = []
 
     for _ in range(args.rounds):
-        if int(state.get("stagnation_count", 0)) >= args.max_stagnation:
+        if (
+            args.max_stagnation > 0
+            and int(state.get("stagnation_count", 0)) >= args.max_stagnation
+        ):
             break
 
         round_no = _round_number(state)
@@ -2120,7 +2123,8 @@ def main() -> int:
         "rejected_rounds": int(state.get("rejected_rounds", 0)),
         "stagnation_count": int(state.get("stagnation_count", 0)),
         "paused_for_stagnation": (
-            int(state.get("stagnation_count", 0)) >= args.max_stagnation
+            args.max_stagnation > 0
+            and int(state.get("stagnation_count", 0)) >= args.max_stagnation
         ),
         "current_strategy_sha256": _sha256(current_weight),
         "elite_pool_count": len(_load_elite_pool(args.state_dir)),

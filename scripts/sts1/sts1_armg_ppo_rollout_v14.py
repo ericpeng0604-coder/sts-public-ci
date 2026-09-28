@@ -154,12 +154,19 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
             }
         )
 
+    final_floor = int(
+        result.get("final_floor")
+        or result.get("max_floor")
+        or 0
+    )
     return {
         "seed": seed,
         "victory": victory,
+        "final_floor": final_floor,
         "rows": rows,
         "checkpoint_id": checkpoint_id,
         "reward_mode": reward_mode,
+        "behavior_temperature": float(temperature),
     }
 
 
@@ -234,6 +241,7 @@ def main() -> None:
     if not rows:
         raise RuntimeError("parallel rollout produced no PPO decisions")
 
+    game_by_seed = {int(game["seed"]): game for game in games}
     np.savez_compressed(
         args.out / "rollout.npz",
         obs=np.array([row["obs"] for _, row in rows], np.float32),
@@ -243,7 +251,19 @@ def main() -> None:
         old_logp=np.array([row["old_logp"] for _, row in rows], np.float32),
         done=np.array([row["done"] for _, row in rows], np.bool_),
         checkpoint_id=np.array([args.checkpoint_id] * len(rows)),
-        game_seed=np.array([seed for seed, _ in rows]),
+        game_seed=np.array([seed for seed, _ in rows], np.int64),
+        behavior_temperature=np.array(
+            [game_by_seed[int(seed)]["behavior_temperature"] for seed, _ in rows],
+            np.float32,
+        ),
+        game_victory=np.array(
+            [game_by_seed[int(seed)]["victory"] for seed, _ in rows],
+            np.bool_,
+        ),
+        game_final_floor=np.array(
+            [game_by_seed[int(seed)]["final_floor"] for seed, _ in rows],
+            np.int16,
+        ),
     )
     print(
         "ARMG_PPO_V11_ROLLOUT",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PPO v1.2: stronger but KL-bounded update over preserved v1.1 shards."""
+"""PPO v1.3: stronger but KL-bounded update over fresh sharded rollouts."""
 import argparse,importlib,json,os,sys,time
 from pathlib import Path
 import numpy as np
@@ -24,7 +24,7 @@ for ep in range(1,a.epochs+1):
    # bounded memory: one decision at a time, but candidate scoring within each decision is vectorized.
    for i in range(len(rew)):
     ds=torch.from_numpy(desc[off[i]:off[i+1]].astype(np.float32));o=obs[i].repeat(len(ds),1);logits=actor.net(torch.cat([o,ds],1)).squeeze(1);lp=torch.log_softmax(logits,0);pr=torch.softmax(logits,0);new.append(lp[act[i]]);ents.append(-(pr*lp).sum())
-   new=torch.stack(new);ent=torch.stack(ents);A=torch.from_numpy(adv);R=torch.from_numpy(ret);ratio=torch.exp(new-old);pg=-torch.minimum(ratio*A,torch.clamp(ratio,1-a.clip,1+a.clip)*A).mean();vl=torch.nn.functional.mse_loss(critic(obs).squeeze(1),R);loss=pg+a.value_coef*vl-a.entropy*ent.mean();opt.zero_grad();loss.backward();torch.nn.utils.clip_grad_norm_(list(actor.parameters())+list(critic.parameters()),1.0);opt.step();kl=float((old-new.detach()).mean());losses.append(float(loss.detach()));kls.append(kl);print("TRAIN_SHARD",json.dumps({"epoch":ep,"shard":si,"decisions":len(rew),"loss":losses[-1],"kl":kl,"seconds":time.time()-t}),flush=True)
+   new=torch.stack(new);ent=torch.stack(ents);A=torch.from_numpy(adv);R=torch.from_numpy(ret);ratio=torch.exp(new-old);pg=-torch.minimum(ratio*A,torch.clamp(ratio,1-a.clip,1+a.clip)*A).mean();vl=torch.nn.functional.mse_loss(critic(obs).squeeze(1),R);loss=pg+a.value_coef*vl-a.entropy*ent.mean();opt.zero_grad();loss.backward();torch.nn.utils.clip_grad_norm_(list(actor.parameters())+list(critic.parameters()),1.0);opt.step();log_ratio=new.detach()-old;kl=float(((torch.exp(log_ratio)-1)-log_ratio).mean());losses.append(float(loss.detach()));kls.append(kl);print("TRAIN_SHARD",json.dumps({"epoch":ep,"shard":si,"decisions":len(rew),"loss":losses[-1],"kl":kl,"seconds":time.time()-t}),flush=True)
   torch.save(actor.state_dict(),a.output);torch.save(critic.state_dict(),a.output.with_name(a.output.stem+"_critic.pt"));(a.output.parent/"checkpoint.json").write_text(json.dumps({"epoch":ep,"completed_shard":si},indent=2)+"\n")
  rec={"epoch":ep,"loss":float(np.mean(losses)),"approx_kl":float(np.mean(kls)),"seconds":time.time()-t0};hist.append(rec);print("TRAIN_EPOCH",json.dumps(rec),flush=True)
  if rec["approx_kl"]>a.target_kl:break

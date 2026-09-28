@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""PPO v1.4: temperature-correct, critic-persistent, parent-anchored updates."""
+"""PPO v1.4: temperature-correct, critic-persistent, parent-anchored updates.
+
+The rollout buffer is immutable during PPO optimization: GAE advantages and
+value targets are computed once from the starting Critic, then reused for every
+epoch. The durable Critic checkpoint keeps only the best explained-variance
+epoch so a bad optimization epoch cannot poison the next loop round.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +27,29 @@ def explained_variance(y_pred: np.ndarray, y_true: np.ndarray) -> float:
     return float(1.0 - np.var(y_true - y_pred) / var_y)
 
 
+def gae_targets(
+    reward: np.ndarray,
+    done: np.ndarray,
+    values: np.ndarray,
+    *,
+    gamma: float,
+    lam: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute one immutable GAE/return target set for a rollout shard."""
+    if not (len(reward) == len(done) == len(values)):
+        raise RuntimeError("GAE input length mismatch")
+    adv = np.zeros(len(reward), np.float32)
+    ret = np.zeros(len(reward), np.float32)
+    gae = 0.0
+    for i in range(len(reward) - 1, -1, -1):
+        next_value = 0.0 if done[i] or i == len(reward) - 1 else values[i + 1]
+        delta = reward[i] + gamma * next_value - values[i]
+        gae = delta + gamma * lam * (0.0 if done[i] else gae)
+        adv[i] = gae
+        ret[i] = gae + values[i]
+    return adv, ret
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("shards", "armg-root", "base-weight", "output"):
@@ -30,6 +59,7 @@ def main() -> int:
     p.add_argument("--checkpoint-id", required=True)
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-5)
+    p.add_argument("--critic-lr", type=float, default=1e-5)
     p.add_argument("--clip", type=float, default=0.20)
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--lam", type=float, default=0.95)
@@ -47,6 +77,8 @@ def main() -> int:
         raise RuntimeError("entropy outside v1.4 safety bounds")
     if not 0.0 <= a.anchor_coef <= 0.20:
         raise RuntimeError("anchor-coef outside safe bounds")
+    if not 0.0 < a.critic_lr <= a.lr:
+        raise RuntimeError("critic-lr must be positive and <= actor lr")
 
     os.environ["STS_BOT_DIR"] = str(a.armg_root)
     sys.path.insert(0, str(a.armg_root))
@@ -57,10 +89,14 @@ def main() -> int:
     m.card_idx = lambda n: m._vocab.get(n, m.VOCAB_CAP - 1)
 
     actor = m.Scorer((128, 128))
-    actor.load_state_dict(torch.load(a.base_weight, weights_only=True, map_location="cpu"))
+    actor.load_state_dict(
+        torch.load(a.base_weight, weights_only=True, map_location="cpu")
+    )
 
     anchor = m.Scorer((128, 128))
-    anchor.load_state_dict(torch.load(a.base_weight, weights_only=True, map_location="cpu"))
+    anchor.load_state_dict(
+        torch.load(a.base_weight, weights_only=True, map_location="cpu")
+    )
     anchor.eval()
     for param in anchor.parameters():
         param.requires_grad_(False)
@@ -79,29 +115,88 @@ def main() -> int:
         )
         critic_loaded = True
 
-    opt = torch.optim.Adam(
-        list(actor.parameters()) + list(critic.parameters()),
-        lr=a.lr,
-    )
+    actor_opt = torch.optim.Adam(actor.parameters(), lr=a.lr)
+    critic_opt = torch.optim.Adam(critic.parameters(), lr=a.critic_lr)
+
     a.output.parent.mkdir(parents=True, exist_ok=True)
-    critic_output = a.critic_output or a.output.with_name(a.output.stem + "_critic.pt")
+    critic_output = (
+        a.critic_output
+        or a.output.with_name(a.output.stem + "_critic.pt")
+    )
+    critic_output.parent.mkdir(parents=True, exist_ok=True)
 
     files = sorted(a.shards.glob("shard_*.npz"))
     if not files:
         raise RuntimeError("no shards")
 
+    # PPO rollout targets must stay fixed for all optimization epochs.
+    raw_advantages: list[np.ndarray] = []
+    fixed_returns: list[np.ndarray] = []
+    initial_value_predictions: list[np.ndarray] = []
+    for f in files:
+        with np.load(f, allow_pickle=False) as d:
+            if str(d["checkpoint_id"][0]) != a.checkpoint_id:
+                raise SystemExit("stale shard")
+            obs = torch.from_numpy(d["obs"].astype(np.float32))
+            reward = d["reward"].astype(np.float32)
+            done = d["done"].astype(bool)
+            with torch.no_grad():
+                values = critic(obs).squeeze(1).numpy()
+            adv, ret = gae_targets(
+                reward,
+                done,
+                values,
+                gamma=a.gamma,
+                lam=a.lam,
+            )
+            raw_advantages.append(adv)
+            fixed_returns.append(ret)
+            initial_value_predictions.append(values)
+
+    all_adv = np.concatenate(raw_advantages)
+    adv_mean = float(all_adv.mean())
+    adv_std = float(all_adv.std() + 1e-8)
+    fixed_advantages = [
+        ((adv - adv_mean) / adv_std).astype(np.float32)
+        for adv in raw_advantages
+    ]
+    initial_ev = explained_variance(
+        np.concatenate(initial_value_predictions),
+        np.concatenate(fixed_returns),
+    )
+
+    # Always leave a valid Critic checkpoint. Later epochs replace it only when
+    # they improve explained variance on the immutable rollout targets.
+    torch.save(critic.state_dict(), critic_output)
+    best_critic_ev = initial_ev
+    best_critic_epoch = 0
+
+    print(
+        "PPO_V14_FIXED_TARGETS",
+        json.dumps(
+            {
+                "decisions": int(sum(len(x) for x in fixed_returns)),
+                "advantage_mean": adv_mean,
+                "advantage_std": adv_std,
+                "initial_explained_variance": initial_ev,
+                "critic_loaded": critic_loaded,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+
     history: list[dict[str, float | int]] = []
-    initial_ratio_mean: float | None = None
-    initial_ratio_abs_error: float | None = None
     first_ratio_mean: float | None = None
     first_ratio_abs_error: float | None = None
+
     for ep in range(1, a.epochs + 1):
         losses: list[float] = []
         kls: list[float] = []
         entropies: list[float] = []
         anchor_kls: list[float] = []
         clip_fracs: list[float] = []
-        explained: list[float] = []
+        shard_evs: list[float] = []
         t0 = time.time()
 
         for si, f in enumerate(files):
@@ -114,36 +209,24 @@ def main() -> int:
                 desc = d["desc"]
                 off = d["offsets"]
                 act = torch.from_numpy(d["action"].astype(np.int64))
-                rew = d["reward"].astype(np.float32)
                 old = torch.from_numpy(d["old_logp"].astype(np.float32))
-                done = d["done"].astype(bool)
-
-                with torch.no_grad():
-                    v = critic(obs).squeeze(1).numpy()
-
-                adv = np.zeros(len(rew), np.float32)
-                ret = np.zeros(len(rew), np.float32)
-                gae = 0.0
-                for i in range(len(rew) - 1, -1, -1):
-                    nv = 0.0 if done[i] or i == len(rew) - 1 else v[i + 1]
-                    delta = rew[i] + a.gamma * nv - v[i]
-                    gae = delta + a.gamma * a.lam * (0.0 if done[i] else gae)
-                    adv[i] = gae
-                    ret[i] = gae + v[i]
-
-                adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+                A = torch.from_numpy(fixed_advantages[si])
+                R = torch.from_numpy(fixed_returns[si])
 
                 new_logp = []
                 entropy_terms = []
                 anchor_terms = []
-                for i in range(len(rew)):
+                for i in range(len(A)):
                     ds = torch.from_numpy(
                         desc[off[i] : off[i + 1]].astype(np.float32)
                     )
                     o = obs[i].repeat(len(ds), 1)
                     rows = torch.cat([o, ds], 1)
 
-                    logits = actor.net(rows).squeeze(1) / a.behavior_temperature
+                    logits = (
+                        actor.net(rows).squeeze(1)
+                        / a.behavior_temperature
+                    )
                     lp = torch.log_softmax(logits, 0)
                     pr = torch.softmax(logits, 0)
                     new_logp.append(lp[act[i]])
@@ -151,69 +234,89 @@ def main() -> int:
 
                     with torch.no_grad():
                         anchor_logits = (
-                            anchor.net(rows).squeeze(1) / a.behavior_temperature
+                            anchor.net(rows).squeeze(1)
+                            / a.behavior_temperature
                         )
                         anchor_lp = torch.log_softmax(anchor_logits, 0)
                         anchor_pr = torch.softmax(anchor_logits, 0)
-                    anchor_terms.append((anchor_pr * (anchor_lp - lp)).sum())
+                    anchor_terms.append(
+                        (anchor_pr * (anchor_lp - lp)).sum()
+                    )
 
                 new = torch.stack(new_logp)
                 ent = torch.stack(entropy_terms)
                 anchor_kl = torch.stack(anchor_terms)
-                A = torch.from_numpy(adv)
-                R = torch.from_numpy(ret)
 
                 ratio = torch.exp(new - old)
                 unclipped = ratio * A
-                clipped = torch.clamp(ratio, 1 - a.clip, 1 + a.clip) * A
+                clipped = (
+                    torch.clamp(ratio, 1 - a.clip, 1 + a.clip) * A
+                )
                 pg = -torch.minimum(unclipped, clipped).mean()
-
-                values_now = critic(obs).squeeze(1)
-                vl = torch.nn.functional.mse_loss(values_now, R)
                 anchor_loss = anchor_kl.mean()
-                loss = (
+                actor_loss = (
                     pg
-                    + a.value_coef * vl
                     - a.entropy * ent.mean()
                     + a.anchor_coef * anchor_loss
                 )
 
-                opt.zero_grad()
-                loss.backward()
+                actor_opt.zero_grad()
+                actor_loss.backward()
                 torch.nn.utils.clip_grad_norm_(
-                    list(actor.parameters()) + list(critic.parameters()), 1.0
+                    list(actor.parameters()), 1.0
                 )
-                opt.step()
+                actor_opt.step()
 
+                values_now = critic(obs).squeeze(1)
+                value_loss = torch.nn.functional.mse_loss(values_now, R)
+                critic_loss = a.value_coef * value_loss
+                critic_opt.zero_grad()
+                critic_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    list(critic.parameters()), 1.0
+                )
+                critic_opt.step()
+
+                total_loss = actor_loss.detach() + critic_loss.detach()
                 log_ratio = new.detach() - old
                 kl = max(
                     0.0,
-                    float(((torch.exp(log_ratio) - 1) - log_ratio).mean()),
+                    float(
+                        (
+                            (torch.exp(log_ratio) - 1)
+                            - log_ratio
+                        ).mean()
+                    ),
                 )
                 clip_fraction = float(
-                    ((ratio.detach() - 1.0).abs() > a.clip).float().mean()
+                    (
+                        (ratio.detach() - 1.0).abs() > a.clip
+                    ).float().mean()
                 )
                 with torch.no_grad():
-                    v_after = critic(obs).squeeze(1).numpy()
-                ev = explained_variance(v_after, ret)
+                    value_after = critic(obs).squeeze(1).numpy()
+                shard_ev = explained_variance(
+                    value_after,
+                    fixed_returns[si],
+                )
 
-                losses.append(float(loss.detach()))
+                losses.append(float(total_loss))
                 kls.append(kl)
                 entropies.append(float(ent.mean().detach()))
                 anchor_kls.append(float(anchor_loss.detach()))
                 clip_fracs.append(clip_fraction)
-                explained.append(ev)
+                shard_evs.append(shard_ev)
 
                 rec = {
                     "epoch": ep,
                     "shard": si,
-                    "decisions": len(rew),
+                    "decisions": len(A),
                     "loss": losses[-1],
                     "kl": kl,
                     "entropy": entropies[-1],
                     "anchor_kl": anchor_kls[-1],
                     "clip_fraction": clip_fraction,
-                    "explained_variance": ev,
+                    "explained_variance": shard_ev,
                     "seconds": time.time() - t,
                 }
                 if ep == 1 and si == 0:
@@ -222,25 +325,38 @@ def main() -> int:
                         (ratio.detach() - 1.0).abs().mean()
                     )
                     rec["initial_ratio_mean"] = first_ratio_mean
-                    rec["initial_ratio_abs_error"] = first_ratio_abs_error
-                print("TRAIN_SHARD_V14", json.dumps(rec), flush=True)
-
-            torch.save(actor.state_dict(), a.output)
-            torch.save(critic.state_dict(), critic_output)
-            (a.output.parent / "checkpoint.json").write_text(
-                json.dumps(
-                    {
-                        "schema": "sts1-armg-ppo-v14-checkpoint",
-                        "epoch": ep,
-                        "completed_shard": si,
-                        "critic_loaded": critic_loaded,
-                        "behavior_temperature": a.behavior_temperature,
-                    },
-                    indent=2,
+                    rec["initial_ratio_abs_error"] = (
+                        first_ratio_abs_error
+                    )
+                print(
+                    "TRAIN_SHARD_V14",
+                    json.dumps(rec),
+                    flush=True,
                 )
-                + "\n",
-                encoding="utf-8",
-            )
+
+            # Actor checkpoint can follow the newest PPO update.
+            torch.save(actor.state_dict(), a.output)
+
+        # Evaluate Critic globally against the same fixed rollout targets.
+        epoch_value_predictions: list[np.ndarray] = []
+        with torch.no_grad():
+            for f in files:
+                with np.load(f, allow_pickle=False) as d:
+                    obs = torch.from_numpy(
+                        d["obs"].astype(np.float32)
+                    )
+                    epoch_value_predictions.append(
+                        critic(obs).squeeze(1).numpy()
+                    )
+        epoch_ev = explained_variance(
+            np.concatenate(epoch_value_predictions),
+            np.concatenate(fixed_returns),
+        )
+        critic_improved = epoch_ev > best_critic_ev + 1e-9
+        if critic_improved:
+            best_critic_ev = epoch_ev
+            best_critic_epoch = ep
+            torch.save(critic.state_dict(), critic_output)
 
         epoch_rec = {
             "epoch": ep,
@@ -249,11 +365,38 @@ def main() -> int:
             "entropy": float(np.mean(entropies)),
             "anchor_kl": float(np.mean(anchor_kls)),
             "clip_fraction": float(np.mean(clip_fracs)),
-            "explained_variance": float(np.mean(explained)),
+            "explained_variance": epoch_ev,
+            "mean_shard_explained_variance": float(
+                np.mean(shard_evs)
+            ),
+            "critic_checkpoint_improved": critic_improved,
+            "best_critic_explained_variance": best_critic_ev,
             "seconds": time.time() - t0,
         }
         history.append(epoch_rec)
-        print("TRAIN_EPOCH_V14", json.dumps(epoch_rec), flush=True)
+        print(
+            "TRAIN_EPOCH_V14",
+            json.dumps(epoch_rec),
+            flush=True,
+        )
+
+        (a.output.parent / "checkpoint.json").write_text(
+            json.dumps(
+                {
+                    "schema": "sts1-armg-ppo-v14-checkpoint",
+                    "epoch": ep,
+                    "critic_loaded": critic_loaded,
+                    "behavior_temperature": a.behavior_temperature,
+                    "fixed_rollout_targets": True,
+                    "best_critic_epoch": best_critic_epoch,
+                    "best_critic_explained_variance": best_critic_ev,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
         if epoch_rec["approx_kl"] > a.target_kl:
             print(
                 "PPO_V14_EARLY_STOP",
@@ -275,15 +418,25 @@ def main() -> int:
         "behavior_temperature": a.behavior_temperature,
         "entropy_coef": a.entropy,
         "anchor_coef": a.anchor_coef,
+        "actor_lr": a.lr,
+        "critic_lr": a.critic_lr,
+        "fixed_rollout_targets": True,
         "initial_ratio_mean": first_ratio_mean,
         "initial_ratio_abs_error": first_ratio_abs_error,
+        "initial_critic_explained_variance": initial_ev,
+        "best_critic_epoch": best_critic_epoch,
+        "best_critic_explained_variance": best_critic_ev,
         "history": history,
     }
     a.output.with_suffix(".json").write_text(
         json.dumps(report, indent=2) + "\n",
         encoding="utf-8",
     )
-    print("SHARDED_TRAIN_V14_PASS", json.dumps(report), flush=True)
+    print(
+        "SHARDED_TRAIN_V14_PASS",
+        json.dumps(report),
+        flush=True,
+    )
     return 0
 
 

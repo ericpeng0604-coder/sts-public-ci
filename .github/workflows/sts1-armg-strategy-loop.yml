@@ -301,11 +301,17 @@ jobs:
             mkdir -p "$RUNNER_TEMP/report"
             unzip -q "$RUNNER_TEMP/report.zip" -d "$RUNNER_TEMP/report"
             summary_file="$(find "$RUNNER_TEMP/report" -name loop-summary.json -print -quit)"
+            round_report_file="$(find "$RUNNER_TEMP/report" -name round-report.json | sort | tail -n1)"
+            test -n "$summary_file"
+            test -n "$round_report_file"
 
-            eval "$(python - "$state_file" "$summary_file" <<'PY'
+            eval "$(python - "$state_file" "$summary_file" "$round_report_file" <<'PY'
           import json, shlex, sys
           state=json.load(open(sys.argv[1], encoding="utf-8"))
           summary=json.load(open(sys.argv[2], encoding="utf-8"))
+          report=json.load(open(sys.argv[3], encoding="utf-8"))
+          dataset=report.get("dataset") or {}
+          kinds=dataset.get("examples_by_kind") or {}
           values={
               "ROUND": int(state.get("accepted_rounds",0))+int(state.get("rejected_rounds",0)),
               "GEN": state.get("generation",0),
@@ -316,6 +322,13 @@ jobs:
               "SHA": state.get("current_strategy_sha256","unknown"),
               "COMBAT": summary.get("combat_policy","unknown"),
               "REPLAY": (summary.get("replay") or {}).get("examples",0),
+              "DEV_GATE": (report.get("dev_gate") or {}).get("status","unknown"),
+              "HIDDEN_GATE": (report.get("hidden_gate") or {}).get("status","unknown"),
+              "FRESH_GATE": (report.get("fresh_gate") or {}).get("status","unknown"),
+              "PROMOTION": (report.get("promotion") or {}).get("decision","unknown"),
+              "EXAMPLES": dataset.get("example_count",0),
+              "MISTAKES": dataset.get("mistake_examples",0),
+              "KINDS": ",".join(f"{k}:{kinds[k]}" for k in sorted(kinds)) or "none",
           }
           for k,v in values.items():
               print(f"{k}={shlex.quote(str(v))}")
@@ -329,7 +342,7 @@ jobs:
               fi
             fi
 
-            printf -v body '@ericpeng0604-coder\n\n## Strategy-only Loop — Round %s\n\n- Run：%s\n- Combat：**%s（固定 pure MCTS）**\n- Strategy generation：%s\n- Accepted / Rejected：%s / %s\n- Stagnation：%s / %s\n- Replay examples：%s\n- Strategy SHA：`%s`\n- 正式 Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$COMBAT" "$GEN" "$ACCEPTED" "$REJECTED" "$STAG" "$max_stagnation" "$REPLAY" "$SHA"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
+            printf -v body '@ericpeng0604-coder\n\n## Strategy-only Loop — Round %s\n\n- Run：%s\n- Combat：**%s（固定 pure MCTS）**\n- Gate：Dev **%s** → Hidden **%s** → Fresh **%s**\n- Promotion：**%s**\n- 本輪 Teacher examples：%s（mistakes：%s）\n- Decision kinds：%s\n- Strategy generation：%s\n- Accepted / Rejected：%s / %s\n- Stagnation：%s / %s\n- Replay examples：%s\n- Strategy SHA：`%s`\n- 正式 Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$COMBAT" "$DEV_GATE" "$HIDDEN_GATE" "$FRESH_GATE" "$PROMOTION" "$EXAMPLES" "$MISTAKES" "$KINDS" "$GEN" "$ACCEPTED" "$REJECTED" "$STAG" "$max_stagnation" "$REPLAY" "$SHA"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body" >/dev/null
           else
             next_retry="$((retry_count + 1))"

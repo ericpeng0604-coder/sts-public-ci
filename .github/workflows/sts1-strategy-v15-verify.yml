@@ -25,7 +25,7 @@ jobs:
       - name: Install focused test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]'
+          python -m pip install -e '.[dev]' torch==2.11.0
       - name: Syntax check
         run: python -m py_compile scripts/sts1/sts1_armg_strategy_gate_v15.py
       - name: Strategy gate contract tests

@@ -91,6 +91,8 @@ def main() -> int:
         raise RuntimeError("no shards")
 
     history: list[dict[str, float | int]] = []
+    initial_ratio_mean: float | None = None
+    initial_ratio_abs_error: float | None = None
     first_ratio_mean: float | None = None
     first_ratio_abs_error: float | None = None
     for ep in range(1, a.epochs + 1):

@@ -2,11 +2,6 @@ name: STS1 ArmG PPO v1.4 Auto Loop
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - gpt/sts1-ppo-v13-auto-loop-20260928
-    paths:
-      - control/sts1-armg-ppo-v14-ready.flag
 
 permissions:
   contents: write
@@ -15,7 +10,7 @@ permissions:
 
 concurrency:
   group: sts1-armg-ppo-v14-auto-loop
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   PYTHONUNBUFFERED: '1'

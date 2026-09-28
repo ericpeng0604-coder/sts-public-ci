@@ -61,16 +61,25 @@ def render_control(order: list[str], values: dict[str, str]) -> str:
     return "".join(f"{key}={values[key]}\n" for key in order)
 
 
-def _last_win_delta(state: dict[str, Any]) -> int:
+def _last_dev_gate(state: dict[str, Any]) -> dict[str, Any]:
     gate = state.get("last_dev_gate")
     if not isinstance(gate, dict):
         gate = state.get("last_gate_30")
-    if not isinstance(gate, dict):
-        return 0
-    value = gate.get("win_delta", 0)
+    return gate if isinstance(gate, dict) else {}
+
+
+def _last_win_delta(state: dict[str, Any]) -> int:
+    value = _last_dev_gate(state).get("win_delta", 0)
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
     return value
+
+
+def _last_floor_delta(state: dict[str, Any]) -> float:
+    value = _last_dev_gate(state).get("mean_paired_floor_delta", 0.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
 
 
 def choose_profile(state: dict[str, Any]) -> Profile:
@@ -87,11 +96,17 @@ def choose_profile(state: dict[str, Any]) -> Profile:
     if stagnation == 4:
         return PROFILES["escape"]
 
-    # At a long plateau, distinguish a near miss from a clearly weak candidate.
-    # A +2/+3 win delta is refined conservatively; otherwise collect broader data.
-    if _last_win_delta(state) >= 2:
+    # Long plateaus must not collapse into an endless wide-explore loop.
+    # If the candidate is already close on paired floor quality without losing
+    # wins, refine it. Otherwise alternate broad exploration and conservative
+    # refinement so a failed exploration profile is not repeated forever.
+    win_delta = _last_win_delta(state)
+    floor_delta = _last_floor_delta(state)
+    if win_delta >= 0 and floor_delta >= 0.25:
         return PROFILES["near_miss_refine"]
-    return PROFILES["wide_explore"]
+    if stagnation % 2 == 1:
+        return PROFILES["wide_explore"]
+    return PROFILES["near_miss_refine"]
 
 
 def validate_profile(profile: Profile) -> None:
@@ -153,6 +168,7 @@ def adapt(
         "stagnation_count": int(state.get("stagnation_count", 0)),
         "last_decision": state.get("last_decision"),
         "last_gate_30_win_delta": _last_win_delta(state),
+        "last_dev_mean_paired_floor_delta": _last_floor_delta(state),
         "profile": asdict(profile),
         "gate_policy_changed": True,
         "gate_policy_note": "Dev Parent accumulates; strict Final 30/50 remains unchanged",

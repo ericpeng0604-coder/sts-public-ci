@@ -132,11 +132,18 @@ jobs:
           report=json.loads(Path(os.environ["RUNNER_TEMP"] + "/v14-candidate.json").read_text())
           assert report["schema"]=="sts1-armg-ppo-v14-sharded-train"
           assert report["critic_loaded"] is False
+          assert report["fixed_rollout_targets"] is True
           assert abs(report["initial_ratio_mean"] - 1.0) < 1e-4, report
           assert report["initial_ratio_abs_error"] < 1e-4, report
           assert report["entropy_coef"] == 0.001
           assert report["behavior_temperature"] == 1.12
-          print("PPO_V14_RATIO_PASS", report["initial_ratio_mean"], report["initial_ratio_abs_error"])
+          assert report["best_critic_explained_variance"] >= report["initial_critic_explained_variance"] - 1e-9
+          print(
+              "PPO_V14_RATIO_PASS",
+              report["initial_ratio_mean"],
+              report["initial_ratio_abs_error"],
+              report["best_critic_explained_variance"],
+          )
           PY
 
       - name: Verify persistent Critic reload
@@ -163,8 +170,14 @@ jobs:
           from pathlib import Path
           report=json.loads(Path(os.environ["RUNNER_TEMP"] + "/v14-candidate-reload.json").read_text())
           assert report["critic_loaded"] is True, report
+          assert report["fixed_rollout_targets"] is True, report
+          assert report["best_critic_explained_variance"] >= report["initial_critic_explained_variance"] - 1e-9, report
           assert report["history"][0]["explained_variance"] == report["history"][0]["explained_variance"]
-          print("PPO_V14_CRITIC_RELOAD_PASS", report["history"][0]["explained_variance"])
+          print(
+              "PPO_V14_CRITIC_RELOAD_PASS",
+              report["initial_critic_explained_variance"],
+              report["best_critic_explained_variance"],
+          )
           PY
 
       - name: Real 30-seed Dev Parent gate smoke

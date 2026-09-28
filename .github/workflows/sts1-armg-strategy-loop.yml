@@ -28,6 +28,10 @@ concurrency:
 
 env:
   PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
   STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v4'
@@ -543,6 +547,9 @@ jobs:
               "COLLECTION_WORKERS": ((report.get("dataset") or {}).get("parallel_teacher") or {}).get("effective_workers",1),
               "COLLECTION_MODE": ((report.get("dataset") or {}).get("parallel_teacher") or {}).get("mode","unknown"),
               "COLLECTION_SECONDS": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("elapsed_seconds",0.0)),1),
+              "PARALLEL_SECONDS": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("parallel_elapsed_seconds",0.0) or 0.0),1),
+              "PARITY_SECONDS": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("parity_elapsed_seconds",0.0) or 0.0),1),
+              "PARALLELISM": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("observed_parallelism",1.0) or 1.0),2),
               "COLLECTION_FALLBACK": str(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("fallback_reason") or "none"),
               "COLLECTION_PARALLELISM": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("observed_parallelism",1.0)),2),
               "COLLECTION_PARITY": ((report.get("dataset") or {}).get("parallel_teacher") or {}).get("parity_status","unknown"),

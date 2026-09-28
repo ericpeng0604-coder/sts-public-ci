@@ -91,6 +91,8 @@ def main() -> int:
         raise RuntimeError("no shards")
 
     history: list[dict[str, float | int]] = []
+    first_ratio_mean: float | None = None
+    first_ratio_abs_error: float | None = None
     for ep in range(1, a.epochs + 1):
         losses: list[float] = []
         kls: list[float] = []
@@ -210,10 +212,12 @@ def main() -> int:
                     "seconds": time.time() - t,
                 }
                 if ep == 1 and si == 0:
-                    rec["initial_ratio_mean"] = float(ratio.detach().mean())
-                    rec["initial_ratio_abs_error"] = float(
+                    first_ratio_mean = float(ratio.detach().mean())
+                    first_ratio_abs_error = float(
                         (ratio.detach() - 1.0).abs().mean()
                     )
+                    rec["initial_ratio_mean"] = first_ratio_mean
+                    rec["initial_ratio_abs_error"] = first_ratio_abs_error
                 print("TRAIN_SHARD_V14", json.dumps(rec), flush=True)
 
             torch.save(actor.state_dict(), a.output)
@@ -266,6 +270,8 @@ def main() -> int:
         "behavior_temperature": a.behavior_temperature,
         "entropy_coef": a.entropy,
         "anchor_coef": a.anchor_coef,
+        "initial_ratio_mean": first_ratio_mean,
+        "initial_ratio_abs_error": first_ratio_abs_error,
         "history": history,
     }
     a.output.with_suffix(".json").write_text(

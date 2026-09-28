@@ -1,0 +1,108 @@
+name: STS1 PPO v1.3 Speed Verify
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - gpt/sts1-ppo-v13-auto-loop-20260928
+    paths:
+      - scripts/sts1/sts1_armg_ppo_v13_auto_gate.py
+      - scripts/sts1/sts1_armg_ppo_rollout_v11.py
+      - scripts/sts1/hydrate_jialeiv_baseline_v0.py
+      - tests/test_sts1_armg_ppo_v13_speed.py
+      - .github/workflows/sts1-armg-ppo-v13-speed-verify.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test runtime
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . numpy torch==2.11.0 pytest
+
+      - name: Compile and unit test
+        run: |
+          python -m py_compile             scripts/sts1/sts1_armg_ppo_v13_auto_gate.py             scripts/sts1/sts1_armg_ppo_rollout_v11.py             scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          pytest -q tests/test_sts1_armg_ppo_v13_speed.py
+
+      - name: Hydrate pinned runtime with shallow-fetch path
+        run: |
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/speed-armg
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe" python -c 'import slaythespire; print("SPEED_RUNTIME_IMPORT_PASS")'
+
+      - name: Real two-game parallel rollout smoke
+        run: |
+          python scripts/sts1/sts1_armg_ppo_rollout_v11.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/speed-armg             --weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt             --out "$RUNNER_TEMP/rollout"             --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --seed-start 2026092811             --games 2             --temperature 1.0             --checkpoint-id speed-smoke             --worker 0             --parallel-games 2
+
+          mkdir -p "$RUNNER_TEMP/rollouts/worker-0"
+          cp "$RUNNER_TEMP/rollout/rollout.npz" "$RUNNER_TEMP/rollouts/worker-0/rollout.npz"
+          python scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py             --rollouts "$RUNNER_TEMP/rollouts"             --output-dir "$RUNNER_TEMP/shards"             --checkpoint-id speed-smoke
+
+          python - "$RUNNER_TEMP/shards/shard_00.npz" <<'PY'
+          import numpy as np, sys
+          with np.load(sys.argv[1], allow_pickle=False) as d:
+              assert len(d["action"]) > 0
+              assert d["obs"].shape[1] == 412
+              assert d["desc"].shape[1] == 368
+              assert set(map(str, d["checkpoint_id"])) == {"speed-smoke"}
+          print("PARALLEL_ROLLOUT_PREPROCESS_PASS")
+          PY
+
+      - name: Real two-seed parallel gate smoke
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+
+          script=Path("scripts/sts1/sts1_armg_ppo_v13_auto_gate.py")
+          spec=importlib.util.spec_from_file_location("speed_gate", script)
+          mod=importlib.util.module_from_spec(spec)
+          sys.modules[spec.name]=mod
+          spec.loader.exec_module(mod)
+
+          seeds=[
+              int(x.strip())
+              for x in Path("external/sts-rl-agent/source/eval/eval_seeds_50.txt").read_text().splitlines()
+              if x.strip() and not x.lstrip().startswith("#")
+          ]
+          weight=Path("external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt")
+          results=mod._evaluate_parallel(
+              requests=[("current", weight, seeds[0]), ("candidate", weight, seeds[1])],
+              module_dir=Path("external/sts_lightspeed/source/build-probe"),
+              armg_root=Path(".cache/speed-armg"),
+              output_dir=Path("/tmp/speed-gate"),
+              mcts_sims=2000,
+              all_formal_seeds=seeds,
+              workers=2,
+          )
+          assert set(results) == {("current", seeds[0]), ("candidate", seeds[1])}
+          assert all(r["result"] == "PASS_SIMULATOR_COMPLETE_RUN" for r in results.values())
+          print("PARALLEL_GATE_SMOKE_PASS")
+          PY
+
+      - name: Repository whitespace check
+        run: git diff --check HEAD^ HEAD

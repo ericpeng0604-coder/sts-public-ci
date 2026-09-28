@@ -1,9 +1,9 @@
-name: STS1 Strategy Elite-Mining v3 Auto Loop
+name: STS1 Strategy Parallel CPU v4 Auto Loop
 
 on:
   push:
     branches:
-      - gpt/sts1-strategy-elite-mining-v3-20260928
+      - gpt/sts1-strategy-parallel-cpu-v4-20260928
     paths:
       - '.github/workflows/sts1-armg-strategy-loop.yml'
       - 'src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py'
@@ -11,6 +11,7 @@ on:
       - 'tests/test_sts1_armg_strategy_evolve.py'
       - 'tests/test_sts1_strategy_data_efficiency_v2.py'
       - 'tests/test_sts1_strategy_elite_mining_v3.py'
+      - 'tests/test_sts1_strategy_parallel_cpu_v4.py'
       - 'scripts/sts1/sts1_strategy_state_validate.py'
       - 'tests/test_sts1_strategy_state_validate.py'
       - 'control/sts1-armg-strategy-loop.start'
@@ -22,15 +23,15 @@ permissions:
   issues: write
 
 concurrency:
-  group: sts1-strategy-elite-mining-v3-auto-loop
+  group: sts1-strategy-parallel-cpu-v4-auto-loop
   cancel-in-progress: false
 
 env:
   PYTHONUNBUFFERED: '1'
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
-  STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v3'
-  BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v2'
+  STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v4'
+  BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v3'
   BOOTSTRAP_ELITE_REPORT_ARTIFACT: 'sts1-armg-strategy-loop-report-36415222490'
   BOOTSTRAP_ELITE_EXPECTED_SHA: 'ea6d7bfa59f3bd4ac3c11dd2d4ebf236182a38acaed3fa720f0b81744cc0e4e5'
   BOOTSTRAP_ELITE_PARENT_SHA: 'fc4bb1e64ea3ee4aec2245445a01172afb35f872b7b9c90a2b6000430f4c67cb'
@@ -65,6 +66,7 @@ jobs:
             tests/test_sts1_armg_strategy_evolve.py \
             tests/test_sts1_strategy_data_efficiency_v2.py \
             tests/test_sts1_strategy_elite_mining_v3.py \
+            tests/test_sts1_strategy_parallel_cpu_v4.py \
             tests/test_sts1_strategy_state_validate.py \
             tests/test_sts1_champion_gate.py
 
@@ -97,11 +99,13 @@ jobs:
           effective_branch_points="$max_branch_points_per_game"
           effective_teacher_budget="$teacher_label_budget"
           effective_elite_mining_seeds="$elite_mining_seeds"
+          effective_collection_workers="$collection_workers"
 
           # Automatic load shedding only during retries. A successful round
           # resets retry_count to 0, so the next normal round returns to the
           # configured full workload automatically.
           if [ "$retry_count" -ge 1 ]; then
+            effective_collection_workers=1
             effective_eval_workers="$(( eval_workers > 2 ? 2 : eval_workers ))"
             effective_branch_points="$(( max_branch_points_per_game > 18 ? 18 : max_branch_points_per_game ))"
             effective_teacher_budget="$(( teacher_label_budget > 16 ? 16 : teacher_label_budget ))"
@@ -126,6 +130,8 @@ jobs:
           echo "STRATEGY_MAX_BRANCH_POINTS=$effective_branch_points" >> "$GITHUB_ENV"
           echo "STRATEGY_TEACHER_LABEL_BUDGET=$effective_teacher_budget" >> "$GITHUB_ENV"
           echo "STRATEGY_MIN_LABELS_PER_KIND=$min_labels_per_kind" >> "$GITHUB_ENV"
+          echo "STRATEGY_COLLECTION_WORKERS=$effective_collection_workers" >> "$GITHUB_ENV"
+          echo "STRATEGY_PARALLEL_TEACHER_TIMEOUT=$parallel_teacher_timeout_seconds" >> "$GITHUB_ENV"
           echo "STRATEGY_ELITE_MINING_SEEDS=$effective_elite_mining_seeds" >> "$GITHUB_ENV"
           echo "STRATEGY_ELITE_EXAMPLES_PER_SEED=$elite_examples_per_seed" >> "$GITHUB_ENV"
           echo "STRATEGY_ELITE_MIN_QUALITY_MARGIN=$elite_min_quality_margin" >> "$GITHUB_ENV"
@@ -136,7 +142,7 @@ jobs:
           echo "STRATEGY_CONFIGURED_TRAINING_SEEDS=$training_seeds" >> "$GITHUB_ENV"
           echo "STRATEGY_CONFIGURED_EVAL_WORKERS=$eval_workers" >> "$GITHUB_ENV"
           echo "STRATEGY_CONFIGURED_BRANCH_POINTS=$max_branch_points_per_game" >> "$GITHUB_ENV"
-          echo "STRATEGY_EFFECTIVE_LOAD retry=$retry_count training_seeds=$effective_training_seeds eval_workers=$effective_eval_workers branch_points=$effective_branch_points teacher_budget=$effective_teacher_budget elite_mining_seeds=$effective_elite_mining_seeds"
+          echo "STRATEGY_EFFECTIVE_LOAD retry=$retry_count training_seeds=$effective_training_seeds eval_workers=$effective_eval_workers collection_workers=$effective_collection_workers branch_points=$effective_branch_points teacher_budget=$effective_teacher_budget elite_mining_seeds=$effective_elite_mining_seeds"
           echo "STRATEGY_MAX_BRANCH_PER_KIND=$max_branch_points_per_kind_per_game" >> "$GITHUB_ENV"
           echo "STRATEGY_MAX_CHOICE_BRANCHES=$max_choice_branches" >> "$GITHUB_ENV"
           echo "STRATEGY_EPOCHS=$epochs" >> "$GITHUB_ENV"
@@ -196,7 +202,7 @@ jobs:
               --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[].id'
           )
           if [ "${#artifact_ids[@]}" -eq 0 ]; then
-            echo "NO_V2_STATE_BOOTSTRAP_FROM_V1"
+            echo "NO_V4_STATE_BOOTSTRAP_FROM_V3"
             mapfile -t artifact_ids < <(
               gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$BOOTSTRAP_STATE_ARTIFACT&per_page=100" \
                 --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[].id'
@@ -315,82 +321,6 @@ jobs:
           fi
           echo "STRATEGY_STATE_DIR=$state" >> "$GITHUB_ENV"
 
-      - name: Merge trailing v2 Replay and seed history
-        if: env.STRATEGY_ENABLED == '1'
-        run: |
-          set -euo pipefail
-          state="$STRATEGY_STATE_DIR"
-          if python - "$state/strategy-state.json" <<'PY'
-          import json, sys
-          p=json.load(open(sys.argv[1], encoding="utf-8"))
-          raise SystemExit(0 if p.get("v2_tail_imported") else 1)
-          PY
-          then
-            echo "V2_TAIL_ALREADY_IMPORTED"
-            exit 0
-          fi
-
-          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$BOOTSTRAP_STATE_ARTIFACT&per_page=100"             --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
-          test -n "$artifact_id"
-          rm -rf "$RUNNER_TEMP/v2-tail"
-          mkdir -p "$RUNNER_TEMP/v2-tail"
-          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/v2-tail.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
-          unzip -q "$RUNNER_TEMP/v2-tail.zip" -d "$RUNNER_TEMP/v2-tail"
-          v2_state="$(find "$RUNNER_TEMP/v2-tail" -name strategy-state.json -print -quit)"
-          v2_replay="$(find "$RUNNER_TEMP/v2-tail" -name strategy-replay.jsonl -print -quit)"
-          test -n "$v2_state"
-          test -n "$v2_replay"
-
-          python - "$state" "$v2_state" "$v2_replay" <<'PY'
-          import importlib.util, json, sys
-          from pathlib import Path
-
-          state_dir=Path(sys.argv[1])
-          v2_state=json.load(open(sys.argv[2], encoding="utf-8"))
-          current=json.load(open(state_dir/"strategy-state.json", encoding="utf-8"))
-          if v2_state.get("current_strategy_sha256") != current.get("current_strategy_sha256"):
-              print("V2_TAIL_SKIP champion_sha_mismatch")
-              current["v2_tail_imported"]=True
-              (state_dir/"strategy-state.json").write_text(
-                  json.dumps(current, indent=2, sort_keys=True)+"\n", encoding="utf-8"
-              )
-              raise SystemExit(0)
-
-          spec=importlib.util.spec_from_file_location(
-              "strategy_loop_v3",
-              Path("scripts/sts1/sts1_armg_strategy_loop.py"),
-          )
-          module=importlib.util.module_from_spec(spec)
-          assert spec and spec.loader
-          spec.loader.exec_module(module)
-          replay=state_dir/"strategy-replay.jsonl"
-          report=module._merge_replay(
-              replay,
-              Path(sys.argv[3]),
-              max_examples=20000,
-          )
-          current["used_training_seeds"]=sorted(set(
-              int(v) for v in current.get("used_training_seeds", [])
-          ) | set(
-              int(v) for v in v2_state.get("used_training_seeds", [])
-          ))
-          current["used_evaluation_seeds"]=sorted(set(
-              int(v) for v in current.get("used_evaluation_seeds", [])
-          ) | set(
-              int(v) for v in v2_state.get("used_evaluation_seeds", [])
-          ))
-          if set(current["used_training_seeds"]) & set(current["used_evaluation_seeds"]):
-              raise RuntimeError("v2 tail merge created train/eval seed overlap")
-          current["v2_tail_imported"]=True
-          current["v2_tail_replay_examples"]=report["examples"]
-          (state_dir/"strategy-state.json").write_text(
-              json.dumps(current, indent=2, sort_keys=True)+"\n", encoding="utf-8"
-          )
-          print("PASS_V2_TAIL_IMPORT", json.dumps(report, sort_keys=True))
-          PY
-
-          python scripts/sts1/sts1_strategy_state_validate.py --state-dir "$state"
-
       - name: Bootstrap verified historical Elite Candidate
         if: env.STRATEGY_ENABLED == '1'
         run: |
@@ -488,7 +418,7 @@ jobs:
         if: env.STRATEGY_ENABLED == '1'
         run: |
           set -euo pipefail
-          python scripts/sts1/sts1_armg_strategy_loop.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-strategy             --armg-base-weight .cache/sts1-armg-strategy/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --state-dir "$STRATEGY_STATE_DIR"             --output-dir evidence/sts1/strategy-loop/runs             --rounds 1             --training-seeds "$STRATEGY_TRAINING_SEEDS"             --combat-mcts-sims "$STRATEGY_MCTS_SIMS"             --eval-workers "$STRATEGY_EVAL_WORKERS"             --rng-seed "$STRATEGY_RNG_SEED"             --max-branch-points-per-game "$STRATEGY_MAX_BRANCH_POINTS"             --max-branch-points-per-kind-per-game "$STRATEGY_MAX_BRANCH_PER_KIND"             --max-choice-branches "$STRATEGY_MAX_CHOICE_BRANCHES"             --teacher-label-budget "$STRATEGY_TEACHER_LABEL_BUDGET"             --min-labels-per-kind "$STRATEGY_MIN_LABELS_PER_KIND"             --epochs "$STRATEGY_EPOCHS"             --learning-rate "$STRATEGY_LR"             --anchor-coef "$STRATEGY_ANCHOR"             --max-replay-examples "$STRATEGY_MAX_REPLAY"             --max-stagnation "$STRATEGY_MAX_STAGNATION"             --elite-mining-seeds "$STRATEGY_ELITE_MINING_SEEDS"             --elite-examples-per-seed "$STRATEGY_ELITE_EXAMPLES_PER_SEED"             --elite-min-quality-margin "$STRATEGY_ELITE_MIN_QUALITY_MARGIN"             --elite-max-sign-p "$STRATEGY_ELITE_MAX_SIGN_P"             --elite-min-win-delta "$STRATEGY_ELITE_MIN_WIN_DELTA"             --elite-min-floor-delta "$STRATEGY_ELITE_MIN_FLOOR_DELTA"             --elite-max-pool "$STRATEGY_ELITE_MAX_POOL"
+          python scripts/sts1/sts1_armg_strategy_loop.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-strategy             --armg-base-weight .cache/sts1-armg-strategy/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --state-dir "$STRATEGY_STATE_DIR"             --output-dir evidence/sts1/strategy-loop/runs             --rounds 1             --training-seeds "$STRATEGY_TRAINING_SEEDS"             --combat-mcts-sims "$STRATEGY_MCTS_SIMS"             --eval-workers "$STRATEGY_EVAL_WORKERS"             --rng-seed "$STRATEGY_RNG_SEED"             --max-branch-points-per-game "$STRATEGY_MAX_BRANCH_POINTS"             --max-branch-points-per-kind-per-game "$STRATEGY_MAX_BRANCH_PER_KIND"             --max-choice-branches "$STRATEGY_MAX_CHOICE_BRANCHES"             --teacher-label-budget "$STRATEGY_TEACHER_LABEL_BUDGET"             --min-labels-per-kind "$STRATEGY_MIN_LABELS_PER_KIND"             --collection-workers "$STRATEGY_COLLECTION_WORKERS"             --parallel-teacher-timeout-seconds "$STRATEGY_PARALLEL_TEACHER_TIMEOUT"             --epochs "$STRATEGY_EPOCHS"             --learning-rate "$STRATEGY_LR"             --anchor-coef "$STRATEGY_ANCHOR"             --max-replay-examples "$STRATEGY_MAX_REPLAY"             --max-stagnation "$STRATEGY_MAX_STAGNATION"             --elite-mining-seeds "$STRATEGY_ELITE_MINING_SEEDS"             --elite-examples-per-seed "$STRATEGY_ELITE_EXAMPLES_PER_SEED"             --elite-min-quality-margin "$STRATEGY_ELITE_MIN_QUALITY_MARGIN"             --elite-max-sign-p "$STRATEGY_ELITE_MAX_SIGN_P"             --elite-min-win-delta "$STRATEGY_ELITE_MIN_WIN_DELTA"             --elite-min-floor-delta "$STRATEGY_ELITE_MIN_FLOOR_DELTA"             --elite-max-pool "$STRATEGY_ELITE_MAX_POOL"
 
       - name: Verify Strategy-only invariants
         if: env.STRATEGY_ENABLED == '1'
@@ -502,6 +432,8 @@ jobs:
           assert s["combat_training_enabled"] is False
           assert s["production_champion_replaced"] is False
           assert s["data_efficiency_version"] == 3
+          assert s["parallel_cpu_version"] == 1
+          assert s["collection_workers"] == int(__import__("os").environ["STRATEGY_COLLECTION_WORKERS"])
           assert s["combat_policy"] == f"mcts_{int(__import__('os').environ['STRATEGY_MCTS_SIMS'])}"
           assert Path(__import__('os').environ["STRATEGY_STATE_DIR"], "current-strategy.pt").is_file()
           assert Path(__import__('os').environ["STRATEGY_STATE_DIR"], "strategy-state.json").is_file()
@@ -514,7 +446,7 @@ jobs:
         if: env.STRATEGY_ENABLED == '1' && success()
         uses: actions/upload-artifact@v4
         with:
-          name: sts1-armg-strategy-loop-state-v3
+          name: sts1-armg-strategy-loop-state-v4
           path: |
             ${{ runner.temp }}/strategy-state/strategy-state.json
             ${{ runner.temp }}/strategy-state/current-strategy.pt
@@ -559,7 +491,7 @@ jobs:
           summary_text=""
 
           if [ "$CONTRACT_RESULT" = "success" ] && [ "$ROUND_RESULT" = "success" ]; then
-            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-strategy-loop-state-v3") | .id' | head -n1)"
+            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-strategy-loop-state-v4") | .id' | head -n1)"
             report_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("sts1-armg-strategy-loop-report-")) | .id' | head -n1)"
             test -n "$artifact_id"
             test -n "$report_id"
@@ -607,6 +539,10 @@ jobs:
               "ELITE_ELIGIBLE": str(bool((report.get("elite_decision") or {}).get("eligible",False))).lower(),
               "ELITE_POOL": (report.get("elite_pool") or {}).get("entries",0),
               "ELITE_MINED": (report.get("elite_mining") or {}).get("verified_examples",0),
+              "COLLECTION_WORKERS": ((report.get("dataset") or {}).get("parallel_teacher") or {}).get("effective_workers",1),
+              "COLLECTION_MODE": ((report.get("dataset") or {}).get("parallel_teacher") or {}).get("mode","unknown"),
+              "COLLECTION_SECONDS": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("elapsed_seconds",0.0)),1),
+              "COLLECTION_FALLBACK": str(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("fallback_reason") or "none"),
           }
           for k,v in values.items():
               print(f"{k}={shlex.quote(str(v))}")
@@ -620,7 +556,7 @@ jobs:
               fi
             fi
 
-            printf -v body '@ericpeng0604-coder\n\n## Strategy-only Loop — Round %s\n\n- Run：%s\n- Combat：**%s（固定 pure MCTS）**\n- Gate：Dev **%s** → Hidden **%s** → Fresh **%s**\n- Promotion：**%s**\n- 候選池：%s → Teacher labels：%s（mistakes：%s，高不確定：%s）\n- Unique state buckets：%s\n- Decision kinds：%s\n- Elite eligible：%s｜Elite pool：%s｜本輪驗證回灌：%s\n- Strategy generation：%s\n- Accepted / Rejected：%s / %s\n- Stagnation：%s / %s\n- Replay examples：%s\n- Strategy SHA：`%s`\n- 正式 Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$COMBAT" "$DEV_GATE" "$HIDDEN_GATE" "$FRESH_GATE" "$PROMOTION" "$POOL" "$EXAMPLES" "$MISTAKES" "$HIGH_UNCERTAINTY" "$BUCKETS" "$KINDS" "$ELITE_ELIGIBLE" "$ELITE_POOL" "$ELITE_MINED" "$GEN" "$ACCEPTED" "$REJECTED" "$STAG" "$max_stagnation" "$REPLAY" "$SHA"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
+            printf -v body '@ericpeng0604-coder\n\n## Strategy-only Loop — Round %s\n\n- Run：%s\n- Combat：**%s（固定 pure MCTS）**\n- Gate：Dev **%s** → Hidden **%s** → Fresh **%s**\n- Promotion：**%s**\n- 候選池：%s → Teacher labels：%s（mistakes：%s，高不確定：%s）\n- Unique state buckets：%s\n- Decision kinds：%s\n- Elite eligible：%s｜Elite pool：%s｜本輪驗證回灌：%s\n- Teacher CPU：%s workers｜%s｜%ss｜fallback=%s\n- Strategy generation：%s\n- Accepted / Rejected：%s / %s\n- Stagnation：%s / %s\n- Replay examples：%s\n- Strategy SHA：`%s`\n- 正式 Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$COMBAT" "$DEV_GATE" "$HIDDEN_GATE" "$FRESH_GATE" "$PROMOTION" "$POOL" "$EXAMPLES" "$MISTAKES" "$HIGH_UNCERTAINTY" "$BUCKETS" "$KINDS" "$ELITE_ELIGIBLE" "$ELITE_POOL" "$ELITE_MINED" "$COLLECTION_WORKERS" "$COLLECTION_MODE" "$COLLECTION_SECONDS" "$COLLECTION_FALLBACK" "$GEN" "$ACCEPTED" "$REJECTED" "$STAG" "$max_stagnation" "$REPLAY" "$SHA"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body" >/dev/null
           else
             next_retry="$((retry_count + 1))"

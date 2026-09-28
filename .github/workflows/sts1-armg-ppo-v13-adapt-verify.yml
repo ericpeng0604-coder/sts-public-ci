@@ -1,0 +1,88 @@
+name: STS1 PPO v1.3 Adapt Verify
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - gpt/sts1-ppo-v13-auto-loop-20260928
+    paths:
+      - scripts/sts1/sts1_armg_ppo_v13_adapt.py
+      - tests/test_sts1_armg_ppo_v13_adapt.py
+      - .github/workflows/sts1-armg-ppo-v13-auto-loop.yml
+      - .github/workflows/sts1-armg-ppo-v13-adapt-verify.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile adaptation code
+        run: |
+          python -m py_compile scripts/sts1/sts1_armg_ppo_v13_adapt.py
+
+      - name: Run adaptation unit tests
+        run: |
+          python -m pip install pytest
+          pytest -q tests/test_sts1_armg_ppo_v13_adapt.py
+
+      - name: CLI smoke for stagnation profiles
+        run: |
+          mkdir -p "$RUNNER_TEMP/adapt-smoke"
+          cat > "$RUNNER_TEMP/adapt-smoke/control.request" <<'EOF'
+          attempt=9
+          retry_count=0
+          games_per_worker=50
+          rng_seed=2026092801
+          temperature=1.0
+          epochs=4
+          learning_rate=3e-5
+          clip=0.20
+          target_kl=0.02
+          mcts_sims=2000
+          max_retries=3
+          max_rounds=0
+          report_issue=15
+          reason=continue_after_gate
+          EOF
+
+          for s in 0 1 2 3 4 5; do
+            python - "$RUNNER_TEMP/adapt-smoke/state.json" "$s" <<'PY'
+          import json, sys
+          from pathlib import Path
+          s=int(sys.argv[2])
+          Path(sys.argv[1]).write_text(json.dumps({
+              "schema_version":"sts1-armg-ppo-v13-loop-state-v1",
+              "round_index":10,
+              "stagnation_count":s,
+              "last_decision":"HOLD",
+              "last_gate_30":{"win_delta":0},
+          })+"\n", encoding="utf-8")
+          PY
+            python scripts/sts1/sts1_armg_ppo_v13_adapt.py \
+              --state "$RUNNER_TEMP/adapt-smoke/state.json" \
+              --control "$RUNNER_TEMP/adapt-smoke/control.request" \
+              --output-control "$RUNNER_TEMP/adapt-smoke/next-$s.request" \
+              --report "$RUNNER_TEMP/adapt-smoke/report-$s.json"
+          done
+
+          python - "$RUNNER_TEMP/adapt-smoke" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          expected=["stable","stable","diversify","broaden","escape","wide_explore"]
+          got=[json.loads((root/f"report-{i}.json").read_text())["profile"]["name"] for i in range(6)]
+          assert got == expected, (got, expected)
+          print("ADAPT_PROFILE_SMOKE_PASS", got)
+          PY
+
+      - name: Repository whitespace check
+        run: git diff --check HEAD^ HEAD

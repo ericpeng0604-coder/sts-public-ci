@@ -26,6 +26,7 @@ def _write_valid(tmp_path: Path) -> Path:
                 "used_training_seeds": [1, 2],
                 "used_evaluation_seeds": [3, 4],
                 "current_strategy_sha256": digest,
+                "base_strategy_sha256": "a" * 64,
                 "combat_mcts_sims": 2000,
             }
         ),
@@ -65,4 +66,15 @@ def test_bad_replay_schema_fails(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(RuntimeError, match="replay schema mismatch"):
+        validate_state_dir(state)
+
+
+def test_training_and_evaluation_seed_overlap_fails(tmp_path: Path) -> None:
+    state = _write_valid(tmp_path)
+    path = state / "strategy-state.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["used_training_seeds"] = [1, 2, 3]
+    payload["used_evaluation_seeds"] = [3, 4, 5]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="seed history overlap"):
         validate_state_dir(state)

@@ -83,6 +83,38 @@ def validate_state_dir(state_dir: Path) -> dict[str, object]:
     if not isinstance(base_sha, str) or len(base_sha) != 64:
         raise RuntimeError("state missing valid base_strategy_sha256")
 
+    elite_pool = state_dir / "elite-pool.json"
+    elite_entries = 0
+    if elite_pool.is_file():
+        pool = json.loads(elite_pool.read_text(encoding="utf-8"))
+        if pool.get("schema_version") != "sts1-strategy-elite-pool-v1":
+            raise RuntimeError("elite pool schema mismatch")
+        entries = pool.get("entries", [])
+        if not isinstance(entries, list):
+            raise RuntimeError("elite pool entries must be a list")
+        seen_elite_sha: set[str] = set()
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise RuntimeError(f"elite pool entry {index} must be an object")
+            sha = entry.get("sha256")
+            rel = entry.get("weight_file")
+            parent = entry.get("parent_champion_sha256")
+            if not isinstance(sha, str) or len(sha) != 64:
+                raise RuntimeError(f"elite pool entry {index} has invalid sha256")
+            if sha in seen_elite_sha:
+                raise RuntimeError("elite pool contains duplicate candidate SHA")
+            seen_elite_sha.add(sha)
+            if not isinstance(parent, str) or len(parent) != 64:
+                raise RuntimeError(f"elite pool entry {index} has invalid parent champion SHA")
+            if not isinstance(rel, str) or not rel.startswith("elite-candidates/"):
+                raise RuntimeError(f"elite pool entry {index} has invalid weight_file")
+            weight = state_dir / rel
+            if not weight.is_file():
+                raise RuntimeError(f"elite pool checkpoint missing: {rel}")
+            if sha256(weight) != sha:
+                raise RuntimeError(f"elite pool checkpoint SHA mismatch: {rel}")
+            elite_entries += 1
+
     replay = state_dir / "strategy-replay.jsonl"
     replay_lines = 0
     if replay.is_file():
@@ -107,6 +139,7 @@ def validate_state_dir(state_dir: Path) -> dict[str, object]:
         "rejected_rounds": int(payload.get("rejected_rounds", 0)),
         "stagnation_count": int(payload.get("stagnation_count", 0)),
         "replay_examples": replay_lines,
+        "elite_pool_entries": elite_entries,
     }
 
 

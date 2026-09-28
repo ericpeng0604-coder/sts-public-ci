@@ -1,5 +1,5 @@
-attempt=63
-retry_count=0
+attempt=64
+retry_count=1
 games_per_worker=80
 rng_seed=2026092801
 temperature=0.98
@@ -17,4 +17,4 @@ report_issue=15
 strategy_profile=near_miss_refine
 stagnation_seen=44
 ppo_version=1.4
-reason=adaptive_stagnation_near_miss_refine
+reason=auto_retry_after_failure

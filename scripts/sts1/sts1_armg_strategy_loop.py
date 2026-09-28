@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor
 import hashlib
+import multiprocessing as mp
 import json
 from pathlib import Path
 import random
@@ -648,37 +650,79 @@ def _train_candidate(
     }
 
 
-def _evaluate_weight(
-    *,
-    seeds: Sequence[int],
-    sts: Any,
-    armg_root: Path,
-    strategy_weight: Path,
-    mcts_sims: int,
+def _evaluate_seed_worker(
+    payload: tuple[str, str, str, int, tuple[int, ...], int],
 ) -> dict[str, Any]:
+    module_dir_text, armg_root_text, weight_text, seed, all_seeds, mcts_sims = payload
+    module_dir = Path(module_dir_text)
+    armg_root = Path(armg_root_text)
+    strategy_weight = Path(weight_text)
+    sts = _load_sts(module_dir)
     armg = ArmGNoncombatPolicy(
         root=armg_root,
         weight_path=strategy_weight,
     )
-    runs: list[dict[str, Any]] = []
-    for seed in seeds:
-        summary = run_simulator_game(
-            student=None,
-            sts=sts,
-            seed=int(seed),
-            armg_policy=armg,
-            combat_mcts_sims=mcts_sims,
-            heldout_seeds=seeds,
-            collect_ppo=False,
-            collect_teacher=False,
+    summary = run_simulator_game(
+        student=None,
+        sts=sts,
+        seed=int(seed),
+        armg_policy=armg,
+        combat_mcts_sims=mcts_sims,
+        heldout_seeds=all_seeds,
+        collect_ppo=False,
+        collect_teacher=False,
+    )
+    return dict(summary)
+
+
+def _evaluate_weight(
+    *,
+    seeds: Sequence[int],
+    module_dir: Path,
+    armg_root: Path,
+    strategy_weight: Path,
+    mcts_sims: int,
+    workers: int,
+) -> dict[str, Any]:
+    ordered_seeds = tuple(int(seed) for seed in seeds)
+    if not ordered_seeds:
+        raise RuntimeError("strategy evaluation seed set is empty")
+    if workers < 1:
+        raise RuntimeError("eval workers must be positive")
+
+    payloads = [
+        (
+            str(module_dir),
+            str(armg_root),
+            str(strategy_weight),
+            seed,
+            ordered_seeds,
+            int(mcts_sims),
         )
-        runs.append(dict(summary))
+        for seed in ordered_seeds
+    ]
+
+    if workers == 1:
+        runs = [_evaluate_seed_worker(payload) for payload in payloads]
+    else:
+        context = mp.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=min(workers, len(payloads)),
+            mp_context=context,
+        ) as pool:
+            runs = list(pool.map(_evaluate_seed_worker, payloads))
+
+    by_seed = {int(row["seed"]): row for row in runs}
+    if set(by_seed) != set(ordered_seeds):
+        raise RuntimeError("parallel Strategy evaluation lost or duplicated seeds")
+    ordered_runs = [by_seed[seed] for seed in ordered_seeds]
     return {
         "schema_version": EVAL_SCHEMA_VERSION,
         "strategy_weight_sha256": _sha256(strategy_weight),
         "combat_policy": f"mcts_{mcts_sims}",
-        "seed_count": len(seeds),
-        "runs": runs,
+        "seed_count": len(ordered_seeds),
+        "workers": min(workers, len(ordered_seeds)),
+        "runs": ordered_runs,
     }
 
 
@@ -734,24 +778,27 @@ def _eval_and_gate(
     current_weight: Path,
     candidate_weight: Path,
     seeds: Sequence[int],
-    sts: Any,
+    module_dir: Path,
     armg_root: Path,
     mcts_sims: int,
+    workers: int,
     policy: Any,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     current_eval = _evaluate_weight(
         seeds=seeds,
-        sts=sts,
+        module_dir=module_dir,
         armg_root=armg_root,
         strategy_weight=current_weight,
         mcts_sims=mcts_sims,
+        workers=workers,
     )
     candidate_eval = _evaluate_weight(
         seeds=seeds,
-        sts=sts,
+        module_dir=module_dir,
         armg_root=armg_root,
         strategy_weight=candidate_weight,
         mcts_sims=mcts_sims,
+        workers=workers,
     )
     gate = evaluate_strategy_gate(
         current_eval,
@@ -773,6 +820,7 @@ def main() -> int:
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--training-seeds", type=int, default=4)
     parser.add_argument("--combat-mcts-sims", type=int, default=2000)
+    parser.add_argument("--eval-workers", type=int, default=4)
     parser.add_argument("--rng-seed", type=int, default=20260928)
     parser.add_argument("--max-branch-points-per-game", type=int, default=8)
     parser.add_argument(
@@ -793,6 +841,8 @@ def main() -> int:
         raise RuntimeError("rounds and training-seeds must be positive")
     if args.combat_mcts_sims < 1:
         raise RuntimeError("combat-mcts-sims must be positive")
+    if args.eval_workers < 1:
+        raise RuntimeError("eval-workers must be positive")
     if (
         args.max_branch_points_per_game < 1
         or args.max_branch_points_per_kind_per_game < 1
@@ -890,9 +940,10 @@ def main() -> int:
             current_weight=current_weight,
             candidate_weight=candidate_weight,
             seeds=dev30,
-            sts=sts,
+            module_dir=args.module_dir,
             armg_root=args.armg_root,
             mcts_sims=args.combat_mcts_sims,
+            workers=args.eval_workers,
             policy=DEV_STRATEGY_GATE,
         )
         _write_json(round_dir / "eval-current-dev30.json", current_dev)
@@ -920,9 +971,10 @@ def main() -> int:
                 current_weight=current_weight,
                 candidate_weight=candidate_weight,
                 seeds=hidden_seeds,
-                sts=sts,
+                module_dir=args.module_dir,
                 armg_root=args.armg_root,
                 mcts_sims=args.combat_mcts_sims,
+                workers=args.eval_workers,
                 policy=HIDDEN_STRATEGY_GATE,
             )
             _write_json(round_dir / "eval-current-hidden50.json", current_hidden)
@@ -939,9 +991,10 @@ def main() -> int:
                 current_weight=current_weight,
                 candidate_weight=candidate_weight,
                 seeds=fresh_seeds,
-                sts=sts,
+                module_dir=args.module_dir,
                 armg_root=args.armg_root,
                 mcts_sims=args.combat_mcts_sims,
+                workers=args.eval_workers,
                 policy=FRESH_STRATEGY_GATE,
             )
             _write_json(round_dir / "eval-current-fresh100.json", current_fresh)

@@ -106,3 +106,5 @@ def test_collection_workers_one_never_forks(monkeypatch) -> None:
 # Trigger real 3-worker benchmark on latest control.
 
 # Trigger final benchmark-best control validation.
+
+# Full-core validation trigger.

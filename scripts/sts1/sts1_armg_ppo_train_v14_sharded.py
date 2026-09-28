@@ -480,7 +480,7 @@ def main() -> int:
             batch_losses: list[float] = []
             for start in range(0, len(selected), 64):
                 chunk = selected[start : start + 64]
-                losses = []
+                bc_terms = []
                 for raw_i in chunk:
                     i = int(raw_i)
                     begin = int(elite_data["offsets"][i])
@@ -492,9 +492,9 @@ def main() -> int:
                     action_i = int(elite_data["action"][i])
                     if action_i < 0 or action_i >= len(ds):
                         raise RuntimeError("elite replay contains illegal action")
-                    losses.append(-lp[action_i])
-                if losses:
-                    bc_loss = torch.stack(losses).mean() * a.bc_coef
+                    bc_terms.append(-lp[action_i])
+                if bc_terms:
+                    bc_loss = torch.stack(bc_terms).mean() * a.bc_coef
                     actor_opt.zero_grad()
                     bc_loss.backward()
                     torch.nn.utils.clip_grad_norm_(
@@ -503,8 +503,8 @@ def main() -> int:
                     actor_opt.step()
                     batch_losses.append(float(bc_loss.detach()))
                     total_bc_updates += 1
-                    total_bc_decisions += len(losses)
-                    bc_used += len(losses)
+                    total_bc_decisions += len(bc_terms)
+                    bc_used += len(bc_terms)
             if batch_losses:
                 bc_mean_loss = float(np.mean(batch_losses))
             torch.save(actor.state_dict(), a.output)

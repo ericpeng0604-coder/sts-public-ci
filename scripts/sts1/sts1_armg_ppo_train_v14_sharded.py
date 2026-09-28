@@ -50,6 +50,32 @@ def gae_targets(
     return adv, ret
 
 
+def discounted_returns(
+    reward: np.ndarray,
+    done: np.ndarray,
+    *,
+    gamma: float,
+) -> np.ndarray:
+    """Critic-health target independent of the Critic itself."""
+    out = np.zeros(len(reward), np.float32)
+    running = 0.0
+    for i in range(len(reward) - 1, -1, -1):
+        running = float(reward[i]) + gamma * (
+            0.0 if done[i] else running
+        )
+        out[i] = running
+    return out
+
+
+def should_reset_critic(
+    *,
+    critic_loaded: bool,
+    health_explained_variance: float,
+    threshold: float = -0.10,
+) -> bool:
+    return critic_loaded and health_explained_variance < threshold
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("shards", "armg-root", "base-weight", "output"):
@@ -129,14 +155,60 @@ def main() -> int:
     if not files:
         raise RuntimeError("no shards")
 
+    # Diagnose a persisted Critic against discounted returns that do not
+    # depend on that Critic. A negative EV means it is worse than a constant
+    # baseline and should not seed the next round's GAE.
+    health_predictions: list[np.ndarray] = []
+    health_returns: list[np.ndarray] = []
+    for f in files:
+        with np.load(f, allow_pickle=False) as d:
+            if str(d["checkpoint_id"][0]) != a.checkpoint_id:
+                raise SystemExit("stale shard")
+            obs = torch.from_numpy(d["obs"].astype(np.float32))
+            reward = d["reward"].astype(np.float32)
+            done = d["done"].astype(bool)
+            with torch.no_grad():
+                health_predictions.append(
+                    critic(obs).squeeze(1).numpy()
+                )
+            health_returns.append(
+                discounted_returns(reward, done, gamma=a.gamma)
+            )
+
+    critic_health_ev = explained_variance(
+        np.concatenate(health_predictions),
+        np.concatenate(health_returns),
+    )
+    critic_reset = should_reset_critic(
+        critic_loaded=critic_loaded,
+        health_explained_variance=critic_health_ev,
+    )
+    if critic_reset:
+        # Zero only the value head. Hidden features stay intact while the
+        # output becomes a safe constant baseline with learnable gradients.
+        value_head = critic[-1]
+        with torch.no_grad():
+            value_head.weight.zero_()
+            value_head.bias.zero_()
+        print(
+            "PPO_V14_CRITIC_RESET",
+            json.dumps(
+                {
+                    "health_explained_variance": critic_health_ev,
+                    "threshold": -0.10,
+                    "reason": "persisted_critic_worse_than_constant_baseline",
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
     # PPO rollout targets must stay fixed for all optimization epochs.
     raw_advantages: list[np.ndarray] = []
     fixed_returns: list[np.ndarray] = []
     initial_value_predictions: list[np.ndarray] = []
     for f in files:
         with np.load(f, allow_pickle=False) as d:
-            if str(d["checkpoint_id"][0]) != a.checkpoint_id:
-                raise SystemExit("stale shard")
             obs = torch.from_numpy(d["obs"].astype(np.float32))
             reward = d["reward"].astype(np.float32)
             done = d["done"].astype(bool)
@@ -180,6 +252,8 @@ def main() -> int:
                 "advantage_std": adv_std,
                 "initial_explained_variance": initial_ev,
                 "critic_loaded": critic_loaded,
+                "critic_reset": critic_reset,
+                "critic_health_explained_variance_before_reset": critic_health_ev,
             },
             sort_keys=True,
         ),
@@ -415,6 +489,8 @@ def main() -> int:
         "schema": "sts1-armg-ppo-v14-sharded-train",
         "shards": len(files),
         "critic_loaded": critic_loaded,
+        "critic_reset": critic_reset,
+        "critic_health_explained_variance_before_reset": critic_health_ev,
         "behavior_temperature": a.behavior_temperature,
         "entropy_coef": a.entropy,
         "anchor_coef": a.anchor_coef,

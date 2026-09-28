@@ -65,6 +65,31 @@ def test_explained_variance_rewards_better_predictions():
     )
 
 
+def test_discounted_returns_reset_at_episode_boundaries():
+    reward = np.array([1.0, 2.0, 3.0, 4.0], np.float32)
+    done = np.array([False, True, False, True])
+    got = train.discounted_returns(reward, done, gamma=0.5)
+    np.testing.assert_allclose(
+        got,
+        np.array([2.0, 2.0, 5.0, 4.0], np.float32),
+    )
+
+
+def test_poisoned_persistent_critic_requests_reset():
+    assert train.should_reset_critic(
+        critic_loaded=True,
+        health_explained_variance=-0.11,
+    )
+    assert not train.should_reset_critic(
+        critic_loaded=True,
+        health_explained_variance=-0.05,
+    )
+    assert not train.should_reset_critic(
+        critic_loaded=False,
+        health_explained_variance=-100.0,
+    )
+
+
 
 def run(seed: int, floor: int, *, win: bool = False, illegal: int = 0):
     return {

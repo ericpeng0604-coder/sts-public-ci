@@ -96,3 +96,5 @@ def test_collection_workers_one_never_forks(monkeypatch) -> None:
     assert [row["value"] for row in results] == [11, 22]
     assert report["mode"] == "sequential"
     assert report["effective_workers"] == 1
+
+# Workflow trigger: validate the latest control + parallel CPU implementation together.

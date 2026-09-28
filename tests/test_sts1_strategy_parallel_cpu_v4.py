@@ -56,7 +56,7 @@ def test_parallel_teacher_uses_two_workers_and_preserves_order(monkeypatch) -> N
         parallel_timeout_seconds=30,
     )
     assert [row["value"] for row in results] == [11, 22, 33, 44]
-    assert report["mode"] == "fork_pool"
+    assert report["mode"] == "fork_processes"
     assert report["effective_workers"] == 2
     assert report["fallback_reason"] is None
 

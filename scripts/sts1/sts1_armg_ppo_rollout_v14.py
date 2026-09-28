@@ -174,6 +174,7 @@ def main() -> None:
     parser.add_argument("--worker", type=int, default=0)
     parser.add_argument("--parallel-games", type=int, default=2)
     parser.add_argument("--reward-mode", choices=("legacy", "v14_dense"), default="v14_dense")
+    parser.add_argument("--final-seed-file", type=Path)
     args = parser.parse_args()
 
     if args.parallel_games < 1 or args.parallel_games > 4:
@@ -184,9 +185,18 @@ def main() -> None:
         for x in args.formal_seed_file.read_text().splitlines()
         if x.strip() and not x.lstrip().startswith("#")
     }
+    final = set()
+    if args.final_seed_file is not None:
+        final = {
+            int(x)
+            for x in args.final_seed_file.read_text().splitlines()
+            if x.strip() and not x.lstrip().startswith("#")
+        }
+    if formal & final:
+        raise RuntimeError("dev/final seed sets must be disjoint")
     rng = random.Random(args.seed_start)
     seeds: list[int] = []
-    seen = set(formal)
+    seen = set(formal) | set(final)
     while len(seeds) < args.games:
         seed = rng.randrange(1, 2**31 - 1)
         if seed not in seen:

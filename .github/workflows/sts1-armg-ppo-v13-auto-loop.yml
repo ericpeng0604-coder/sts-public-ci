@@ -2,11 +2,6 @@ name: STS1 PPO v1.3 Handoff Guard
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - gpt/sts1-ppo-v13-auto-loop-20260928
-    paths:
-      - control/sts1-armg-ppo-v14-ready.flag
 
 permissions:
   actions: write
@@ -24,7 +19,7 @@ jobs:
         run: |
           set -euo pipefail
           flag="control/sts1-armg-ppo-v14-ready.flag"
-          if [ ! -f "$flag" ] || [ "$(tr -d '\r\n' < "$flag")" != "READY" ]; then
+          if [ ! -f "$flag" ] || [ "$(head -n1 "$flag" | tr -d '\r\n')" != "READY" ]; then
             echo "PPO_V14_HANDOFF_BLOCKED verification_not_ready"
             exit 0
           fi

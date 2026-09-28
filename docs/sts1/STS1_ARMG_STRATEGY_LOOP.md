@@ -59,6 +59,83 @@ again after all branches. If parity fails, data collection stops.
 
 This is one-step policy improvement with a long-horizon terminal evaluation.
 
+## Data-Efficiency v2
+
+Before spending terminal branch-rollout compute, the loop first scouts the
+current Champion trajectory and builds a candidate pool of non-combat states.
+
+Candidate states are ranked using:
+
+- Strategy uncertainty;
+- later-floor importance;
+- low-HP danger;
+- choice complexity;
+- state-bucket diversity;
+- decision-kind coverage.
+
+Only the configured top states receive expensive branch Teacher labels. This
+raises useful labels per round without simply multiplying MCTS work.
+
+## Elite Candidate mining v3
+
+A Candidate that fails the Champion gate can still contain useful Strategy
+knowledge. v3 therefore separates **promotion** from **teaching value**.
+
+An Elite Candidate:
+
+- never bypasses Dev-30 / Hidden-50 / Fresh-100 promotion rules;
+- must have reached Fresh-100;
+- must be complete and safety-clean;
+- must use the frozen pure-MCTS combat policy;
+- must show a positive Fresh win delta;
+- must have more paired-better than paired-worse seeds;
+- must satisfy the looser Elite confidence threshold;
+- is stored only as a proposal model, not as Champion.
+
+The historical Round-7 near-miss is the initial bootstrap Elite only when its
+checkpoint SHA, parent Champion SHA, and recorded evaluation evidence all match
+the frozen expected values.
+
+### How Elite knowledge becomes training data
+
+Evaluation seeds are never recycled into training.
+
+Instead, Elite mining creates new training-only fresh seeds and follows the
+Champion trajectory. At each identical non-combat state:
+
+1. Champion and Elite score the exact same legal choices;
+2. if they agree, no extra work is done;
+3. if they disagree, the state can be sent to the ordinary branch Teacher;
+4. the Elite choice is accepted only when the Teacher independently selects
+   that same choice and its branch quality beats the Champion choice by the
+   configured minimum margin;
+5. only then is the row added to Replay with elevated priority.
+
+This means an Elite Candidate can suggest a lesson, but cannot label its own
+lesson.
+
+Expensive Elite Teacher checks are bounded per mining seed. If the Elite
+disagrees frequently but is usually wrong, CPU usage therefore remains bounded.
+
+### Elite lifecycle
+
+Durable state adds:
+
+- `elite-pool.json`;
+- `elite-candidates/*.pt`.
+
+The pool is SHA-validated on restore. It retains only the configured top
+near-miss Candidates.
+
+When a new Champion is promoted, the old Elite pool is cleared because those
+Candidates were measured against the previous Champion. Future Candidates must
+earn Elite status against the new Champion.
+
+During the v2→v3 handoff, the latest v2 Replay and seed histories are merged
+once, without overwriting v3 Champion, Elite, or round counters. This prevents
+the last v2 data from being lost while preserving train/evaluation seed
+isolation.
+
 ## Replay and training
 
 Every example stores:
@@ -135,6 +212,8 @@ Persistent state:
 - `strategy-state.json`
 - `current-strategy.pt`
 - `strategy-replay.jsonl`
+- `elite-pool.json`
+- `elite-candidates/*.pt`
 
 Per-round evidence:
 
@@ -156,8 +235,10 @@ Every checkpoint is identified by SHA-256.
 `.github/workflows/sts1-armg-strategy-loop.yml` has two layers:
 
 - automatic contract tests: cheap and safe;
-- manually dispatched heavy Strategy round: hydrates the pinned simulator and
-  ArmG upstream, then runs the real Strategy loop.
+- an automatically dispatched heavy Strategy round: hydrates the pinned
+  simulator and ArmG upstream, then runs the real Strategy loop;
+- a supervisor that continues, retries with load shedding, or pauses according
+  to the durable control/state contract.
 
 The heavy job uploads state and evidence as artifacts. It does not promote the
 production Champion and does not merge anything.

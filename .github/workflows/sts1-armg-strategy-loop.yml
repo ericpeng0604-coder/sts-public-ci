@@ -83,11 +83,35 @@ jobs:
           echo "STRATEGY_RETRY_COUNT=$retry_count" >> "$GITHUB_ENV"
           echo "STRATEGY_MAX_RETRIES=$max_retries" >> "$GITHUB_ENV"
           echo "STRATEGY_MAX_ROUNDS=$max_rounds" >> "$GITHUB_ENV"
-          echo "STRATEGY_TRAINING_SEEDS=$training_seeds" >> "$GITHUB_ENV"
+          effective_training_seeds="$training_seeds"
+          effective_eval_workers="$eval_workers"
+          effective_branch_points="$max_branch_points_per_game"
+
+          # Automatic load shedding only during retries. A successful round
+          # resets retry_count to 0, so the next normal round returns to the
+          # configured full workload automatically.
+          if [ "$retry_count" -ge 1 ]; then
+            effective_eval_workers="$(( eval_workers > 2 ? 2 : eval_workers ))"
+            effective_branch_points="$(( max_branch_points_per_game > 4 ? 4 : max_branch_points_per_game ))"
+          fi
+          if [ "$retry_count" -ge 2 ]; then
+            effective_training_seeds=1
+            effective_eval_workers=1
+            effective_branch_points="$(( max_branch_points_per_game > 2 ? 2 : max_branch_points_per_game ))"
+          fi
+          if [ "$retry_count" -ge 3 ]; then
+            effective_branch_points=1
+          fi
+
+          echo "STRATEGY_TRAINING_SEEDS=$effective_training_seeds" >> "$GITHUB_ENV"
           echo "STRATEGY_MCTS_SIMS=$mcts_sims" >> "$GITHUB_ENV"
-          echo "STRATEGY_EVAL_WORKERS=$eval_workers" >> "$GITHUB_ENV"
+          echo "STRATEGY_EVAL_WORKERS=$effective_eval_workers" >> "$GITHUB_ENV"
           echo "STRATEGY_RNG_SEED=$rng_seed" >> "$GITHUB_ENV"
-          echo "STRATEGY_MAX_BRANCH_POINTS=$max_branch_points_per_game" >> "$GITHUB_ENV"
+          echo "STRATEGY_MAX_BRANCH_POINTS=$effective_branch_points" >> "$GITHUB_ENV"
+          echo "STRATEGY_CONFIGURED_TRAINING_SEEDS=$training_seeds" >> "$GITHUB_ENV"
+          echo "STRATEGY_CONFIGURED_EVAL_WORKERS=$eval_workers" >> "$GITHUB_ENV"
+          echo "STRATEGY_CONFIGURED_BRANCH_POINTS=$max_branch_points_per_game" >> "$GITHUB_ENV"
+          echo "STRATEGY_EFFECTIVE_LOAD retry=$retry_count training_seeds=$effective_training_seeds eval_workers=$effective_eval_workers branch_points=$effective_branch_points"
           echo "STRATEGY_MAX_BRANCH_PER_KIND=$max_branch_points_per_kind_per_game" >> "$GITHUB_ENV"
           echo "STRATEGY_MAX_CHOICE_BRANCHES=$max_choice_branches" >> "$GITHUB_ENV"
           echo "STRATEGY_EPOCHS=$epochs" >> "$GITHUB_ENV"

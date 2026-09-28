@@ -38,6 +38,12 @@ def main() -> int:
     pending_path = args.state_dir / "pending-real-game.pt"
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
+    migrating_from_v13 = state.get("schema_version") != "sts1-armg-ppo-v14-loop-state-v1"
+    if migrating_from_v13:
+        state["stagnation_count"] = 0
+        state["accepted_parent_rounds"] = 0
+        state["rejected_parent_rounds"] = 0
+
     gate = json.loads(args.gate_summary.read_text(encoding="utf-8"))
 
     if gate.get("schema_version") != "sts1-armg-ppo-v14-two-level-gate-v1":

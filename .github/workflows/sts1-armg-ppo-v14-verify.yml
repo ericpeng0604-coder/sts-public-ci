@@ -1,0 +1,213 @@
+name: STS1 PPO v1.4 Verify
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - gpt/sts1-ppo-v13-auto-loop-20260928
+    paths:
+      - scripts/sts1/sts1_armg_ppo_train_v14_sharded.py
+      - scripts/sts1/sts1_armg_ppo_rollout_v14.py
+      - scripts/sts1/sts1_armg_ppo_v14_gate.py
+      - scripts/sts1/sts1_armg_ppo_v14_state.py
+      - scripts/sts1/sts1_armg_ppo_v13_adapt.py
+      - tests/test_sts1_armg_ppo_v14.py
+      - tests/test_sts1_armg_ppo_v13_adapt.py
+      - control/sts1-v14-final-promotion-seeds-50.txt
+      - .github/workflows/sts1-armg-ppo-v13-auto-loop.yml
+      - .github/workflows/sts1-armg-ppo-v14-verify.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install verification runtime
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . numpy torch==2.11.0 pytest
+
+      - name: Compile and unit tests
+        run: |
+          python -m py_compile \
+            scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
+            scripts/sts1/sts1_armg_ppo_rollout_v14.py \
+            scripts/sts1/sts1_armg_ppo_v14_gate.py \
+            scripts/sts1/sts1_armg_ppo_v14_state.py \
+            scripts/sts1/sts1_armg_ppo_v13_adapt.py
+          pytest -q \
+            tests/test_sts1_armg_ppo_v14.py \
+            tests/test_sts1_armg_ppo_v13_adapt.py
+
+      - name: Hydrate pinned simulator
+        run: |
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+
+          root=.cache/v14-armg
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe" python -c 'import slaythespire; print("PPO_V14_RUNTIME_PASS")'
+
+      - name: Verify Dev and Final seed separation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          def read(p):
+              return {
+                  int(x.strip())
+                  for x in Path(p).read_text().splitlines()
+                  if x.strip() and not x.lstrip().startswith("#")
+              }
+          dev=read("external/sts-rl-agent/source/eval/eval_seeds_50.txt")
+          final=read("control/sts1-v14-final-promotion-seeds-50.txt")
+          assert len(dev)==50 and len(final)==50
+          assert not (dev & final), sorted(dev & final)
+          print("PPO_V14_SEED_BOUNDARY_PASS", len(dev), len(final))
+          PY
+
+      - name: Real v1.4 rollout and preprocess
+        run: |
+          python scripts/sts1/sts1_armg_ppo_rollout_v14.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/v14-armg \
+            --weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --out "$RUNNER_TEMP/v14-rollout/worker-0" \
+            --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+            --seed-start 2026092814 \
+            --games 4 \
+            --temperature 1.12 \
+            --reward-mode v14_dense \
+            --checkpoint-id v14-ratio-smoke \
+            --worker 0 \
+            --parallel-games 2
+
+          mkdir -p "$RUNNER_TEMP/v14-rollouts/worker-0"
+          cp "$RUNNER_TEMP/v14-rollout/worker-0/rollout.npz" "$RUNNER_TEMP/v14-rollouts/worker-0/rollout.npz"
+          python scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py \
+            --rollouts "$RUNNER_TEMP/v14-rollouts" \
+            --output-dir "$RUNNER_TEMP/v14-shards" \
+            --checkpoint-id v14-ratio-smoke
+
+      - name: Verify temperature-correct PPO ratio
+        run: |
+          python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
+            --shards "$RUNNER_TEMP/v14-shards" \
+            --armg-root .cache/v14-armg \
+            --base-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --output "$RUNNER_TEMP/v14-candidate.pt" \
+            --critic-output "$RUNNER_TEMP/v14-critic.pt" \
+            --checkpoint-id v14-ratio-smoke \
+            --epochs 1 \
+            --lr 3e-5 \
+            --clip 0.20 \
+            --target-kl 0.02 \
+            --behavior-temperature 1.12 \
+            --entropy 0.001 \
+            --anchor-coef 0.02 \
+            --threads 4
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report=json.loads(Path(os.environ["RUNNER_TEMP"] + "/v14-candidate.json").read_text())
+          assert report["schema"]=="sts1-armg-ppo-v14-sharded-train"
+          assert report["critic_loaded"] is False
+          assert abs(report["initial_ratio_mean"] - 1.0) < 1e-4, report
+          assert report["initial_ratio_abs_error"] < 1e-4, report
+          assert report["entropy_coef"] == 0.001
+          assert report["behavior_temperature"] == 1.12
+          print("PPO_V14_RATIO_PASS", report["initial_ratio_mean"], report["initial_ratio_abs_error"])
+          PY
+
+      - name: Verify persistent Critic reload
+        run: |
+          python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
+            --shards "$RUNNER_TEMP/v14-shards" \
+            --armg-root .cache/v14-armg \
+            --base-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --base-critic "$RUNNER_TEMP/v14-critic.pt" \
+            --output "$RUNNER_TEMP/v14-candidate-reload.pt" \
+            --critic-output "$RUNNER_TEMP/v14-critic-reload.pt" \
+            --checkpoint-id v14-ratio-smoke \
+            --epochs 1 \
+            --lr 3e-5 \
+            --clip 0.20 \
+            --target-kl 0.02 \
+            --behavior-temperature 1.12 \
+            --entropy 0.001 \
+            --anchor-coef 0.02 \
+            --threads 4
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report=json.loads(Path(os.environ["RUNNER_TEMP"] + "/v14-candidate-reload.json").read_text())
+          assert report["critic_loaded"] is True, report
+          assert report["history"][0]["explained_variance"] == report["history"][0]["explained_variance"]
+          print("PPO_V14_CRITIC_RELOAD_PASS", report["history"][0]["explained_variance"])
+          PY
+
+      - name: Real 30-seed Dev Parent gate smoke
+        run: |
+          mkdir -p "$RUNNER_TEMP/v14-state"
+          cp external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt "$RUNNER_TEMP/v14-state/offline-champion.pt"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path(os.environ["RUNNER_TEMP"] + "/v14-state/state.json").write_text(
+              json.dumps({
+                  "schema_version":"sts1-armg-ppo-v14-loop-state-v1",
+                  "round_index":0,
+                  "generation":0,
+                  "stagnation_count":0,
+                  "production_champion_replaced":False,
+              })+"\n"
+          )
+          PY
+
+          python scripts/sts1/sts1_armg_ppo_v14_gate.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/v14-armg \
+            --parent-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --baseline-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --candidate-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+            --state "$RUNNER_TEMP/v14-state/state.json" \
+            --output-dir "$RUNNER_TEMP/v14-gate" \
+            --mcts-sims 2000 \
+            --workers 4
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          gate=json.loads(Path(os.environ["RUNNER_TEMP"] + "/v14-gate/gate-summary.json").read_text())
+          state=json.loads(Path(os.environ["RUNNER_TEMP"] + "/v14-state/state.json").read_text())
+          assert gate["dev_gate"]["status"]=="HOLD", gate
+          assert gate["dev_gate"]["win_delta"]==0, gate
+          assert gate["final_gate_30"]["status"]=="SKIPPED", gate
+          assert len(state["v14_eval_caches"]["dev_parent"]["runs"])==30
+          print("PPO_V14_REAL_DEV_GATE_PASS")
+          PY
+
+      - name: Repository whitespace check
+        run: git diff --check HEAD^ HEAD

@@ -23,6 +23,7 @@ import argparse
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 import hashlib
+import math
 import multiprocessing as mp
 import json
 from pathlib import Path
@@ -55,6 +56,7 @@ from roguelike_ai.sts1_phase3.simulator import (
 STATE_SCHEMA_VERSION = "sts1-armg-strategy-loop-state-v1"
 ROUND_SCHEMA_VERSION = "sts1-armg-strategy-round-v1"
 EVAL_SCHEMA_VERSION = "sts1-armg-strategy-eval-v1"
+DATA_EFFICIENCY_VERSION = 2
 
 
 def _sha256(path: Path) -> str:
@@ -135,6 +137,146 @@ def _choice_snapshot(gc: Any, armg: ArmGNoncombatPolicy) -> dict[str, Any]:
         "kind": str(kind),
         "descs": _desc_rows(descs),
     }
+
+
+def _choice_uncertainty(scores: Any) -> dict[str, float]:
+    values = [float(v) for v in scores.tolist()]
+    if len(values) < 2:
+        return {
+            "entropy": 0.0,
+            "top_probability": 1.0,
+            "probability_margin": 1.0,
+            "uncertainty": 0.0,
+        }
+    peak = max(values)
+    weights = [math.exp(v - peak) for v in values]
+    total = sum(weights)
+    probs = [w / total for w in weights]
+    ordered = sorted(probs, reverse=True)
+    entropy = -sum(p * math.log(max(p, 1e-12)) for p in probs)
+    entropy /= math.log(len(probs))
+    probability_margin = ordered[0] - ordered[1]
+    uncertainty = 0.65 * entropy + 0.35 * (1.0 - ordered[0])
+    return {
+        "entropy": float(entropy),
+        "top_probability": float(ordered[0]),
+        "probability_margin": float(probability_margin),
+        "uncertainty": float(uncertainty),
+    }
+
+
+def _state_bucket(snapshot: Mapping[str, Any], *, choices: int) -> str:
+    max_hp = max(1, int(snapshot.get("max_hp", 1) or 1))
+    hp = max(0, int(snapshot.get("hp", 0) or 0))
+    hp_bucket = min(4, int(5 * hp / max_hp))
+    choice_bucket = "4+" if choices >= 4 else str(choices)
+    return (
+        f"{snapshot.get('kind','unknown')}|act{int(snapshot.get('act',0) or 0)}"
+        f"|f{int(snapshot.get('floor',0) or 0)//10}|hp{hp_bucket}|c{choice_bucket}"
+    )
+
+
+def _prelabel_priority(
+    snapshot: Mapping[str, Any],
+    uncertainty: Mapping[str, float],
+    *,
+    choices: int,
+) -> float:
+    floor = max(0, int(snapshot.get("floor", 0) or 0))
+    max_hp = max(1, int(snapshot.get("max_hp", 1) or 1))
+    hp = max(0, int(snapshot.get("hp", 0) or 0))
+    late_bonus = min(1.0, floor / 50.0)
+    danger_bonus = 1.0 - min(1.0, hp / max_hp)
+    complexity_bonus = min(1.0, max(0, choices - 2) / 4.0)
+    return float(
+        2.0 * float(uncertainty.get("uncertainty", 0.0))
+        + 0.45 * late_bonus
+        + 0.35 * danger_bonus
+        + 0.20 * complexity_bonus
+    )
+
+
+def _select_teacher_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    budget: int,
+    min_per_kind: int,
+) -> list[Mapping[str, Any]]:
+    if budget < 1:
+        raise RuntimeError("teacher label budget must be positive")
+    if min_per_kind < 0:
+        raise RuntimeError("min labels per kind must be non-negative")
+
+    dedup: dict[str, Mapping[str, Any]] = {}
+    for row in candidates:
+        identity = str(row["identity"])
+        old = dedup.get(identity)
+        if old is None or float(row["prelabel_priority"]) > float(old["prelabel_priority"]):
+            dedup[identity] = row
+
+    pool = list(dedup.values())
+    groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in pool:
+        groups[str(row["kind"])].append(row)
+    for rows in groups.values():
+        rows.sort(
+            key=lambda row: (
+                float(row["prelabel_priority"]),
+                float((row.get("uncertainty") or {}).get("uncertainty", 0.0)),
+                int(row.get("floor", 0) or 0),
+            ),
+            reverse=True,
+        )
+
+    selected: list[Mapping[str, Any]] = []
+    selected_ids: set[str] = set()
+    selected_buckets: set[str] = set()
+
+    # First guarantee kind coverage, preferring new state buckets inside each kind.
+    for _ in range(min_per_kind):
+        for kind in sorted(groups):
+            if len(selected) >= budget:
+                break
+            rows = groups[kind]
+            choice = next(
+                (
+                    row
+                    for row in rows
+                    if row["identity"] not in selected_ids
+                    and row["state_bucket"] not in selected_buckets
+                ),
+                None,
+            )
+            if choice is None:
+                choice = next(
+                    (row for row in rows if row["identity"] not in selected_ids),
+                    None,
+                )
+            if choice is None:
+                continue
+            selected.append(choice)
+            selected_ids.add(str(choice["identity"]))
+            selected_buckets.add(str(choice["state_bucket"]))
+
+    # Fill remaining budget globally. Novel buckets get a small diversity boost.
+    while len(selected) < budget:
+        remaining = [row for row in pool if str(row["identity"]) not in selected_ids]
+        if not remaining:
+            break
+        choice = max(
+            remaining,
+            key=lambda row: (
+                float(row["prelabel_priority"])
+                + (0.30 if str(row["state_bucket"]) not in selected_buckets else 0.0),
+                float((row.get("uncertainty") or {}).get("uncertainty", 0.0)),
+                int(row.get("floor", 0) or 0),
+            ),
+        )
+        selected.append(choice)
+        selected_ids.add(str(choice["identity"]))
+        selected_buckets.add(str(choice["state_bucket"]))
+
+    return selected
 
 
 def _drive_pure_mcts_battle(
@@ -319,119 +461,203 @@ def _collect_dataset(
     max_game_steps: int,
     max_battle_steps: int,
     temperature: float,
+    teacher_label_budget: int,
+    min_labels_per_kind: int,
 ) -> dict[str, Any]:
+    """Scout cheaply first, then spend MCTS only on high-value Strategy states."""
     output.parent.mkdir(parents=True, exist_ok=True)
-    examples: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     games: list[dict[str, Any]] = []
     skipped_wide = 0
     skipped_single = 0
 
-    with output.open("w", encoding="utf-8") as handle:
-        for seed in seeds:
-            gc = sts.GameContext(sts.CharacterClass.IRONCLAD, int(seed), 0)
-            agent = sts.Agent()
-            _set_pauses(agent)
-            steps = 0
-            branch_points = 0
-            kind_counts: Counter[str] = Counter()
+    # Phase A: scout trajectories under the current Strategy. This is cheap
+    # relative to terminal branch labeling and visits states the learner
+    # actually reaches.
+    for seed in seeds:
+        gc = sts.GameContext(sts.CharacterClass.IRONCLAD, int(seed), 0)
+        agent = sts.Agent()
+        _set_pauses(agent)
+        steps = 0
+        candidate_count = 0
+        kind_seen: Counter[str] = Counter()
 
-            while gc.outcome == sts.GameOutcome.UNDECIDED and steps < max_game_steps:
-                steps += 1
-                agent.playout(gc)
-                if gc.outcome != sts.GameOutcome.UNDECIDED:
-                    break
+        while gc.outcome == sts.GameOutcome.UNDECIDED and steps < max_game_steps:
+            steps += 1
+            agent.playout(gc)
+            if gc.outcome != sts.GameOutcome.UNDECIDED:
+                break
 
-                if gc.screen_state == sts.ScreenState.BATTLE:
-                    _drive_pure_mcts_battle(
-                        gc,
-                        sts=sts,
-                        mcts_sims=mcts_sims,
-                        max_battle_steps=max_battle_steps,
-                    )
-                    continue
-
-                kind, descs, execs = armg.choices(gc)
-                choices = len(descs)
-                if choices == 0:
-                    armg.step(gc, sts)
-                    continue
-                if choices == 1:
-                    skipped_single += 1
-                    execs[0](gc)
-                    continue
-
-                can_branch = (
-                    branch_points < max_branch_points_per_game
-                    and kind_counts[str(kind)] < max_branch_points_per_kind_per_game
-                    and choices <= max_choice_branches
+            if gc.screen_state == sts.ScreenState.BATTLE:
+                _drive_pure_mcts_battle(
+                    gc,
+                    sts=sts,
+                    mcts_sims=mcts_sims,
+                    max_battle_steps=max_battle_steps,
                 )
-                if can_branch:
-                    example = _branch_example(
-                        gc,
-                        sts=sts,
-                        armg=armg,
-                        mcts_sims=mcts_sims,
-                        max_game_steps=max_game_steps,
-                        max_battle_steps=max_battle_steps,
-                        temperature=temperature,
-                    )
-                    examples.append(example)
-                    handle.write(
-                        json.dumps(example, ensure_ascii=False, sort_keys=True) + "\n"
-                    )
-                    handle.flush()
-                    branch_points += 1
-                    kind_counts[str(kind)] += 1
+                continue
 
-                    best_index = int(example["teacher_best_index"])
-                    # Execute the teacher choice on the untouched original state.
-                    kind_now, descs_now, execs_now = armg.choices(gc)
-                    if (
-                        str(kind_now) != str(kind)
-                        or _desc_rows(descs_now) != example["descs"]
-                        or len(execs_now) != len(example["descs"])
-                    ):
-                        raise RuntimeError("original ArmG choice identity changed after branches")
-                    execs_now[best_index](gc)
-                else:
-                    if choices > max_choice_branches:
-                        skipped_wide += 1
-                    armg.step(gc, sts)
+            kind, descs, execs = armg.choices(gc)
+            choices = len(descs)
+            if choices == 0:
+                armg.step(gc, sts)
+                continue
+            if choices == 1:
+                skipped_single += 1
+                execs[0](gc)
+                continue
+            if choices > max_choice_branches:
+                skipped_wide += 1
+                armg.step(gc, sts)
+                continue
 
-            if gc.outcome == sts.GameOutcome.UNDECIDED:
-                raise RuntimeError(f"strategy dataset game step bound reached seed={seed}")
-            games.append(
-                {
-                    "seed": int(seed),
-                    "outcome": (
-                        "victory"
-                        if gc.outcome == sts.GameOutcome.PLAYER_VICTORY
-                        else "defeat"
-                    ),
-                    "final_floor": int(getattr(gc, "floor_num", 0) or 0),
-                    "branch_points": branch_points,
-                    "kinds": dict(kind_counts),
-                }
+            # Keep scouting bounded per game/kind so a long card-heavy run
+            # cannot dominate memory or the candidate pool.
+            if (
+                candidate_count < max_branch_points_per_game
+                and kind_seen[str(kind)] < max_branch_points_per_kind_per_game
+            ):
+                snapshot = _choice_snapshot(gc, armg)
+                _, _, scores = armg.score_choices(gc)
+                uncertainty = _choice_uncertainty(scores)
+                current_index = int(torch.argmax(scores).item())
+                bucket = _state_bucket(snapshot, choices=choices)
+                identity = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "kind": snapshot["kind"],
+                            "obs": snapshot["obs"],
+                            "descs": snapshot["descs"],
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                candidates.append(
+                    {
+                        "identity": identity,
+                        "seed": int(seed),
+                        "floor": int(snapshot["floor"]),
+                        "act": int(snapshot["act"]),
+                        "kind": str(kind),
+                        "choices": choices,
+                        "snapshot": snapshot,
+                        "state_bucket": bucket,
+                        "uncertainty": uncertainty,
+                        "prelabel_priority": _prelabel_priority(
+                            snapshot,
+                            uncertainty,
+                            choices=choices,
+                        ),
+                        "current_armg_index": current_index,
+                        "gc": gc.clone(),
+                    }
+                )
+                candidate_count += 1
+                kind_seen[str(kind)] += 1
+
+            # Scout trajectory follows current Strategy. Teacher labels are
+            # generated later and therefore cannot bias which states are found.
+            armg.step(gc, sts)
+
+        if gc.outcome == sts.GameOutcome.UNDECIDED:
+            raise RuntimeError(f"strategy scout game step bound reached seed={seed}")
+        games.append(
+            {
+                "seed": int(seed),
+                "outcome": (
+                    "victory"
+                    if gc.outcome == sts.GameOutcome.PLAYER_VICTORY
+                    else "defeat"
+                ),
+                "final_floor": int(getattr(gc, "floor_num", 0) or 0),
+                "candidate_states": candidate_count,
+                "candidate_kinds": dict(kind_seen),
+            }
+        )
+
+    if not candidates:
+        raise RuntimeError("strategy scout produced no candidate states")
+
+    selected = _select_teacher_candidates(
+        candidates,
+        budget=teacher_label_budget,
+        min_per_kind=min_labels_per_kind,
+    )
+    if not selected:
+        raise RuntimeError("strategy candidate selector returned no Teacher states")
+
+    selected_by_seed: Counter[int] = Counter()
+    selected_by_kind: Counter[str] = Counter()
+    examples: list[dict[str, Any]] = []
+
+    # Phase B: only now pay the expensive terminal branch-rollout cost.
+    with output.open("w", encoding="utf-8") as handle:
+        for candidate in selected:
+            example = _branch_example(
+                candidate["gc"],
+                sts=sts,
+                armg=armg,
+                mcts_sims=mcts_sims,
+                max_game_steps=max_game_steps,
+                max_battle_steps=max_battle_steps,
+                temperature=temperature,
             )
-
-    if not examples:
-        raise RuntimeError("strategy branch rollout produced no trainable examples")
+            if int(example["current_armg_index"]) != int(candidate["current_armg_index"]):
+                raise RuntimeError("Strategy scout/Teacher current-choice drift")
+            example["prelabel_priority"] = float(candidate["prelabel_priority"])
+            example["prelabel_uncertainty"] = dict(candidate["uncertainty"])
+            example["state_bucket"] = str(candidate["state_bucket"])
+            example["priority"] = min(
+                4.0,
+                float(example["priority"])
+                + 0.25 * float(candidate["prelabel_priority"]),
+            )
+            examples.append(example)
+            selected_by_seed[int(candidate["seed"])] += 1
+            selected_by_kind[str(candidate["kind"])] += 1
+            handle.write(json.dumps(example, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
 
     by_kind = Counter(str(row["kind"]) for row in examples)
+    candidate_by_kind = Counter(str(row["kind"]) for row in candidates)
     agreement = sum(
         int(row["current_armg_index"] == row["teacher_best_index"])
         for row in examples
     ) / len(examples)
+    mistake_examples = sum(
+        int(row["current_armg_index"] != row["teacher_best_index"])
+        for row in examples
+    )
+    high_uncertainty = sum(
+        float((row.get("prelabel_uncertainty") or {}).get("uncertainty", 0.0)) >= 0.55
+        for row in examples
+    )
+
+    for game in games:
+        game["selected_teacher_states"] = selected_by_seed[int(game["seed"])]
+
     return {
         "schema_version": STRATEGY_DATASET_SCHEMA_VERSION,
+        "data_efficiency_version": DATA_EFFICIENCY_VERSION,
         "combat_policy": f"mcts_{mcts_sims}",
         "training_seed_count": len(seeds),
+        "candidate_pool_count": len(candidates),
+        "candidate_pool_by_kind": dict(sorted(candidate_by_kind.items())),
+        "teacher_label_budget": teacher_label_budget,
+        "selected_teacher_count": len(examples),
+        "selected_teacher_by_kind": dict(sorted(selected_by_kind.items())),
         "example_count": len(examples),
         "examples_by_kind": dict(sorted(by_kind.items())),
         "teacher_agreement": agreement,
-        "mistake_examples": sum(
-            int(row["current_armg_index"] != row["teacher_best_index"])
-            for row in examples
+        "mistake_examples": mistake_examples,
+        "high_uncertainty_examples": high_uncertainty,
+        "mean_prelabel_priority": (
+            sum(float(row.get("prelabel_priority", 0.0)) for row in examples)
+            / len(examples)
+        ),
+        "unique_state_buckets": len(
+            {str(row.get("state_bucket", "unknown")) for row in examples}
         ),
         "skipped_wide_decisions": skipped_wide,
         "skipped_single_choice_decisions": skipped_single,
@@ -756,6 +982,14 @@ def _load_or_init_state(
                 "combat MCTS budget is frozen for one Strategy lineage; "
                 "start a new state-dir to change it"
             )
+        if int(payload.get("data_efficiency_version", 1)) < DATA_EFFICIENCY_VERSION:
+            payload["data_efficiency_version"] = DATA_EFFICIENCY_VERSION
+            payload["stagnation_count"] = 0
+            payload["data_efficiency_upgrade_round"] = (
+                int(payload.get("accepted_rounds", 0))
+                + int(payload.get("rejected_rounds", 0))
+            )
+            _write_json(state_path, payload)
         return payload
 
     shutil.copy2(base_weight, current)
@@ -770,6 +1004,7 @@ def _load_or_init_state(
         "current_strategy_sha256": _sha256(current),
         "base_strategy_sha256": _sha256(base_weight),
         "combat_mcts_sims": int(combat_mcts_sims),
+        "data_efficiency_version": DATA_EFFICIENCY_VERSION,
     }
     _write_json(state_path, payload)
     return payload
@@ -835,6 +1070,8 @@ def main() -> int:
         "--max-branch-points-per-kind-per-game", type=int, default=1
     )
     parser.add_argument("--max-choice-branches", type=int, default=20)
+    parser.add_argument("--teacher-label-budget", type=int, default=24)
+    parser.add_argument("--min-labels-per-kind", type=int, default=3)
     parser.add_argument("--max-game-steps", type=int, default=600)
     parser.add_argument("--max-battle-steps", type=int, default=1200)
     parser.add_argument("--temperature", type=float, default=2.0)
@@ -859,6 +1096,8 @@ def main() -> int:
         raise RuntimeError("branch limits are invalid")
     if args.epochs < 1 or args.max_stagnation < 1:
         raise RuntimeError("epochs/max-stagnation must be positive")
+    if args.teacher_label_budget < 1 or args.min_labels_per_kind < 0:
+        raise RuntimeError("Teacher selection limits are invalid")
 
     dev_all = _read_seeds(args.dev_seed_file)
     if len(dev_all) != 50:
@@ -925,6 +1164,8 @@ def main() -> int:
             max_game_steps=args.max_game_steps,
             max_battle_steps=args.max_battle_steps,
             temperature=args.temperature,
+            teacher_label_budget=args.teacher_label_budget,
+            min_labels_per_kind=args.min_labels_per_kind,
         )
         replay_report = _merge_replay(
             replay_path,
@@ -1041,6 +1282,7 @@ def main() -> int:
             "combat_training_enabled": False,
             "combat_policy": f"mcts_{args.combat_mcts_sims}",
             "strategy_scope": "all_armg_noncombat_choice_kinds",
+            "data_efficiency_version": DATA_EFFICIENCY_VERSION,
             "current_strategy_sha_before": before_sha,
             "current_strategy_sha_after": _sha256(current_weight),
             "candidate_strategy_sha256": _sha256(candidate_weight),
@@ -1068,6 +1310,7 @@ def main() -> int:
         "rounds_completed": len(reports),
         "combat_training_enabled": False,
         "combat_policy": f"mcts_{args.combat_mcts_sims}",
+        "data_efficiency_version": DATA_EFFICIENCY_VERSION,
         "generation": int(state.get("generation", 0)),
         "accepted_rounds": int(state.get("accepted_rounds", 0)),
         "rejected_rounds": int(state.get("rejected_rounds", 0)),

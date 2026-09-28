@@ -412,6 +412,14 @@ def main() -> int:
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    state_path = args.state_dir / "state.json"
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["replay_stats"] = manifest
+        state_path.write_text(
+            json.dumps(state, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     print(
         "PPO_V14_REPLAY_PASS",
         json.dumps(manifest, sort_keys=True),

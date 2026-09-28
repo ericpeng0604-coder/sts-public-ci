@@ -345,15 +345,26 @@ jobs:
             exit 0
           fi
 
-          cp control/sts1-armg-strategy-loop.request "$RUNNER_TEMP/next.request"
-          python - "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" <<'PY'
-          import sys
+          path="control/sts1-armg-strategy-loop.request"
+          updated=0
+          for control_try in 1 2 3 4 5; do
+            meta="$RUNNER_TEMP/control-meta.json"
+            gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$GITHUB_REF_NAME" > "$meta"
+            sha="$(python - "$meta" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding="utf-8"))["sha"])
+          PY
+          )"
+            python - "$meta" "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" <<'PY'
+          import base64, json, sys
           from pathlib import Path
-          p=Path(sys.argv[1])
-          attempt=sys.argv[2]
-          retry=sys.argv[3]
+          meta=json.load(open(sys.argv[1], encoding="utf-8"))
+          raw=base64.b64decode(meta["content"]).decode("utf-8")
+          attempt=sys.argv[3]
+          retry=sys.argv[4]
           rows=[]
-          for line in p.read_text().splitlines():
+          seen=set()
+          for line in raw.splitlines():
               if not line.strip():
                   continue
               k,v=line.split("=",1)
@@ -362,12 +373,47 @@ jobs:
               elif k=="retry_count":
                   v=retry
               rows.append((k,v))
-          p.write_text("".join(f"{k}={v}\n" for k,v in rows))
+              seen.add(k)
+          if "attempt" not in seen:
+              rows.append(("attempt", attempt))
+          if "retry_count" not in seen:
+              rows.append(("retry_count", retry))
+          Path(sys.argv[2]).write_text(
+              "".join(f"{k}={v}\n" for k,v in rows),
+              encoding="utf-8",
+          )
           PY
+            encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
+            if gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+              -f message="control(sts1): continue Strategy-only loop" \
+              -f content="$encoded" \
+              -f sha="$sha" \
+              -f branch="$GITHUB_REF_NAME" >/dev/null 2>"$RUNNER_TEMP/control-put.err"; then
+              updated=1
+              echo "STRATEGY_CONTROL_UPDATED try=$control_try"
+              break
+            fi
+            echo "STRATEGY_CONTROL_CONFLICT try=$control_try"
+            cat "$RUNNER_TEMP/control-put.err"
+            sleep "$control_try"
+          done
 
-          path="control/sts1-armg-strategy-loop.request"
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$GITHUB_REF_NAME" --jq '.sha')"
-          encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
-          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path"             -f message="control(sts1): continue Strategy-only loop"             -f content="$encoded"             -f sha="$sha"             -f branch="$GITHUB_REF_NAME" >/dev/null
-          gh workflow run sts1-armg-strategy-loop.yml --ref "$GITHUB_REF_NAME"
+          if [ "$updated" -ne 1 ]; then
+            echo "STRATEGY_CONTROL_UPDATE_FAILED_AFTER_RETRIES"
+            exit 1
+          fi
+
+          dispatched=0
+          for dispatch_try in 1 2 3; do
+            if gh workflow run sts1-armg-strategy-loop.yml --ref "$GITHUB_REF_NAME"; then
+              dispatched=1
+              echo "STRATEGY_AUTO_LOOP_DISPATCHED try=$dispatch_try"
+              break
+            fi
+            sleep "$dispatch_try"
+          done
+          if [ "$dispatched" -ne 1 ]; then
+            echo "STRATEGY_NEXT_DISPATCH_FAILED"
+            exit 1
+          fi
           echo "STRATEGY_AUTO_LOOP_CONTINUED"

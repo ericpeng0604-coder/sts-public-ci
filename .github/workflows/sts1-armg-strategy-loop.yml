@@ -368,13 +368,14 @@ jobs:
           print(json.load(open(sys.argv[1], encoding="utf-8"))["sha"])
           PY
           )"
-            python - "$meta" "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" <<'PY'
+            python - "$meta" "$RUNNER_TEMP/current.request" "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" <<'PY'
           import base64, json, sys
           from pathlib import Path
           meta=json.load(open(sys.argv[1], encoding="utf-8"))
           raw=base64.b64decode(meta["content"]).decode("utf-8")
-          attempt=sys.argv[3]
-          retry=sys.argv[4]
+          Path(sys.argv[2]).write_text(raw, encoding="utf-8")
+          attempt=sys.argv[4]
+          retry=sys.argv[5]
           rows=[]
           seen=set()
           for line in raw.splitlines():
@@ -391,11 +392,16 @@ jobs:
               rows.append(("attempt", attempt))
           if "retry_count" not in seen:
               rows.append(("retry_count", retry))
-          Path(sys.argv[2]).write_text(
+          Path(sys.argv[3]).write_text(
               "".join(f"{k}={v}\n" for k,v in rows),
               encoding="utf-8",
           )
           PY
+            if cmp -s "$RUNNER_TEMP/current.request" "$RUNNER_TEMP/next.request"; then
+              updated=1
+              echo "STRATEGY_CONTROL_ALREADY_CURRENT try=$control_try"
+              break
+            fi
             encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
             if gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
               -f message="control(sts1): continue Strategy-only loop" \

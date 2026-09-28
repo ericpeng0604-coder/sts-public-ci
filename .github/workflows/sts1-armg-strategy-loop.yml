@@ -9,6 +9,8 @@ on:
       - 'src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py'
       - 'scripts/sts1/sts1_armg_strategy_loop.py'
       - 'tests/test_sts1_armg_strategy_evolve.py'
+      - 'scripts/sts1/sts1_strategy_state_validate.py'
+      - 'tests/test_sts1_strategy_state_validate.py'
       - 'control/sts1-armg-strategy-loop.start'
   workflow_dispatch:
 
@@ -45,11 +47,17 @@ jobs:
 
       - name: Compile Strategy loop
         run: |
-          python -m py_compile             src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py             scripts/sts1/sts1_armg_strategy_loop.py
+          python -m py_compile \
+            src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py \
+            scripts/sts1/sts1_armg_strategy_loop.py \
+            scripts/sts1/sts1_strategy_state_validate.py
 
       - name: Verify Strategy-only contracts
         run: |
-          pytest -q             tests/test_sts1_armg_strategy_evolve.py             tests/test_sts1_champion_gate.py
+          pytest -q \
+            tests/test_sts1_armg_strategy_evolve.py \
+            tests/test_sts1_strategy_state_validate.py \
+            tests/test_sts1_champion_gate.py
 
   strategy-round:
     needs: contract-tests
@@ -126,24 +134,60 @@ jobs:
           ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
           ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
 
-      - name: Restore durable Strategy state
+      - name: Restore newest valid Strategy state
         if: env.STRATEGY_ENABLED == '1'
         run: |
           set -euo pipefail
           state="$RUNNER_TEMP/strategy-state"
           rm -rf "$state"
           mkdir -p "$state"
-          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
-          if [ -n "$artifact_id" ]; then
-            curl --fail --location               -H "Authorization: Bearer $GH_TOKEN"               -H "Accept: application/vnd.github+json"               -o "$RUNNER_TEMP/strategy-state.zip"               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
-            unzip -q "$RUNNER_TEMP/strategy-state.zip" -d "$state/raw"
-            found="$(find "$state/raw" -name strategy-state.json -print -quit)"
-            if [ -n "$found" ]; then
-              cp "$found" "$state/strategy-state.json"
-              cp "$(find "$state/raw" -name current-strategy.pt -print -quit)" "$state/current-strategy.pt"
-              replay="$(find "$state/raw" -name strategy-replay.jsonl -print -quit)"
-              [ -z "$replay" ] || cp "$replay" "$state/strategy-replay.jsonl"
+
+          mapfile -t artifact_ids < <(
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT&per_page=100" \
+              --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[].id'
+          )
+
+          restored=0
+          for artifact_id in "${artifact_ids[@]}"; do
+            rm -rf "$RUNNER_TEMP/strategy-candidate"
+            mkdir -p "$RUNNER_TEMP/strategy-candidate/raw"
+            if ! curl --fail --location \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -o "$RUNNER_TEMP/strategy-candidate.zip" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"; then
+              echo "STRATEGY_STATE_SKIP_DOWNLOAD artifact=$artifact_id"
+              continue
             fi
+            if ! unzip -q "$RUNNER_TEMP/strategy-candidate.zip" -d "$RUNNER_TEMP/strategy-candidate/raw"; then
+              echo "STRATEGY_STATE_SKIP_UNZIP artifact=$artifact_id"
+              continue
+            fi
+
+            found="$(find "$RUNNER_TEMP/strategy-candidate/raw" -name strategy-state.json -print -quit)"
+            weight="$(find "$RUNNER_TEMP/strategy-candidate/raw" -name current-strategy.pt -print -quit)"
+            replay="$(find "$RUNNER_TEMP/strategy-candidate/raw" -name strategy-replay.jsonl -print -quit)"
+            if [ -z "$found" ] || [ -z "$weight" ]; then
+              echo "STRATEGY_STATE_SKIP_MISSING_FILES artifact=$artifact_id"
+              continue
+            fi
+
+            rm -f "$state/strategy-state.json" "$state/current-strategy.pt" "$state/strategy-replay.jsonl"
+            cp "$found" "$state/strategy-state.json"
+            cp "$weight" "$state/current-strategy.pt"
+            [ -z "$replay" ] || cp "$replay" "$state/strategy-replay.jsonl"
+
+            if python scripts/sts1/sts1_strategy_state_validate.py --state-dir "$state"; then
+              echo "STRATEGY_STATE_RESTORED artifact=$artifact_id"
+              restored=1
+              break
+            fi
+            echo "STRATEGY_STATE_SKIP_INVALID artifact=$artifact_id"
+          done
+
+          if [ "$restored" -eq 0 ]; then
+            rm -f "$state/strategy-state.json" "$state/current-strategy.pt" "$state/strategy-replay.jsonl"
+            echo "NO_VALID_STRATEGY_STATE_START_FROM_UPSTREAM"
           fi
           echo "STRATEGY_STATE_DIR=$state" >> "$GITHUB_ENV"
 
@@ -169,6 +213,8 @@ jobs:
           assert Path(__import__('os').environ["STRATEGY_STATE_DIR"], "strategy-state.json").is_file()
           print("PASS_STRATEGY_ONLY_INVARIANTS", s["combat_policy"], s["generation"])
           PY
+          python scripts/sts1/sts1_strategy_state_validate.py \
+            --state-dir "$STRATEGY_STATE_DIR"
 
       - name: Upload durable Strategy state
         if: env.STRATEGY_ENABLED == '1' && success()

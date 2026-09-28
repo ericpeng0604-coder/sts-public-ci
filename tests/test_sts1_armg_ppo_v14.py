@@ -293,3 +293,112 @@ def test_rejected_actor_still_keeps_new_critic(tmp_path: Path):
     )
     assert (state_dir / "offline-champion.pt").read_bytes() == b"parent"
     assert (state_dir / "training-critic.pt").read_bytes() == b"better-critic"
+
+
+
+def test_parent_promotion_clears_ppo_replay_but_keeps_elite_archive(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "offline-champion.pt").write_bytes(b"parent")
+    (state_dir / "ppo-replay.npz").write_bytes(b"same-parent-replay")
+    (state_dir / "elite-replay.npz").write_bytes(b"cross-generation-elite")
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "sts1-armg-ppo-v14-loop-state-v1",
+                "round_index": 4,
+                "generation": 1,
+                "parent_generation": 1,
+                "stagnation_count": 2,
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    candidate = tmp_path / "candidate.pt"
+    critic = tmp_path / "critic.pt"
+    candidate.write_bytes(b"new-parent")
+    critic.write_bytes(b"critic")
+    summary = tmp_path / "gate.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "schema_version": "sts1-armg-ppo-v14-two-level-gate-v1",
+                "decision": "ADOPT_PARENT",
+                "final_readiness": "NOT_READY",
+                "dev_gate": {"status": "PASS", "win_delta": 1},
+                "final_gate_30": {"status": "HOLD"},
+                "final_gate_50": {"status": "SKIPPED"},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(STATE_SCRIPT),
+            "--state-dir", str(state_dir),
+            "--candidate", str(candidate),
+            "--candidate-critic", str(critic),
+            "--gate-summary", str(summary),
+            "--run-id", "125",
+        ],
+        check=True,
+    )
+
+    assert not (state_dir / "ppo-replay.npz").exists()
+    assert (state_dir / "elite-replay.npz").read_bytes() == b"cross-generation-elite"
+
+
+def test_parent_hold_preserves_both_replay_archives(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "offline-champion.pt").write_bytes(b"parent")
+    (state_dir / "ppo-replay.npz").write_bytes(b"same-parent-replay")
+    (state_dir / "elite-replay.npz").write_bytes(b"elite")
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "sts1-armg-ppo-v14-loop-state-v1",
+                "round_index": 5,
+                "generation": 1,
+                "parent_generation": 1,
+                "stagnation_count": 1,
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    candidate = tmp_path / "candidate.pt"
+    critic = tmp_path / "critic.pt"
+    candidate.write_bytes(b"candidate")
+    critic.write_bytes(b"critic")
+    summary = tmp_path / "gate.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "schema_version": "sts1-armg-ppo-v14-two-level-gate-v1",
+                "decision": "HOLD_PARENT",
+                "final_readiness": "NOT_READY",
+                "dev_gate": {"status": "HOLD", "win_delta": 0},
+                "final_gate_30": {"status": "SKIPPED"},
+                "final_gate_50": {"status": "SKIPPED"},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(STATE_SCRIPT),
+            "--state-dir", str(state_dir),
+            "--candidate", str(candidate),
+            "--candidate-critic", str(critic),
+            "--gate-summary", str(summary),
+            "--run-id", "126",
+        ],
+        check=True,
+    )
+
+    assert (state_dir / "ppo-replay.npz").read_bytes() == b"same-parent-replay"
+    assert (state_dir / "elite-replay.npz").read_bytes() == b"elite"

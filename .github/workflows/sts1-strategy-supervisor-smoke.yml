@@ -1,0 +1,151 @@
+name: STS1 Strategy Supervisor Smoke
+
+on:
+  push:
+    branches:
+      - gpt/sts1-armg-strategy-loop-20260928
+    paths:
+      - '.github/workflows/sts1-strategy-supervisor-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  STATE_ARTIFACT: sts1-armg-strategy-loop-state
+  MAIN_WORKFLOW: sts1-armg-strategy-loop.yml
+
+jobs:
+  verify-supervisor-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore and validate latest durable Strategy state
+        run: |
+          set -euo pipefail
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
+          test -n "$artifact_id"
+          curl --fail --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/state.zip" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+          mkdir -p "$RUNNER_TEMP/state/raw" "$RUNNER_TEMP/state/normalized"
+          unzip -q "$RUNNER_TEMP/state.zip" -d "$RUNNER_TEMP/state/raw"
+          found="$(find "$RUNNER_TEMP/state/raw" -name strategy-state.json -print -quit)"
+          weight="$(find "$RUNNER_TEMP/state/raw" -name current-strategy.pt -print -quit)"
+          replay="$(find "$RUNNER_TEMP/state/raw" -name strategy-replay.jsonl -print -quit)"
+          test -n "$found"
+          test -n "$weight"
+          cp "$found" "$RUNNER_TEMP/state/normalized/strategy-state.json"
+          cp "$weight" "$RUNNER_TEMP/state/normalized/current-strategy.pt"
+          [ -z "$replay" ] || cp "$replay" "$RUNNER_TEMP/state/normalized/strategy-replay.jsonl"
+          python scripts/sts1/sts1_strategy_state_validate.py \
+            --state-dir "$RUNNER_TEMP/state/normalized"
+
+      - name: Conflict-safe control update and dispatch
+        run: |
+          set -euo pipefail
+          path="control/sts1-armg-strategy-loop.request"
+
+          meta="$RUNNER_TEMP/control-meta.json"
+          gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$GITHUB_REF_NAME" > "$meta"
+          eval "$(python - "$meta" <<'PY'
+          import base64, json, shlex, sys
+          meta=json.load(open(sys.argv[1], encoding="utf-8"))
+          raw=base64.b64decode(meta["content"]).decode("utf-8")
+          values={}
+          for line in raw.splitlines():
+              if line.strip():
+                  k,v=line.split("=",1)
+                  values[k]=v
+          print("CURRENT_ATTEMPT="+shlex.quote(values.get("attempt","0")))
+          print("CURRENT_RETRY="+shlex.quote(values.get("retry_count","0")))
+          PY
+          )"
+          next_attempt="$((CURRENT_ATTEMPT + 1))"
+          next_retry=0
+
+          updated=0
+          for control_try in 1 2 3 4 5; do
+            gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$GITHUB_REF_NAME" > "$meta"
+            sha="$(python - "$meta" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding="utf-8"))["sha"])
+          PY
+          )"
+            python - "$meta" "$RUNNER_TEMP/current.request" "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" <<'PY'
+          import base64, json, sys
+          from pathlib import Path
+          meta=json.load(open(sys.argv[1], encoding="utf-8"))
+          raw=base64.b64decode(meta["content"]).decode("utf-8")
+          Path(sys.argv[2]).write_text(raw, encoding="utf-8")
+          attempt=sys.argv[4]
+          retry=sys.argv[5]
+          rows=[]
+          seen=set()
+          for line in raw.splitlines():
+              if not line.strip():
+                  continue
+              k,v=line.split("=",1)
+              if k=="attempt":
+                  v=attempt
+              elif k=="retry_count":
+                  v=retry
+              rows.append((k,v))
+              seen.add(k)
+          if "attempt" not in seen:
+              rows.append(("attempt", attempt))
+          if "retry_count" not in seen:
+              rows.append(("retry_count", retry))
+          Path(sys.argv[3]).write_text(
+              "".join(f"{k}={v}\n" for k,v in rows),
+              encoding="utf-8",
+          )
+          PY
+            if cmp -s "$RUNNER_TEMP/current.request" "$RUNNER_TEMP/next.request"; then
+              updated=1
+              echo "PASS_CONTROL_ALREADY_CURRENT"
+              break
+            fi
+            encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
+            if gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+              -f message="test(sts1): verify Strategy supervisor continuation" \
+              -f content="$encoded" \
+              -f sha="$sha" \
+              -f branch="$GITHUB_REF_NAME" >/dev/null 2>"$RUNNER_TEMP/control-put.err"; then
+              updated=1
+              echo "PASS_CONTROL_UPDATE try=$control_try"
+              break
+            fi
+            cat "$RUNNER_TEMP/control-put.err"
+            sleep "$control_try"
+          done
+          test "$updated" -eq 1
+
+          gh workflow run "$MAIN_WORKFLOW" --ref "$GITHUB_REF_NAME"
+          echo "PASS_STRATEGY_DISPATCH"
+
+      - name: Verify main workflow was queued
+        run: |
+          set -euo pipefail
+          found=0
+          for try_no in 1 2 3 4 5; do
+            count="$(gh run list \
+              --workflow "$MAIN_WORKFLOW" \
+              --branch "$GITHUB_REF_NAME" \
+              --limit 10 \
+              --json status,event \
+              --jq '[.[] | select(.event=="workflow_dispatch" and (.status=="queued" or .status=="in_progress" or .status=="waiting" or .status=="pending"))] | length')"
+            if [ "$count" -ge 1 ]; then
+              found=1
+              break
+            fi
+            sleep "$try_no"
+          done
+          test "$found" -eq 1
+          echo "PASS_STRATEGY_SUPERVISOR_CHAIN"

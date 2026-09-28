@@ -26,6 +26,8 @@ import hashlib
 import math
 import multiprocessing as mp
 import json
+import os
+import time
 from pathlib import Path
 import random
 import shutil
@@ -58,6 +60,12 @@ ROUND_SCHEMA_VERSION = "sts1-armg-strategy-round-v1"
 EVAL_SCHEMA_VERSION = "sts1-armg-strategy-eval-v1"
 DATA_EFFICIENCY_VERSION = 3
 ELITE_POOL_SCHEMA_VERSION = "sts1-strategy-elite-pool-v1"
+PARALLEL_CPU_VERSION = 1
+
+_TEACHER_PARALLEL_SELECTED: Sequence[Mapping[str, Any]] | None = None
+_TEACHER_PARALLEL_STS: Any = None
+_TEACHER_PARALLEL_ARMG: Any = None
+_TEACHER_PARALLEL_CONFIG: dict[str, Any] | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -649,6 +657,119 @@ def _branch_example(
     }
 
 
+
+def _teacher_parallel_worker(index: int) -> dict[str, Any]:
+    selected = _TEACHER_PARALLEL_SELECTED
+    config = _TEACHER_PARALLEL_CONFIG
+    if selected is None or config is None or _TEACHER_PARALLEL_STS is None or _TEACHER_PARALLEL_ARMG is None:
+        raise RuntimeError("parallel Teacher worker context is not initialized")
+    torch.set_num_threads(1)
+    candidate = selected[int(index)]
+    return _branch_example(
+        candidate["gc"],
+        sts=_TEACHER_PARALLEL_STS,
+        armg=_TEACHER_PARALLEL_ARMG,
+        mcts_sims=int(config["mcts_sims"]),
+        max_game_steps=int(config["max_game_steps"]),
+        max_battle_steps=int(config["max_battle_steps"]),
+        temperature=float(config["temperature"]),
+    )
+
+
+def _label_selected_candidates(
+    selected: Sequence[Mapping[str, Any]],
+    *,
+    sts: Any,
+    armg: ArmGNoncombatPolicy,
+    mcts_sims: int,
+    max_game_steps: int,
+    max_battle_steps: int,
+    temperature: float,
+    collection_workers: int,
+    parallel_timeout_seconds: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Label independent Teacher states in parallel, with sequential fallback."""
+    if collection_workers < 1:
+        raise RuntimeError("collection-workers must be positive")
+    if parallel_timeout_seconds < 1:
+        raise RuntimeError("parallel Teacher timeout must be positive")
+
+    effective = min(int(collection_workers), len(selected), max(1, os.cpu_count() or 1))
+    started = time.perf_counter()
+
+    def sequential(reason: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rows = [
+            _branch_example(
+                candidate["gc"],
+                sts=sts,
+                armg=armg,
+                mcts_sims=mcts_sims,
+                max_game_steps=max_game_steps,
+                max_battle_steps=max_battle_steps,
+                temperature=temperature,
+            )
+            for candidate in selected
+        ]
+        return rows, {
+            "configured_workers": int(collection_workers),
+            "effective_workers": 1,
+            "mode": "sequential" if reason is None else "sequential_fallback",
+            "fallback_reason": reason,
+            "available_cpu": int(os.cpu_count() or 1),
+            "elapsed_seconds": time.perf_counter() - started,
+        }
+
+    if effective <= 1 or len(selected) <= 1:
+        return sequential()
+
+    if "fork" not in mp.get_all_start_methods():
+        return sequential("fork_start_method_unavailable")
+
+    global _TEACHER_PARALLEL_SELECTED
+    global _TEACHER_PARALLEL_STS
+    global _TEACHER_PARALLEL_ARMG
+    global _TEACHER_PARALLEL_CONFIG
+    _TEACHER_PARALLEL_SELECTED = selected
+    _TEACHER_PARALLEL_STS = sts
+    _TEACHER_PARALLEL_ARMG = armg
+    _TEACHER_PARALLEL_CONFIG = {
+        "mcts_sims": int(mcts_sims),
+        "max_game_steps": int(max_game_steps),
+        "max_battle_steps": int(max_battle_steps),
+        "temperature": float(temperature),
+    }
+
+    context = mp.get_context("fork")
+    pool = context.Pool(processes=effective)
+    try:
+        async_result = pool.map_async(_teacher_parallel_worker, range(len(selected)))
+        rows = list(async_result.get(timeout=parallel_timeout_seconds))
+        pool.close()
+        pool.join()
+        if len(rows) != len(selected):
+            raise RuntimeError(
+                f"parallel Teacher lost rows: expected={len(selected)} got={len(rows)}"
+            )
+        return rows, {
+            "configured_workers": int(collection_workers),
+            "effective_workers": effective,
+            "mode": "fork_pool",
+            "fallback_reason": None,
+            "available_cpu": int(os.cpu_count() or 1),
+            "elapsed_seconds": time.perf_counter() - started,
+        }
+    except BaseException as exc:
+        pool.terminate()
+        pool.join()
+        reason = f"{type(exc).__name__}:{exc}"
+        return sequential(reason)
+    finally:
+        _TEACHER_PARALLEL_SELECTED = None
+        _TEACHER_PARALLEL_STS = None
+        _TEACHER_PARALLEL_ARMG = None
+        _TEACHER_PARALLEL_CONFIG = None
+
+
 def _collect_dataset(
     *,
     seeds: Sequence[int],
@@ -664,6 +785,8 @@ def _collect_dataset(
     temperature: float,
     teacher_label_budget: int,
     min_labels_per_kind: int,
+    collection_workers: int,
+    parallel_timeout_seconds: int,
 ) -> dict[str, Any]:
     """Scout cheaply first, then spend MCTS only on high-value Strategy states."""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -793,17 +916,19 @@ def _collect_dataset(
     examples: list[dict[str, Any]] = []
 
     # Phase B: only now pay the expensive terminal branch-rollout cost.
+    raw_examples, parallel_teacher = _label_selected_candidates(
+        selected,
+        sts=sts,
+        armg=armg,
+        mcts_sims=mcts_sims,
+        max_game_steps=max_game_steps,
+        max_battle_steps=max_battle_steps,
+        temperature=temperature,
+        collection_workers=collection_workers,
+        parallel_timeout_seconds=parallel_timeout_seconds,
+    )
     with output.open("w", encoding="utf-8") as handle:
-        for candidate in selected:
-            example = _branch_example(
-                candidate["gc"],
-                sts=sts,
-                armg=armg,
-                mcts_sims=mcts_sims,
-                max_game_steps=max_game_steps,
-                max_battle_steps=max_battle_steps,
-                temperature=temperature,
-            )
+        for candidate, example in zip(selected, raw_examples, strict=True):
             if int(example["current_armg_index"]) != int(candidate["current_armg_index"]):
                 raise RuntimeError("Strategy scout/Teacher current-choice drift")
             example["prelabel_priority"] = float(candidate["prelabel_priority"])
@@ -848,6 +973,7 @@ def _collect_dataset(
         "teacher_label_budget": teacher_label_budget,
         "selected_teacher_count": len(examples),
         "selected_teacher_by_kind": dict(sorted(selected_by_kind.items())),
+        "parallel_teacher": parallel_teacher,
         "example_count": len(examples),
         "examples_by_kind": dict(sorted(by_kind.items())),
         "teacher_agreement": agreement,
@@ -1311,7 +1437,9 @@ def _load_or_init_state(
                 int(payload.get("accepted_rounds", 0))
                 + int(payload.get("rejected_rounds", 0))
             )
-            _write_json(state_path, payload)
+        if int(payload.get("parallel_cpu_version", 0)) < PARALLEL_CPU_VERSION:
+            payload["parallel_cpu_version"] = PARALLEL_CPU_VERSION
+        _write_json(state_path, payload)
         return payload
 
     shutil.copy2(base_weight, current)
@@ -1327,6 +1455,7 @@ def _load_or_init_state(
         "base_strategy_sha256": _sha256(base_weight),
         "combat_mcts_sims": int(combat_mcts_sims),
         "data_efficiency_version": DATA_EFFICIENCY_VERSION,
+        "parallel_cpu_version": PARALLEL_CPU_VERSION,
     }
     _write_json(state_path, payload)
     return payload
@@ -1394,6 +1523,8 @@ def main() -> int:
     parser.add_argument("--max-choice-branches", type=int, default=20)
     parser.add_argument("--teacher-label-budget", type=int, default=24)
     parser.add_argument("--min-labels-per-kind", type=int, default=3)
+    parser.add_argument("--collection-workers", type=int, default=1)
+    parser.add_argument("--parallel-teacher-timeout-seconds", type=int, default=2400)
     parser.add_argument("--max-game-steps", type=int, default=600)
     parser.add_argument("--max-battle-steps", type=int, default=1200)
     parser.add_argument("--temperature", type=float, default=2.0)
@@ -1427,6 +1558,8 @@ def main() -> int:
         raise RuntimeError("epochs/max-stagnation must be positive")
     if args.teacher_label_budget < 1 or args.min_labels_per_kind < 0:
         raise RuntimeError("Teacher selection limits are invalid")
+    if args.collection_workers < 1 or args.parallel_teacher_timeout_seconds < 1:
+        raise RuntimeError("Parallel Teacher settings are invalid")
     if args.elite_mining_seeds < 0 or args.elite_examples_per_seed < 1:
         raise RuntimeError("Elite mining limits are invalid")
     if args.elite_min_quality_margin < 0 or not 0 < args.elite_max_sign_p <= 1:
@@ -1502,6 +1635,8 @@ def main() -> int:
             temperature=args.temperature,
             teacher_label_budget=args.teacher_label_budget,
             min_labels_per_kind=args.min_labels_per_kind,
+            collection_workers=args.collection_workers,
+            parallel_timeout_seconds=args.parallel_teacher_timeout_seconds,
         )
         replay_report = _merge_replay(
             replay_path,
@@ -1681,6 +1816,7 @@ def main() -> int:
             + consumed_eval,
             "current_strategy_sha256": _sha256(current_weight),
             "data_efficiency_version": DATA_EFFICIENCY_VERSION,
+            "parallel_cpu_version": PARALLEL_CPU_VERSION,
             "elite_pool_count": len(elite_pool),
         }
         _write_json(args.state_dir / "strategy-state.json", state)
@@ -1692,6 +1828,8 @@ def main() -> int:
             "combat_policy": f"mcts_{args.combat_mcts_sims}",
             "strategy_scope": "all_armg_noncombat_choice_kinds",
             "data_efficiency_version": DATA_EFFICIENCY_VERSION,
+            "parallel_cpu_version": PARALLEL_CPU_VERSION,
+            "collection_workers": int(args.collection_workers),
             "current_strategy_sha_before": before_sha,
             "current_strategy_sha_after": _sha256(current_weight),
             "candidate_strategy_sha256": _sha256(candidate_weight),
@@ -1727,6 +1865,8 @@ def main() -> int:
         "combat_training_enabled": False,
         "combat_policy": f"mcts_{args.combat_mcts_sims}",
         "data_efficiency_version": DATA_EFFICIENCY_VERSION,
+        "parallel_cpu_version": PARALLEL_CPU_VERSION,
+        "collection_workers": int(args.collection_workers),
         "generation": int(state.get("generation", 0)),
         "accepted_rounds": int(state.get("accepted_rounds", 0)),
         "rejected_rounds": int(state.get("rejected_rounds", 0)),

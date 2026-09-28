@@ -31,6 +31,9 @@ env:
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
   STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v3'
   BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v2'
+  BOOTSTRAP_ELITE_REPORT_ARTIFACT: 'sts1-armg-strategy-loop-report-36415222490'
+  BOOTSTRAP_ELITE_EXPECTED_SHA: 'ea6d7bfa59f3bd4ac3c11dd2d4ebf236182a38acaed3fa720f0b81744cc0e4e5'
+  BOOTSTRAP_ELITE_PARENT_SHA: 'fc4bb1e64ea3ee4aec2245445a01172afb35f872b7b9c90a2b6000430f4c67cb'
   BOOTSTRAP_ELITE_RUN: '36415222490'
 
 jobs:
@@ -311,6 +314,99 @@ jobs:
             fi
           fi
           echo "STRATEGY_STATE_DIR=$state" >> "$GITHUB_ENV"
+
+      - name: Bootstrap verified historical Elite Candidate
+        if: env.STRATEGY_ENABLED == '1'
+        run: |
+          set -euo pipefail
+          state="$STRATEGY_STATE_DIR"
+
+          # Only seed the pool once. Never overwrite a durable v3 Elite pool.
+          if [ -f "$state/elite-pool.json" ] &&              [ "$(python - "$state/elite-pool.json" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          print(len(p.get("entries", [])))
+          PY
+          )" -gt 0 ]; then
+            echo "ELITE_BOOTSTRAP_SKIPPED pool_already_populated"
+            exit 0
+          fi
+
+          current_sha="$(sha256sum "$state/current-strategy.pt" | awk '{print $1}')"
+          if [ "$current_sha" != "$BOOTSTRAP_ELITE_PARENT_SHA" ]; then
+            echo "ELITE_BOOTSTRAP_SKIPPED champion_changed current=$current_sha"
+            exit 0
+          fi
+
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$BOOTSTRAP_ELITE_REPORT_ARTIFACT&per_page=20"             --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
+          test -n "$artifact_id"
+          rm -rf "$RUNNER_TEMP/elite-bootstrap"
+          mkdir -p "$RUNNER_TEMP/elite-bootstrap"
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/elite-bootstrap.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+          unzip -q "$RUNNER_TEMP/elite-bootstrap.zip" -d "$RUNNER_TEMP/elite-bootstrap"
+
+          candidate="$(find "$RUNNER_TEMP/elite-bootstrap" -path '*/round-0007/candidate-strategy.pt' -print -quit)"
+          report="$(find "$RUNNER_TEMP/elite-bootstrap" -path '*/round-0007/round-report.json' -print -quit)"
+          test -n "$candidate"
+          test -n "$report"
+
+          candidate_sha="$(sha256sum "$candidate" | awk '{print $1}')"
+          test "$candidate_sha" = "$BOOTSTRAP_ELITE_EXPECTED_SHA"
+
+          mkdir -p "$state/elite-candidates"
+          target_rel="elite-candidates/elite-round-0007-${candidate_sha:0:12}.pt"
+          cp "$candidate" "$state/$target_rel"
+
+          python - "$report" "$state/elite-pool.json" "$target_rel" "$candidate_sha" "$current_sha" <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          report=json.load(open(sys.argv[1], encoding="utf-8"))
+          fresh=report["fresh_gate"]
+          assert report["round"] == 7
+          assert report["dev_gate"]["status"] == "PASS"
+          assert report["hidden_gate"]["status"] == "PASS"
+          assert fresh["status"] == "ROLLBACK"
+          assert fresh["win_delta"] >= 1
+          assert fresh["floor_delta"] >= -0.5
+          assert fresh["paired"]["candidate_better"] > fresh["paired"]["candidate_worse"]
+          assert fresh["paired"]["one_sided_sign_p"] <= 0.25
+          assert set(fresh.get("reasons", [])) <= {"paired_superiority_not_strong_enough"}
+          for side in ("current","candidate"):
+              assert fresh[side]["complete_runs"] == 100
+              assert all(v == 0 for v in fresh[side]["safety"].values())
+              assert fresh[side]["pure_mcts_runs"] == 100
+
+          metrics={
+              "eligible": True,
+              "reason": "near_miss_elite_historical_bootstrap",
+              "win_delta": fresh["win_delta"],
+              "floor_delta": fresh["floor_delta"],
+              "candidate_better": fresh["paired"]["candidate_better"],
+              "candidate_worse": fresh["paired"]["candidate_worse"],
+              "one_sided_sign_p": fresh["paired"]["one_sided_sign_p"],
+              "max_sign_p": 0.25,
+              "min_win_delta": 1,
+              "min_floor_delta": -0.5,
+          }
+          payload={
+              "schema_version":"sts1-strategy-elite-pool-v1",
+              "entries":[{
+                  "round":7,
+                  "sha256":sys.argv[4],
+                  "weight_file":sys.argv[3],
+                  "parent_champion_sha256":sys.argv[5],
+                  "metrics":metrics,
+              }],
+          }
+          Path(sys.argv[2]).write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("PASS_BOOTSTRAP_HISTORICAL_ELITE", json.dumps(metrics, sort_keys=True))
+          PY
+
+          python scripts/sts1/sts1_strategy_state_validate.py --state-dir "$state"
 
       - name: Run one real Strategy-only round
         if: env.STRATEGY_ENABLED == '1'

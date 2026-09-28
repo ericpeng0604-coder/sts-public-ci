@@ -56,9 +56,11 @@ def test_parallel_teacher_uses_two_workers_and_preserves_order(monkeypatch) -> N
         parallel_timeout_seconds=30,
     )
     assert [row["value"] for row in results] == [11, 22, 33, 44]
-    assert report["mode"] == "fork_per_candidate"
+    assert report["mode"] == "fork_rolling"
     assert report["effective_workers"] == 2
     assert report["fallback_reason"] is None
+    assert report["parallel_elapsed_seconds"] >= 0.0
+    assert report["parity_elapsed_seconds"] >= 0.0
 
 
 def test_parallel_teacher_fails_safe_to_sequential(monkeypatch) -> None:

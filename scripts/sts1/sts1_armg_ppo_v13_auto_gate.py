@@ -17,6 +17,7 @@ from concurrent.futures import ProcessPoolExecutor
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 from typing import Any, Iterable
 
 from roguelike_ai.sts1_phase3.champion_gate import (
@@ -39,6 +40,18 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _automatic_simulator_id(module_dir: Path) -> str:
+    source = module_dir.parent
+    head = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    project_root = Path(__file__).resolve().parents[2]
+    simulator_py = project_root / "src" / "roguelike_ai" / "sts1_phase3" / "simulator.py"
+    gate_py = project_root / "src" / "roguelike_ai" / "sts1_phase3" / "champion_gate.py"
+    return f"{head}:{_sha256(simulator_py)}:{_sha256(gate_py)}"
 
 
 def _read_seeds(path: Path) -> list[int]:
@@ -161,14 +174,20 @@ def _cache_identity(
 def _load_champion_cache(
     path: Path | None,
     *,
+    state_path: Path | None,
     champion_sha: str,
     seeds: list[int],
     mcts_sims: int,
     simulator_id: str,
 ) -> dict[int, dict[str, Any]]:
-    if path is None or not path.is_file():
+    payload = None
+    if path is not None and path.is_file():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    elif state_path is not None and state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        payload = state.get("champion_eval_cache")
+    if not isinstance(payload, dict):
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != CACHE_SCHEMA:
         print("PPO_V13_CHAMPION_CACHE_MISS schema", flush=True)
         return {}
@@ -209,15 +228,13 @@ def _load_champion_cache(
 def _write_champion_cache(
     path: Path | None,
     *,
+    state_path: Path | None,
     champion_sha: str,
     seeds: list[int],
     mcts_sims: int,
     simulator_id: str,
     runs_by_seed: dict[int, dict[str, Any]],
 ) -> None:
-    if path is None:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
     ordered = [runs_by_seed[s] for s in seeds if s in runs_by_seed]
     payload = {
         "schema_version": CACHE_SCHEMA,
@@ -229,10 +246,19 @@ def _write_champion_cache(
         ),
         "runs": ordered,
     }
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    elif state_path is not None and state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["champion_eval_cache"] = payload
+        state_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     print(f"PPO_V13_CHAMPION_CACHE_WRITE {len(ordered)}/50", flush=True)
 
 
@@ -263,20 +289,27 @@ def main() -> int:
     parser.add_argument("--mcts-sims", type=int, default=2000)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--current-cache", type=Path)
-    parser.add_argument("--simulator-id", default="unknown")
+    parser.add_argument("--simulator-id", default="auto")
     args = parser.parse_args()
 
     seeds = _read_seeds(args.formal_seed_file)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     current_sha = _sha256(args.current_weight)
     candidate_sha = _sha256(args.candidate_weight)
+    simulator_id = (
+        _automatic_simulator_id(args.module_dir)
+        if args.simulator_id == "auto"
+        else args.simulator_id
+    )
+    state_path = args.current_weight.parent / "state.json"
 
     current_by_seed = _load_champion_cache(
         args.current_cache,
+        state_path=state_path,
         champion_sha=current_sha,
         seeds=seeds,
         mcts_sims=args.mcts_sims,
-        simulator_id=args.simulator_id,
+        simulator_id=simulator_id,
     )
     candidate_by_seed: dict[int, dict[str, Any]] = {}
 
@@ -305,10 +338,11 @@ def main() -> int:
 
     _write_champion_cache(
         args.current_cache,
+        state_path=state_path,
         champion_sha=current_sha,
         seeds=seeds,
         mcts_sims=args.mcts_sims,
-        simulator_id=args.simulator_id,
+        simulator_id=simulator_id,
         runs_by_seed=current_by_seed,
     )
 
@@ -372,6 +406,7 @@ def main() -> int:
         "current_weight_sha256": current_sha,
         "candidate_weight_sha256": candidate_sha,
         "mcts_sims": args.mcts_sims,
+        "simulator_id": simulator_id,
         "parallel_workers": args.workers,
         "champion_cache_runs": len(current_by_seed),
         "gate_30": gate30,

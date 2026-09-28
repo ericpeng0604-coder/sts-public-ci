@@ -323,11 +323,23 @@ def main() -> int:
     ]
     reusable = sorted(reusable, key=_recent_key, reverse=True)
 
-    train_replay_limit = min(
+    train_replay_game_limit = min(
         len(reusable),
         int(len(fresh) * args.replay_fraction),
     )
-    train_replay = reusable[:train_replay_limit]
+    replay_decision_budget = int(
+        _game_decisions(fresh) * args.replay_fraction
+    )
+    train_replay: list[dict[str, Any]] = []
+    used_replay_decisions = 0
+    for game in reusable:
+        if len(train_replay) >= train_replay_game_limit:
+            break
+        game_decisions = len(game["action"])
+        if used_replay_decisions + game_decisions > replay_decision_budget:
+            continue
+        train_replay.append(game)
+        used_replay_decisions += game_decisions
     _pack(
         args.output_dir / "replay_00.npz",
         train_replay,
@@ -380,6 +392,10 @@ def main() -> int:
         "train_replay_decisions": _game_decisions(train_replay),
         "train_replay_fraction_of_fresh_games": (
             len(train_replay) / max(1, len(fresh))
+        ),
+        "train_replay_fraction_of_fresh_decisions": (
+            _game_decisions(train_replay)
+            / max(1, _game_decisions(fresh))
         ),
         "ppo_pool_games": len(ppo_pool),
         "ppo_pool_decisions": _game_decisions(ppo_pool),

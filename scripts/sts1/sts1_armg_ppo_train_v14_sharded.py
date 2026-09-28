@@ -82,6 +82,8 @@ def main() -> int:
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--base-critic", type=Path)
     p.add_argument("--critic-output", type=Path)
+    p.add_argument("--replay-shards", type=Path)
+    p.add_argument("--elite-replay", type=Path)
     p.add_argument("--checkpoint-id", required=True)
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-5)
@@ -95,6 +97,8 @@ def main() -> int:
     p.add_argument("--target-kl", type=float, default=0.02)
     p.add_argument("--behavior-temperature", type=float, default=1.0)
     p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--bc-coef", type=float, default=0.01)
+    p.add_argument("--bc-max-decisions", type=int, default=1024)
     a = p.parse_args()
 
     if not 0.25 <= a.behavior_temperature <= 2.0:
@@ -105,6 +109,10 @@ def main() -> int:
         raise RuntimeError("anchor-coef outside safe bounds")
     if not 0.0 < a.critic_lr <= a.lr:
         raise RuntimeError("critic-lr must be positive and <= actor lr")
+    if not 0.0 <= a.bc_coef <= 0.05:
+        raise RuntimeError("bc-coef outside safe bounds")
+    if not 0 <= a.bc_max_decisions <= 4096:
+        raise RuntimeError("bc-max-decisions outside safe bounds")
 
     os.environ["STS_BOT_DIR"] = str(a.armg_root)
     sys.path.insert(0, str(a.armg_root))
@@ -151,9 +159,28 @@ def main() -> int:
     )
     critic_output.parent.mkdir(parents=True, exist_ok=True)
 
-    files = sorted(a.shards.glob("shard_*.npz"))
+    fresh_files = sorted(a.shards.glob("shard_*.npz"))
+    replay_files = (
+        sorted(a.replay_shards.glob("replay_*.npz"))
+        if a.replay_shards is not None and a.replay_shards.is_dir()
+        else []
+    )
+    files = fresh_files + replay_files
+    if not fresh_files:
+        raise RuntimeError("no fresh shards")
     if not files:
         raise RuntimeError("no shards")
+
+    fresh_decisions = 0
+    replay_decisions = 0
+    for path in fresh_files:
+        with np.load(path, allow_pickle=False) as d:
+            fresh_decisions += len(d["action"])
+    for path in replay_files:
+        with np.load(path, allow_pickle=False) as d:
+            replay_decisions += len(d["action"])
+    if replay_decisions > fresh_decisions:
+        raise RuntimeError("replay decisions must not exceed fresh decisions")
 
     # Diagnose a persisted Critic against discounted returns that do not
     # depend on that Critic. A negative EV means it is worse than a constant
@@ -260,9 +287,23 @@ def main() -> int:
         flush=True,
     )
 
+    elite_data: dict[str, np.ndarray] | None = None
+    if a.elite_replay is not None and a.elite_replay.is_file():
+        with np.load(a.elite_replay, allow_pickle=False) as d:
+            elite_data = {
+                "obs": np.asarray(d["obs"], np.float32),
+                "desc": np.asarray(d["desc"], np.float32),
+                "offsets": np.asarray(d["offsets"], np.int64),
+                "action": np.asarray(d["action"], np.int64),
+            }
+        if len(elite_data["action"]) + 1 != len(elite_data["offsets"]):
+            raise RuntimeError("elite replay offsets invalid")
+
     history: list[dict[str, float | int]] = []
     first_ratio_mean: float | None = None
     first_ratio_abs_error: float | None = None
+    total_bc_updates = 0
+    total_bc_decisions = 0
 
     for ep in range(1, a.epochs + 1):
         losses: list[float] = []
@@ -286,6 +327,15 @@ def main() -> int:
                 old = torch.from_numpy(d["old_logp"].astype(np.float32))
                 A = torch.from_numpy(fixed_advantages[si])
                 R = torch.from_numpy(fixed_returns[si])
+                behavior_temperatures = (
+                    np.asarray(d["behavior_temperature"], np.float32)
+                    if "behavior_temperature" in d
+                    else np.full(len(A), a.behavior_temperature, np.float32)
+                )
+                if len(behavior_temperatures) != len(A):
+                    raise RuntimeError("behavior temperature length mismatch")
+                if np.any(behavior_temperatures < 0.25) or np.any(behavior_temperatures > 2.0):
+                    raise RuntimeError("replay behavior temperature outside safe bounds")
 
                 new_logp = []
                 entropy_terms = []
@@ -297,9 +347,10 @@ def main() -> int:
                     o = obs[i].repeat(len(ds), 1)
                     rows = torch.cat([o, ds], 1)
 
+                    sample_temperature = float(behavior_temperatures[i])
                     logits = (
                         actor.net(rows).squeeze(1)
-                        / a.behavior_temperature
+                        / sample_temperature
                     )
                     lp = torch.log_softmax(logits, 0)
                     pr = torch.softmax(logits, 0)
@@ -309,7 +360,7 @@ def main() -> int:
                     with torch.no_grad():
                         anchor_logits = (
                             anchor.net(rows).squeeze(1)
-                            / a.behavior_temperature
+                            / sample_temperature
                         )
                         anchor_lp = torch.log_softmax(anchor_logits, 0)
                         anchor_pr = torch.softmax(anchor_logits, 0)
@@ -411,6 +462,53 @@ def main() -> int:
             # Actor checkpoint can follow the newest PPO update.
             torch.save(actor.state_dict(), a.output)
 
+        bc_mean_loss = 0.0
+        bc_used = 0
+        if (
+            elite_data is not None
+            and a.bc_coef > 0.0
+            and a.bc_max_decisions > 0
+            and len(elite_data["action"]) > 0
+        ):
+            rng = np.random.default_rng(20260928 + ep)
+            take = min(a.bc_max_decisions, len(elite_data["action"]))
+            selected = rng.choice(
+                len(elite_data["action"]),
+                size=take,
+                replace=False,
+            )
+            batch_losses: list[float] = []
+            for start in range(0, len(selected), 64):
+                chunk = selected[start : start + 64]
+                losses = []
+                for raw_i in chunk:
+                    i = int(raw_i)
+                    begin = int(elite_data["offsets"][i])
+                    end = int(elite_data["offsets"][i + 1])
+                    ds = torch.from_numpy(elite_data["desc"][begin:end])
+                    o = torch.from_numpy(elite_data["obs"][i]).repeat(len(ds), 1)
+                    rows = torch.cat([o, ds], 1)
+                    lp = torch.log_softmax(actor.net(rows).squeeze(1), 0)
+                    action_i = int(elite_data["action"][i])
+                    if action_i < 0 or action_i >= len(ds):
+                        raise RuntimeError("elite replay contains illegal action")
+                    losses.append(-lp[action_i])
+                if losses:
+                    bc_loss = torch.stack(losses).mean() * a.bc_coef
+                    actor_opt.zero_grad()
+                    bc_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        list(actor.parameters()), 1.0
+                    )
+                    actor_opt.step()
+                    batch_losses.append(float(bc_loss.detach()))
+                    total_bc_updates += 1
+                    total_bc_decisions += len(losses)
+                    bc_used += len(losses)
+            if batch_losses:
+                bc_mean_loss = float(np.mean(batch_losses))
+            torch.save(actor.state_dict(), a.output)
+
         # Evaluate Critic globally against the same fixed rollout targets.
         epoch_value_predictions: list[np.ndarray] = []
         with torch.no_grad():
@@ -445,6 +543,8 @@ def main() -> int:
             ),
             "critic_checkpoint_improved": critic_improved,
             "best_critic_explained_variance": best_critic_ev,
+            "elite_bc_decisions": bc_used,
+            "elite_bc_mean_loss": bc_mean_loss,
             "seconds": time.time() - t0,
         }
         history.append(epoch_rec)
@@ -488,12 +588,19 @@ def main() -> int:
     report = {
         "schema": "sts1-armg-ppo-v14-sharded-train",
         "shards": len(files),
+        "fresh_shards": len(fresh_files),
+        "replay_shards": len(replay_files),
+        "fresh_decisions": fresh_decisions,
+        "replay_decisions": replay_decisions,
         "critic_loaded": critic_loaded,
         "critic_reset": critic_reset,
         "critic_health_explained_variance_before_reset": critic_health_ev,
         "behavior_temperature": a.behavior_temperature,
         "entropy_coef": a.entropy,
         "anchor_coef": a.anchor_coef,
+        "bc_coef": a.bc_coef,
+        "elite_bc_total_updates": total_bc_updates,
+        "elite_bc_total_decisions": total_bc_decisions,
         "actor_lr": a.lr,
         "critic_lr": a.critic_lr,
         "fixed_rollout_targets": True,

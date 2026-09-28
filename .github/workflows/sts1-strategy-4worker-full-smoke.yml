@@ -1,0 +1,165 @@
+name: STS1 Strategy 4-Worker Full Smoke
+
+on:
+  push:
+    branches:
+      - gpt/sts1-strategy-parallel-cpu-v4-20260928
+    paths:
+      - '.github/workflows/sts1-strategy-4worker-full-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  GH_TOKEN: ${{ github.token }}
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  SOURCE_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v4'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install and hydrate pinned Strategy runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          git -C external/sts_lightspeed/source apply --check "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          git -C external/sts_lightspeed/source apply "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          python scripts/sts1/build_probe.py
+          root=".cache/sts1-armg-strategy"
+          rm -rf "$root"
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -s "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Restore latest durable v4 state into isolated temp state
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/strategy-smoke-state"
+          rm -rf "$state"
+          mkdir -p "$state"
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$SOURCE_STATE_ARTIFACT&per_page=100" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
+          test -n "$artifact_id"
+          curl --fail --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/state.zip" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+          mkdir -p "$RUNNER_TEMP/state-raw"
+          unzip -q "$RUNNER_TEMP/state.zip" -d "$RUNNER_TEMP/state-raw"
+          found="$(find "$RUNNER_TEMP/state-raw" -name strategy-state.json -print -quit)"
+          weight="$(find "$RUNNER_TEMP/state-raw" -name current-strategy.pt -print -quit)"
+          replay="$(find "$RUNNER_TEMP/state-raw" -name strategy-replay.jsonl -print -quit)"
+          elite_pool="$(find "$RUNNER_TEMP/state-raw" -name elite-pool.json -print -quit)"
+          elite_dir="$(find "$RUNNER_TEMP/state-raw" -type d -name elite-candidates -print -quit)"
+          test -n "$found"
+          test -n "$weight"
+          cp "$found" "$state/strategy-state.json"
+          cp "$weight" "$state/current-strategy.pt"
+          [ -z "$replay" ] || cp "$replay" "$state/strategy-replay.jsonl"
+          [ -z "$elite_pool" ] || cp "$elite_pool" "$state/elite-pool.json"
+          [ -z "$elite_dir" ] || cp -R "$elite_dir" "$state/elite-candidates"
+          python scripts/sts1/sts1_strategy_state_validate.py --state-dir "$state"
+          echo "STRATEGY_SMOKE_STATE_DIR=$state" >> "$GITHUB_ENV"
+
+      - name: Run isolated real Strategy round with 4 Teacher workers
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_armg_strategy_loop.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-armg-strategy \
+            --armg-base-weight .cache/sts1-armg-strategy/armG_model_G128x128_15k.pt \
+            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --state-dir "$STRATEGY_SMOKE_STATE_DIR" \
+            --output-dir evidence/sts1/strategy-4worker-smoke/runs \
+            --rounds 1 \
+            --training-seeds 4 \
+            --combat-mcts-sims 2000 \
+            --eval-workers 4 \
+            --rng-seed 2026092899 \
+            --max-branch-points-per-game 30 \
+            --max-branch-points-per-kind-per-game 8 \
+            --max-choice-branches 20 \
+            --teacher-label-budget 24 \
+            --min-labels-per-kind 3 \
+            --collection-workers 4 \
+            --parallel-teacher-timeout-seconds 2400 \
+            --parallel-parity-probes 2 \
+            --epochs 4 \
+            --learning-rate 0.0001 \
+            --anchor-coef 0.01 \
+            --max-replay-examples 20000 \
+            --max-stagnation 8 \
+            --elite-mining-seeds 2 \
+            --elite-examples-per-seed 2 \
+            --elite-min-quality-margin 1.0 \
+            --elite-max-sign-p 0.25 \
+            --elite-min-win-delta 1 \
+            --elite-min-floor-delta -0.5 \
+            --elite-max-pool 3
+
+      - name: Verify full 4-worker loop invariants
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, json
+          from pathlib import Path
+          files=sorted(glob.glob("evidence/sts1/strategy-4worker-smoke/runs/round-*/round-report.json"))
+          assert files
+          report=json.load(open(files[-1], encoding="utf-8"))
+          summary=json.load(open("evidence/sts1/strategy-4worker-smoke/runs/loop-summary.json", encoding="utf-8"))
+          p=report["dataset"]["parallel_teacher"]
+          assert summary["result"] == "PASS_STRATEGY_LOOP_COMPLETE"
+          assert summary["combat_policy"] == "mcts_2000"
+          assert summary["combat_training_enabled"] is False
+          assert summary["production_champion_replaced"] is False
+          assert p["configured_workers"] == 4
+          assert p["effective_workers"] == 4
+          assert p["mode"] == "fork_per_candidate"
+          assert p["fallback_reason"] is None
+          assert p["parity_probes"] == 2
+          assert p["parity_status"] == "PASS"
+          assert report["dataset"]["selected_teacher_count"] == 24
+          for gate_name in ("dev_gate","hidden_gate","fresh_gate"):
+              gate=report.get(gate_name) or {}
+              for side in ("current","candidate"):
+                  s=gate.get(side)
+                  if not isinstance(s, dict):
+                      continue
+                  assert all(v == 0 for v in s["safety"].values())
+                  assert s["pure_mcts_runs"] == s["seeds"]
+          print("PASS_4WORKER_FULL_SMOKE", json.dumps({
+              "round": report["round"],
+              "elapsed_seconds": p["elapsed_seconds"],
+              "observed_parallelism": p["observed_parallelism"],
+              "replay_examples": report["replay"]["examples"],
+              "dev_gate": report["dev_gate"]["status"],
+              "hidden_gate": report["hidden_gate"]["status"],
+              "fresh_gate": report["fresh_gate"]["status"],
+              "promotion": report["promotion"]["decision"],
+          }, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-strategy-4worker-full-smoke-${{ github.run_id }}
+          path: evidence/sts1/strategy-4worker-smoke/
+          if-no-files-found: warn
+          retention-days: 30

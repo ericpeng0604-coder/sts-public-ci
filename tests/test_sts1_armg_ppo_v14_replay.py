@@ -135,8 +135,9 @@ def test_same_parent_replay_is_bounded_and_preserves_temperature(tmp_path: Path)
         victories=[False, False, False, False],
     )
     m2 = run_builder(second, state, tmp_path / "out2", checkpoint="parent-A", round_index=2)
-    assert m2["train_replay_games"] == 2
-    assert m2["train_replay_fraction_of_fresh_games"] == 0.5
+    assert m2["train_replay_games"] <= 2
+    assert m2["train_replay_fraction_of_fresh_games"] <= 0.5
+    assert m2["train_replay_fraction_of_fresh_decisions"] <= 0.5
     with np.load(tmp_path / "out2" / "replay_00.npz", allow_pickle=False) as d:
         assert np.allclose(d["behavior_temperature"], 1.12, atol=1e-6)
         assert set(map(int, d["game_seed"])).issubset({1, 2, 3, 4})

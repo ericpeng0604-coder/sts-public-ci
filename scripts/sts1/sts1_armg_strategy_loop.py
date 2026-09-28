@@ -1703,6 +1703,12 @@ def _load_or_init_state(
     return payload
 
 
+def _stagnation_limit_reached(*, count: int, max_stagnation: int) -> bool:
+    if count < 0 or max_stagnation < 0:
+        raise RuntimeError("stagnation values must be non-negative")
+    return max_stagnation > 0 and count >= max_stagnation
+
+
 def _round_number(state: Mapping[str, Any]) -> int:
     return int(state.get("accepted_rounds", 0)) + int(
         state.get("rejected_rounds", 0)
@@ -1842,9 +1848,9 @@ def main() -> int:
     reports: list[dict[str, Any]] = []
 
     for _ in range(args.rounds):
-        if (
-            args.max_stagnation > 0
-            and int(state.get("stagnation_count", 0)) >= args.max_stagnation
+        if _stagnation_limit_reached(
+            count=int(state.get("stagnation_count", 0)),
+            max_stagnation=args.max_stagnation,
         ):
             break
 
@@ -2122,9 +2128,9 @@ def main() -> int:
         "accepted_rounds": int(state.get("accepted_rounds", 0)),
         "rejected_rounds": int(state.get("rejected_rounds", 0)),
         "stagnation_count": int(state.get("stagnation_count", 0)),
-        "paused_for_stagnation": (
-            args.max_stagnation > 0
-            and int(state.get("stagnation_count", 0)) >= args.max_stagnation
+        "paused_for_stagnation": _stagnation_limit_reached(
+            count=int(state.get("stagnation_count", 0)),
+            max_stagnation=args.max_stagnation,
         ),
         "current_strategy_sha256": _sha256(current_weight),
         "elite_pool_count": len(_load_elite_pool(args.state_dir)),

@@ -33,6 +33,8 @@ def _runs(
                 "outcome": "victory" if win else "defeat",
                 "final_floor": 60 if win else floor,
                 "combat_policy": combat_policy,
+                "noncombat_policy": "armg",
+                "fallback_rate": 0.0,
                 "student_action_count": 0,
                 "hybrid_student_vote_count": 0,
                 "hybrid_student_tiebreak_count": 0,

@@ -173,6 +173,8 @@ def _is_complete(row: Mapping[str, Any]) -> bool:
 def _combat_locked(row: Mapping[str, Any], expected_combat_policy: str) -> bool:
     return (
         row.get("combat_policy") == expected_combat_policy
+        and row.get("noncombat_policy") == "armg"
+        and float(row.get("fallback_rate", 0.0) or 0.0) == 0.0
         and int(row.get("student_action_count", 0) or 0) == 0
         and int(row.get("hybrid_student_vote_count", 0) or 0) == 0
         and int(row.get("hybrid_student_tiebreak_count", 0) or 0) == 0
@@ -277,7 +279,13 @@ def evaluate_strategy_gate(
         current_summary["complete_runs"] == policy.expected_seed_count
         and candidate_summary["complete_runs"] == policy.expected_seed_count
     )
-    safe = all(candidate_summary["safety"][field] == 0 for field in SAFETY_FIELDS)
+    current_safe = all(
+        current_summary["safety"][field] == 0 for field in SAFETY_FIELDS
+    )
+    candidate_safe = all(
+        candidate_summary["safety"][field] == 0 for field in SAFETY_FIELDS
+    )
+    safe = current_safe and candidate_safe
     combat_locked = (
         current_summary["pure_mcts_runs"] == policy.expected_seed_count
         and candidate_summary["pure_mcts_runs"] == policy.expected_seed_count
@@ -315,7 +323,9 @@ def evaluate_strategy_gate(
     reasons: list[str] = []
     if not complete:
         reasons.append("incomplete_eval")
-    if not safe:
+    if not current_safe:
+        reasons.append("current_safety_failure")
+    if not candidate_safe:
         reasons.append("candidate_safety_failure")
     if not combat_locked:
         reasons.append("combat_policy_not_frozen_pure_mcts")

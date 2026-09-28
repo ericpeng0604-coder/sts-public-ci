@@ -19,7 +19,7 @@ def state(stagnation: int, *, decision: str = "HOLD", win_delta: int = 0):
         "round_index": 7,
         "stagnation_count": stagnation,
         "last_decision": decision,
-        "last_gate_30": {"win_delta": win_delta},
+        "last_dev_gate": {"win_delta": win_delta},
     }
 
 
@@ -35,6 +35,7 @@ def test_profile_ladder_is_bounded():
         profile = mod.choose_profile(state(stagnation))
         assert profile.name == name
         mod.validate_profile(profile)
+        assert profile.entropy <= 0.005
 
 
 def test_long_plateau_uses_wide_exploration_when_not_close():
@@ -54,7 +55,7 @@ def test_long_plateau_refines_a_near_miss():
 
 
 def test_promotion_resets_to_stable():
-    profile = mod.choose_profile(state(9, decision="PROMOTE_OFFLINE", win_delta=5))
+    profile = mod.choose_profile(state(9, decision="ADOPT_PARENT", win_delta=1))
     assert profile.name == "stable"
 
 
@@ -96,11 +97,14 @@ def test_adapt_changes_training_only_not_gate():
     )
     assert updated["strategy_profile"] == "broaden"
     assert updated["games_per_worker"] == "75"
-    assert updated["temperature"] == "1.1"
+    assert updated["temperature"] == "1.07"
     assert updated["epochs"] == "6"
     assert updated["mcts_sims"] == "2000"
     assert updated["report_issue"] == "15"
-    assert report["gate_policy_changed"] is False
+    assert updated["entropy"] == "0.002"
+    assert updated["anchor_coef"] == "0.015"
+    assert updated["reward_mode"] == "v14_dense"
+    assert report["gate_policy_changed"] is True
     assert report["production_champion_changed"] is False
 
 

@@ -68,7 +68,6 @@ def _run_one(
         armg_policy=policy,
         combat_mcts_sims=mcts_sims,
         heldout_seeds=heldout_seeds,
-        collect_teacher=True,
     )
     if result.get("result") != "PASS_SIMULATOR_COMPLETE_RUN":
         raise RuntimeError(f"{label} seed {seed} incomplete: {result}")

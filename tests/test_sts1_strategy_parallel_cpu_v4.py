@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 
@@ -14,6 +15,7 @@ SCRIPT = (
 SPEC = importlib.util.spec_from_file_location("strategy_loop_v4", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 m = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = m
 SPEC.loader.exec_module(m)
 
 PARENT_PID = os.getpid()

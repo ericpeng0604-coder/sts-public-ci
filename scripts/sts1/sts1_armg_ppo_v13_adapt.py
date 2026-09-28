@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Choose the next safe PPO v1.3 training profile after a completed loop round.
+"""Choose the next safe PPO v1.4 training profile after a completed loop round.
 
 The evaluator/gate never changes here. Only training-data volume and bounded PPO
 hyperparameters are adapted. Technical failures must bypass this script so a
@@ -24,15 +24,17 @@ class Profile:
     learning_rate: float
     clip: float
     target_kl: float
+    entropy: float
+    anchor_coef: float
 
 
 PROFILES = {
-    "stable": Profile("stable", 50, 1.00, 4, 3e-5, 0.20, 0.020),
-    "diversify": Profile("diversify", 60, 1.05, 5, 4e-5, 0.20, 0.018),
-    "broaden": Profile("broaden", 75, 1.10, 6, 5e-5, 0.18, 0.015),
-    "escape": Profile("escape", 100, 1.20, 6, 6e-5, 0.16, 0.012),
-    "wide_explore": Profile("wide_explore", 100, 1.25, 5, 4e-5, 0.15, 0.010),
-    "near_miss_refine": Profile("near_miss_refine", 80, 0.95, 6, 2.5e-5, 0.12, 0.008),
+    "stable": Profile("stable", 50, 1.00, 4, 3e-5, 0.20, 0.020, 0.0010, 0.020),
+    "diversify": Profile("diversify", 60, 1.04, 5, 3.5e-5, 0.20, 0.018, 0.0015, 0.018),
+    "broaden": Profile("broaden", 75, 1.07, 6, 4e-5, 0.18, 0.015, 0.0020, 0.015),
+    "escape": Profile("escape", 100, 1.10, 6, 4.5e-5, 0.16, 0.012, 0.0030, 0.012),
+    "wide_explore": Profile("wide_explore", 100, 1.12, 5, 4e-5, 0.15, 0.010, 0.0040, 0.010),
+    "near_miss_refine": Profile("near_miss_refine", 80, 0.98, 6, 2.5e-5, 0.12, 0.008, 0.0005, 0.030),
 }
 
 
@@ -60,7 +62,9 @@ def render_control(order: list[str], values: dict[str, str]) -> str:
 
 
 def _last_win_delta(state: dict[str, Any]) -> int:
-    gate = state.get("last_gate_30")
+    gate = state.get("last_dev_gate")
+    if not isinstance(gate, dict):
+        gate = state.get("last_gate_30")
     if not isinstance(gate, dict):
         return 0
     value = gate.get("win_delta", 0)
@@ -74,7 +78,7 @@ def choose_profile(state: dict[str, Any]) -> Profile:
     if stagnation < 0:
         raise RuntimeError("stagnation_count cannot be negative")
 
-    if state.get("last_decision") == "PROMOTE_OFFLINE" or stagnation <= 1:
+    if state.get("last_decision") in {"PROMOTE_OFFLINE", "ADOPT_PARENT"} or stagnation <= 1:
         return PROFILES["stable"]
     if stagnation == 2:
         return PROFILES["diversify"]
@@ -93,7 +97,7 @@ def choose_profile(state: dict[str, Any]) -> Profile:
 def validate_profile(profile: Profile) -> None:
     if not 20 <= profile.games_per_worker <= 120:
         raise RuntimeError("games_per_worker outside safety bounds")
-    if not 0.70 <= profile.temperature <= 1.50:
+    if not 0.70 <= profile.temperature <= 1.20:
         raise RuntimeError("temperature outside safety bounds")
     if not 2 <= profile.epochs <= 8:
         raise RuntimeError("epochs outside safety bounds")
@@ -103,6 +107,10 @@ def validate_profile(profile: Profile) -> None:
         raise RuntimeError("clip outside safety bounds")
     if not 0.005 <= profile.target_kl <= 0.020:
         raise RuntimeError("target_kl outside safety bounds")
+    if not 0.0001 <= profile.entropy <= 0.005:
+        raise RuntimeError("entropy outside v1.4 safety bounds")
+    if not 0.0 <= profile.anchor_coef <= 0.10:
+        raise RuntimeError("anchor_coef outside safety bounds")
 
 
 def adapt(
@@ -122,6 +130,10 @@ def adapt(
         "learning_rate": f"{profile.learning_rate:g}",
         "clip": f"{profile.clip:.2f}",
         "target_kl": f"{profile.target_kl:g}",
+        "entropy": f"{profile.entropy:g}",
+        "anchor_coef": f"{profile.anchor_coef:g}",
+        "reward_mode": "v14_dense",
+        "ppo_version": "1.4",
         "strategy_profile": profile.name,
         "stagnation_seen": str(int(state.get("stagnation_count", 0))),
         "reason": f"adaptive_stagnation_{profile.name}",
@@ -136,13 +148,14 @@ def adapt(
             control_order.append(key)
 
     report = {
-        "schema_version": "sts1-armg-ppo-v13-adaptation-v1",
+        "schema_version": "sts1-armg-ppo-v14-adaptation-v1",
         "round_index": int(state.get("round_index", 0)),
         "stagnation_count": int(state.get("stagnation_count", 0)),
         "last_decision": state.get("last_decision"),
         "last_gate_30_win_delta": _last_win_delta(state),
         "profile": asdict(profile),
-        "gate_policy_changed": False,
+        "gate_policy_changed": True,
+        "gate_policy_note": "Dev Parent accumulates; strict Final 30/50 remains unchanged",
         "production_champion_changed": False,
     }
     return updated, report
@@ -158,7 +171,7 @@ def main() -> int:
 
     state = json.loads(args.state.read_text(encoding="utf-8"))
     if state.get("schema_version") != "sts1-armg-ppo-v13-loop-state-v1":
-        raise RuntimeError("unexpected PPO v1.3 loop state schema")
+        raise RuntimeError("unexpected PPO loop state schema")
 
     order, control = parse_control(args.control)
     updated, report = adapt(

@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: sts1-armg-ppo-v14-auto-loop
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: '1'

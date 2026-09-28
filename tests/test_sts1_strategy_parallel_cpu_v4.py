@@ -108,3 +108,13 @@ def test_collection_workers_one_never_forks(monkeypatch) -> None:
 # Trigger final benchmark-best control validation.
 
 # Full-core validation trigger.
+
+
+def test_zero_max_stagnation_disables_auto_pause() -> None:
+    assert m._stagnation_limit_reached(count=12, max_stagnation=0) is False
+    assert m._stagnation_limit_reached(count=999, max_stagnation=0) is False
+
+
+def test_positive_max_stagnation_still_pauses() -> None:
+    assert m._stagnation_limit_reached(count=11, max_stagnation=12) is False
+    assert m._stagnation_limit_reached(count=12, max_stagnation=12) is True

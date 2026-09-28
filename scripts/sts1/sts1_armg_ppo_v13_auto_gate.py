@@ -67,7 +67,7 @@ def _run_one(
         evidence_path=out / f"seed-{seed}.ndjson",
         armg_policy=policy,
         combat_mcts_sims=mcts_sims,
-        training_seeds=heldout_seeds,
+        heldout_seeds=heldout_seeds,
         collect_teacher=True,
     )
     if result.get("result") != "PASS_SIMULATOR_COMPLETE_RUN":

@@ -889,6 +889,7 @@ def _mine_elite_replay(
     examples: list[dict[str, Any]] = []
     disagreements = 0
     checked = 0
+    teacher_checks = 0
     by_kind: Counter[str] = Counter()
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -899,6 +900,7 @@ def _mine_elite_replay(
             _set_pauses(agent)
             steps = 0
             mined_this_seed = 0
+            teacher_checks_this_seed = 0
             while gc.outcome == sts.GameOutcome.UNDECIDED and steps < max_game_steps:
                 steps += 1
                 agent.playout(gc)
@@ -933,9 +935,11 @@ def _mine_elite_replay(
                 if elite_index != champion_index:
                     disagreements += 1
                     if (
-                        mined_this_seed < max_examples_per_seed
+                        teacher_checks_this_seed < max_examples_per_seed
                         and choices <= max_choice_branches
                     ):
+                        teacher_checks_this_seed += 1
+                        teacher_checks += 1
                         teacher = _branch_example(
                             gc,
                             sts=sts,
@@ -975,6 +979,7 @@ def _mine_elite_replay(
         "training_seed_count": len(seeds),
         "checked_multichoice_states": checked,
         "disagreements": disagreements,
+        "teacher_checks": teacher_checks,
         "verified_examples": len(examples),
         "examples_by_kind": dict(sorted(by_kind.items())),
         "min_quality_margin": float(min_quality_margin),

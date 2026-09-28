@@ -743,6 +743,14 @@ def _load_or_init_state(
             raise RuntimeError("strategy loop state is missing current-strategy.pt")
         if payload.get("current_strategy_sha256") != _sha256(current):
             raise RuntimeError("strategy current checkpoint SHA drift")
+        if payload.get("base_strategy_sha256") != _sha256(base_weight):
+            raise RuntimeError(
+                "ArmG base checkpoint changed inside the existing Strategy lineage"
+            )
+        training_history = {int(v) for v in payload.get("used_training_seeds", [])}
+        evaluation_history = {int(v) for v in payload.get("used_evaluation_seeds", [])}
+        if training_history & evaluation_history:
+            raise RuntimeError("Strategy train/evaluation seed history overlap")
         if int(payload.get("combat_mcts_sims", -1)) != combat_mcts_sims:
             raise RuntimeError(
                 "combat MCTS budget is frozen for one Strategy lineage; "

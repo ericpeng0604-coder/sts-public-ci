@@ -1,4 +1,4 @@
-attempt=1
+attempt=2
 retry_count=0
 games_per_worker=50
 rng_seed=2026092801
@@ -11,4 +11,4 @@ mcts_sims=2000
 max_retries=3
 max_rounds=0
 report_issue=15
-reason=initial_start
+reason=continue_after_gate

@@ -315,6 +315,82 @@ jobs:
           fi
           echo "STRATEGY_STATE_DIR=$state" >> "$GITHUB_ENV"
 
+      - name: Merge trailing v2 Replay and seed history
+        if: env.STRATEGY_ENABLED == '1'
+        run: |
+          set -euo pipefail
+          state="$STRATEGY_STATE_DIR"
+          if python - "$state/strategy-state.json" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          raise SystemExit(0 if p.get("v2_tail_imported") else 1)
+          PY
+          then
+            echo "V2_TAIL_ALREADY_IMPORTED"
+            exit 0
+          fi
+
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$BOOTSTRAP_STATE_ARTIFACT&per_page=100"             --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
+          test -n "$artifact_id"
+          rm -rf "$RUNNER_TEMP/v2-tail"
+          mkdir -p "$RUNNER_TEMP/v2-tail"
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/v2-tail.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+          unzip -q "$RUNNER_TEMP/v2-tail.zip" -d "$RUNNER_TEMP/v2-tail"
+          v2_state="$(find "$RUNNER_TEMP/v2-tail" -name strategy-state.json -print -quit)"
+          v2_replay="$(find "$RUNNER_TEMP/v2-tail" -name strategy-replay.jsonl -print -quit)"
+          test -n "$v2_state"
+          test -n "$v2_replay"
+
+          python - "$state" "$v2_state" "$v2_replay" <<'PY'
+          import importlib.util, json, sys
+          from pathlib import Path
+
+          state_dir=Path(sys.argv[1])
+          v2_state=json.load(open(sys.argv[2], encoding="utf-8"))
+          current=json.load(open(state_dir/"strategy-state.json", encoding="utf-8"))
+          if v2_state.get("current_strategy_sha256") != current.get("current_strategy_sha256"):
+              print("V2_TAIL_SKIP champion_sha_mismatch")
+              current["v2_tail_imported"]=True
+              (state_dir/"strategy-state.json").write_text(
+                  json.dumps(current, indent=2, sort_keys=True)+"\n", encoding="utf-8"
+              )
+              raise SystemExit(0)
+
+          spec=importlib.util.spec_from_file_location(
+              "strategy_loop_v3",
+              Path("scripts/sts1/sts1_armg_strategy_loop.py"),
+          )
+          module=importlib.util.module_from_spec(spec)
+          assert spec and spec.loader
+          spec.loader.exec_module(module)
+          replay=state_dir/"strategy-replay.jsonl"
+          report=module._merge_replay(
+              replay,
+              Path(sys.argv[3]),
+              max_examples=20000,
+          )
+          current["used_training_seeds"]=sorted(set(
+              int(v) for v in current.get("used_training_seeds", [])
+          ) | set(
+              int(v) for v in v2_state.get("used_training_seeds", [])
+          ))
+          current["used_evaluation_seeds"]=sorted(set(
+              int(v) for v in current.get("used_evaluation_seeds", [])
+          ) | set(
+              int(v) for v in v2_state.get("used_evaluation_seeds", [])
+          ))
+          if set(current["used_training_seeds"]) & set(current["used_evaluation_seeds"]):
+              raise RuntimeError("v2 tail merge created train/eval seed overlap")
+          current["v2_tail_imported"]=True
+          current["v2_tail_replay_examples"]=report["examples"]
+          (state_dir/"strategy-state.json").write_text(
+              json.dumps(current, indent=2, sort_keys=True)+"\n", encoding="utf-8"
+          )
+          print("PASS_V2_TAIL_IMPORT", json.dumps(report, sort_keys=True))
+          PY
+
+          python scripts/sts1/sts1_strategy_state_validate.py --state-dir "$state"
+
       - name: Bootstrap verified historical Elite Candidate
         if: env.STRATEGY_ENABLED == '1'
         run: |

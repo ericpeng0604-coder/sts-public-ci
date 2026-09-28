@@ -367,7 +367,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Continue, retry, or pause
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Continue, adapt, retry, or pause
         env:
           ROLLOUT_RESULT: ${{ needs.rollout.result }}
           TRAIN_GATE_RESULT: ${{ needs.train-and-gate.result }}
@@ -385,40 +389,90 @@ jobs:
 
           next_attempt="$((attempt + 1))"
           next_retry=0
-          reason="continue_after_gate"
           should_continue=1
+          reason="continue_after_gate"
 
           if [ "$ok" -eq 1 ]; then
             artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-ppo-v13-loop-state") | .id' | head -n1)"
             test -n "$artifact_id"
-            curl --fail --location               -H "Authorization: Bearer $GH_TOKEN"               -H "Accept: application/vnd.github+json"               -o "$RUNNER_TEMP/state.zip"               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+            curl --fail --location \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -o "$RUNNER_TEMP/state.zip" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
             mkdir -p "$RUNNER_TEMP/state"
             unzip -q "$RUNNER_TEMP/state.zip" -d "$RUNNER_TEMP/state"
             state_file="$(find "$RUNNER_TEMP/state" -name state.json -print -quit)"
             test -n "$state_file"
 
-            eval "$(python - "$state_file" <<'PY'
+            python scripts/sts1/sts1_armg_ppo_v13_adapt.py \
+              --state "$state_file" \
+              --control control/sts1-armg-ppo-v13-auto-loop.request \
+              --output-control "$RUNNER_TEMP/next.request" \
+              --report "$RUNNER_TEMP/adaptation.json"
+
+            python - "$RUNNER_TEMP/next.request" "$next_attempt" <<'PY'
+          import sys
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          attempt = sys.argv[2]
+          rows = []
+          seen = set()
+          for raw in path.read_text(encoding="utf-8").splitlines():
+              line = raw.strip()
+              if not line:
+                  continue
+              key, value = line.split("=", 1)
+              if key == "attempt":
+                  value = attempt
+              elif key == "retry_count":
+                  value = "0"
+              rows.append((key, value))
+              seen.add(key)
+          if "attempt" not in seen:
+              rows.append(("attempt", attempt))
+          if "retry_count" not in seen:
+              rows.append(("retry_count", "0"))
+          path.write_text("".join(f"{k}={v}\n" for k, v in rows), encoding="utf-8")
+          PY
+
+            eval "$(python - "$state_file" "$RUNNER_TEMP/adaptation.json" <<'PY'
           import json, shlex, sys
           s=json.load(open(sys.argv[1], encoding="utf-8"))
+          a=json.load(open(sys.argv[2], encoding="utf-8"))
+          p=a["profile"]
           vals={
             "ROUND_INDEX": s.get("round_index", 0),
             "GENERATION": s.get("generation", 0),
             "DECISION": s.get("last_decision", "UNKNOWN"),
             "STAGNATION": s.get("stagnation_count", 0),
             "OFFLINE_SHA": s.get("offline_champion_sha256", "n/a"),
+            "NEXT_PROFILE": p["name"],
+            "NEXT_GAMES": p["games_per_worker"],
+            "NEXT_TEMP": p["temperature"],
+            "NEXT_EPOCHS": p["epochs"],
+            "NEXT_LR": p["learning_rate"],
+            "NEXT_CLIP": p["clip"],
+            "NEXT_KL": p["target_kl"],
           }
           for k,v in vals.items():
               print(f"{k}={shlex.quote(str(v))}")
           PY
           )"
-
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.3 Auto Loop — Round %s\n\n- Run：%s\n- 結果：**%s**\n- Offline generation：%s\n- Stagnation：%s\n- Offline Champion SHA：`%s`\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）\n- 下一輪：**自動接續**' "$ROUND_INDEX" "$run_url" "$DECISION" "$GENERATION" "$STAGNATION" "$OFFLINE_SHA"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
+            reason="adaptive_stagnation_$NEXT_PROFILE"
 
             if [ "$max_rounds" -gt 0 ] && [ "$ROUND_INDEX" -ge "$max_rounds" ]; then
               should_continue=0
               reason="max_rounds_reached"
             fi
+
+            next_status="自動接續"
+            if [ "$should_continue" -ne 1 ]; then
+              next_status="已暫停（$reason）"
+            fi
+
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.3 Auto Loop — Round %s\n\n- Run：%s\n- 結果：**%s**\n- Offline generation：%s\n- Stagnation：%s\n- Offline Champion SHA：`%s`\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）\n- 下一策略：**%s**\n- 下一輪資料：%s games/worker × 8\n- temperature：%s\n- epochs / lr / clip / target-KL：%s / %s / %s / %s\n- Gate：**固定不變**（30 seeds +4；50 seeds +5）\n- 下一輪：**%s**' "$ROUND_INDEX" "$run_url" "$DECISION" "$GENERATION" "$STAGNATION" "$OFFLINE_SHA" "$NEXT_PROFILE" "$NEXT_GAMES" "$NEXT_TEMP" "$NEXT_EPOCHS" "$NEXT_LR" "$NEXT_CLIP" "$NEXT_KL" "$next_status"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
           else
             next_retry="$((retry_count + 1))"
             reason="auto_retry_after_failure"
@@ -426,19 +480,10 @@ jobs:
               should_continue=0
               reason="retry_limit_reached"
             fi
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.3 Auto Loop — technical failure\n\n- Run：%s\n- Rollout：**%s**\n- Train/Gate：**%s**\n- Retry：%s/%s\n- 正式 Champion：**未修改**' "$run_url" "$ROLLOUT_RESULT" "$TRAIN_GATE_RESULT" "$next_retry" "$max_retries"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
-          fi
 
-          if [ "$should_continue" -ne 1 ]; then
-            echo "AUTO_LOOP_PAUSED reason=$reason"
-            exit 0
-          fi
-
-          python - control/sts1-armg-ppo-v13-auto-loop.request "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" "$reason" <<'PY'
+            python - control/sts1-armg-ppo-v13-auto-loop.request "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" "$reason" <<'PY'
           import sys
           from pathlib import Path
-
           src, dst = Path(sys.argv[1]), Path(sys.argv[2])
           attempt, retry, reason = sys.argv[3:6]
           values = {}
@@ -448,10 +493,9 @@ jobs:
               if not line or line.startswith("#"):
                   continue
               key, value = line.split("=", 1)
-              key = key.strip()
               if key not in values:
                   order.append(key)
-              values[key] = value.strip()
+              values[key] = value
           values["attempt"] = attempt
           values["retry_count"] = retry
           values["reason"] = reason
@@ -461,10 +505,23 @@ jobs:
           dst.write_text("".join(f"{key}={values[key]}\n" for key in order), encoding="utf-8")
           PY
 
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.3 Auto Loop — technical failure\n\n- Run：%s\n- Rollout：**%s**\n- Train/Gate：**%s**\n- Retry：%s/%s\n- 自適應：**不變招**（技術錯誤不算模型 stagnation）\n- 正式 Champion：**未修改**' "$run_url" "$ROLLOUT_RESULT" "$TRAIN_GATE_RESULT" "$next_retry" "$max_retries"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
+          fi
+
+          if [ "$should_continue" -ne 1 ]; then
+            echo "AUTO_LOOP_PAUSED reason=$reason"
+            exit 0
+          fi
+
           control_path="control/sts1-armg-ppo-v13-auto-loop.request"
           current_sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$control_path?ref=$GITHUB_REF_NAME" --jq '.sha')"
           encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
-          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$control_path"             -f message="control(sts1): continue PPO v1.3 auto loop"             -f content="$encoded"             -f sha="$current_sha"             -f branch="$GITHUB_REF_NAME" >/dev/null
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$control_path" \
+            -f message="control(sts1): continue PPO v1.3 auto loop [$reason]" \
+            -f content="$encoded" \
+            -f sha="$current_sha" \
+            -f branch="$GITHUB_REF_NAME" >/dev/null
 
           gh workflow run sts1-armg-ppo-v13-auto-loop.yml --ref "$GITHUB_REF_NAME"
           echo "AUTO_LOOP_CONTINUED attempt=$next_attempt retry_count=$next_retry reason=$reason"

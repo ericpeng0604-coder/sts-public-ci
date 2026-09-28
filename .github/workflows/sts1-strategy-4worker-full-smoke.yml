@@ -14,6 +14,10 @@ permissions:
 
 env:
   PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
   SOURCE_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v4'
@@ -105,7 +109,7 @@ jobs:
             --learning-rate 0.0001 \
             --anchor-coef 0.01 \
             --max-replay-examples 20000 \
-            --max-stagnation 8 \
+            --max-stagnation 12 \
             --elite-mining-seeds 2 \
             --elite-examples-per-seed 2 \
             --elite-min-quality-margin 1.0 \
@@ -131,7 +135,7 @@ jobs:
           assert summary["production_champion_replaced"] is False
           assert p["configured_workers"] == 4
           assert p["effective_workers"] == 4
-          assert p["mode"] == "fork_per_candidate"
+          assert p["mode"] == "fork_rolling"
           assert p["fallback_reason"] is None
           assert p["parity_probes"] == 2
           assert p["parity_status"] == "PASS"
@@ -148,6 +152,9 @@ jobs:
               "round": report["round"],
               "elapsed_seconds": p["elapsed_seconds"],
               "observed_parallelism": p["observed_parallelism"],
+              "observed_cpu_cores": p.get("observed_cpu_cores"),
+              "parallel_elapsed_seconds": p.get("parallel_elapsed_seconds"),
+              "parity_elapsed_seconds": p.get("parity_elapsed_seconds"),
               "replay_examples": report["replay"]["examples"],
               "dev_gate": report["dev_gate"]["status"],
               "hidden_gate": report["hidden_gate"]["status"],

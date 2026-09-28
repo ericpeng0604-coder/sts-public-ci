@@ -61,6 +61,9 @@ def main() -> int:
 
     if adopt_parent:
         shutil.copy2(args.candidate, parent_path)
+        # Same-parent PPO replay becomes stale immediately after actor promotion.
+        # Cross-generation elite-replay.npz is intentionally preserved.
+        (args.state_dir / "ppo-replay.npz").unlink(missing_ok=True)
         state["parent_generation"] += 1
         state["generation"] = state["parent_generation"]
         state["accepted_parent_rounds"] = int(

@@ -6,16 +6,64 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 
 ROOT = Path(__file__).parents[1]
 GATE_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v14_gate.py"
 STATE_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v14_state.py"
+TRAIN_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_train_v14_sharded.py"
 
 SPEC = importlib.util.spec_from_file_location("sts1_armg_ppo_v14_gate", GATE_SCRIPT)
 assert SPEC and SPEC.loader
 gate = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = gate
 SPEC.loader.exec_module(gate)
+
+
+TRAIN_SPEC = importlib.util.spec_from_file_location(
+    "sts1_armg_ppo_v14_train",
+    TRAIN_SCRIPT,
+)
+assert TRAIN_SPEC and TRAIN_SPEC.loader
+train = importlib.util.module_from_spec(TRAIN_SPEC)
+sys.modules[TRAIN_SPEC.name] = train
+TRAIN_SPEC.loader.exec_module(train)
+
+
+def test_gae_targets_are_deterministic_and_episode_bounded():
+    reward = np.array([1.0, 2.0, 3.0, 4.0], np.float32)
+    done = np.array([False, True, False, True])
+    values = np.array([0.5, 0.25, 1.0, 0.75], np.float32)
+    adv1, ret1 = train.gae_targets(
+        reward,
+        done,
+        values,
+        gamma=0.99,
+        lam=0.95,
+    )
+    adv2, ret2 = train.gae_targets(
+        reward,
+        done,
+        values,
+        gamma=0.99,
+        lam=0.95,
+    )
+    np.testing.assert_allclose(adv1, adv2)
+    np.testing.assert_allclose(ret1, ret2)
+    assert ret1[1] == np.float32(2.0)
+    assert ret1[3] == np.float32(4.0)
+
+
+def test_explained_variance_rewards_better_predictions():
+    target = np.array([0.0, 1.0, 2.0, 3.0], np.float32)
+    poor = np.zeros(4, np.float32)
+    good = np.array([0.0, 0.9, 2.1, 3.0], np.float32)
+    assert train.explained_variance(good, target) > train.explained_variance(
+        poor,
+        target,
+    )
+
 
 
 def run(seed: int, floor: int, *, win: bool = False, illegal: int = 0):

@@ -761,6 +761,8 @@ def _label_selected_candidates(
             "parallel_elapsed_seconds": 0.0,
             "sequential_elapsed_seconds": sequential_elapsed,
             "parity_elapsed_seconds": 0.0,
+            "parity_parallel_busy_max_seconds": None,
+            "parity_probe_speedup": None,
             "worker_busy_seconds": None,
             "worker_cpu_seconds": None,
             "observed_parallelism": 1.0,
@@ -955,6 +957,19 @@ def _label_selected_candidates(
                     f"index={index} fields={','.join(mismatch)}"
                 )
         parity_elapsed = time.perf_counter() - parity_started
+        parity_parallel_busy_max = (
+            max(
+                (worker_busy.get(index, 0.0) for index in range(parity_count)),
+                default=0.0,
+            )
+            if parity_count > 0
+            else 0.0
+        )
+        parity_probe_speedup = (
+            parity_elapsed / parity_parallel_busy_max
+            if parity_parallel_busy_max > 0
+            else None
+        )
 
         elapsed = time.perf_counter() - started
         busy = sum(worker_busy.values())
@@ -969,6 +984,8 @@ def _label_selected_candidates(
             "parallel_elapsed_seconds": parallel_elapsed,
             "sequential_elapsed_seconds": None,
             "parity_elapsed_seconds": parity_elapsed,
+            "parity_parallel_busy_max_seconds": parity_parallel_busy_max,
+            "parity_probe_speedup": parity_probe_speedup,
             "worker_busy_seconds": busy,
             "worker_cpu_seconds": cpu,
             "observed_parallelism": (

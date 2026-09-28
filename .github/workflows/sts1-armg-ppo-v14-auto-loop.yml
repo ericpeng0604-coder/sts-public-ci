@@ -81,6 +81,14 @@ jobs:
             printf '%s\n' '{"schema_version":"sts1-armg-ppo-v14-loop-state-v1","round_index":0,"generation":0,"parent_generation":0,"stagnation_count":0,"production_champion_replaced":false}' > "$state/state.json"
           fi
           sha="$(sha256sum "$state/offline-champion.pt" | awk '{print $1}')"
+          python - "$state/state.json" "$sha" <<'PY'
+          import json, sys
+          state=json.load(open(sys.argv[1], encoding="utf-8"))
+          recorded=state.get("training_parent_sha256") or state.get("offline_champion_sha256")
+          if recorded is not None and recorded != sys.argv[2]:
+              raise SystemExit(f"training parent SHA drift: {recorded} != {sys.argv[2]}")
+          print("PPO_V14_STATE_INTEGRITY_PASS", sys.argv[2])
+          PY
           echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
           echo "CHECKPOINT_ID=armg-ppo-v14-$sha" >> "$GITHUB_ENV"
 
@@ -88,7 +96,7 @@ jobs:
         run: |
           worker=${{ matrix.worker }}
           seed_start="$((PPO_RNG_SEED + GITHUB_RUN_NUMBER * 1000003 + worker * 100003))"
-          python scripts/sts1/sts1_armg_ppo_rollout_v14.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --weight "$CURRENT_WEIGHT"             --out "evidence/sts1/ppo-v14-auto/worker-$worker"             --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --seed-start "$seed_start"             --games "$PPO_GAMES_PER_WORKER"             --temperature "$PPO_TEMPERATURE"             --reward-mode "$PPO_REWARD_MODE"             --checkpoint-id "$CHECKPOINT_ID"             --worker "$worker"             --parallel-games 2
+          python scripts/sts1/sts1_armg_ppo_rollout_v14.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --weight "$CURRENT_WEIGHT"             --out "evidence/sts1/ppo-v14-auto/worker-$worker"             --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt             --seed-start "$seed_start"             --games "$PPO_GAMES_PER_WORKER"             --temperature "$PPO_TEMPERATURE"             --reward-mode "$PPO_REWARD_MODE"             --checkpoint-id "$CHECKPOINT_ID"             --worker "$worker"             --parallel-games 2
 
       - uses: actions/upload-artifact@v4
         with:
@@ -159,6 +167,14 @@ jobs:
             printf '%s\n' '{"schema_version":"sts1-armg-ppo-v14-loop-state-v1","round_index":0,"generation":0,"parent_generation":0,"stagnation_count":0,"production_champion_replaced":false}' > "$state/state.json"
           fi
           sha="$(sha256sum "$state/offline-champion.pt" | awk '{print $1}')"
+          python - "$state/state.json" "$sha" <<'PY'
+          import json, sys
+          state=json.load(open(sys.argv[1], encoding="utf-8"))
+          recorded=state.get("training_parent_sha256") or state.get("offline_champion_sha256")
+          if recorded is not None and recorded != sys.argv[2]:
+              raise SystemExit(f"training parent SHA drift: {recorded} != {sys.argv[2]}")
+          print("PPO_V14_STATE_INTEGRITY_PASS", sys.argv[2])
+          PY
           echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
           echo "STATE_DIR=$state" >> "$GITHUB_ENV"
           echo "CHECKPOINT_ID=armg-ppo-v14-$sha" >> "$GITHUB_ENV"

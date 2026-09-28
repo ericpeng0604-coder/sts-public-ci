@@ -184,7 +184,10 @@ def main() -> int:
                 opt.step()
 
                 log_ratio = new.detach() - old
-                kl = float(((torch.exp(log_ratio) - 1) - log_ratio).mean())
+                kl = max(
+                    0.0,
+                    float(((torch.exp(log_ratio) - 1) - log_ratio).mean()),
+                )
                 clip_fraction = float(
                     ((ratio.detach() - 1.0).abs() > a.clip).float().mean()
                 )

@@ -666,6 +666,7 @@ def _teacher_parallel_process(
     selected = _TEACHER_PARALLEL_SELECTED
     config = _TEACHER_PARALLEL_CONFIG
     worker_started = time.perf_counter()
+    worker_cpu_started = time.process_time()
     try:
         if (
             selected is None
@@ -693,7 +694,10 @@ def _teacher_parallel_process(
                 "done",
                 worker_id,
                 None,
-                {"busy_seconds": time.perf_counter() - worker_started},
+                {
+                    "busy_seconds": time.perf_counter() - worker_started,
+                    "cpu_seconds": time.process_time() - worker_cpu_started,
+                },
             )
         )
     except BaseException as exc:
@@ -758,7 +762,9 @@ def _label_selected_candidates(
             "sequential_elapsed_seconds": sequential_elapsed,
             "parity_elapsed_seconds": 0.0,
             "worker_busy_seconds": None,
+            "worker_cpu_seconds": None,
             "observed_parallelism": 1.0,
+            "observed_cpu_cores": 1.0,
             "parity_probes": 0,
             "parity_status": "not_applicable",
         }
@@ -799,6 +805,7 @@ def _label_selected_candidates(
     try:
         results: dict[int, dict[str, Any]] = {}
         worker_busy: dict[int, float] = {}
+        worker_cpu: dict[int, float] = {}
         deadline = time.monotonic() + parallel_timeout_seconds
         error: str | None = None
         next_index = 0
@@ -845,6 +852,9 @@ def _label_selected_candidates(
                 if isinstance(payload, Mapping):
                     worker_busy[worker_id] = float(
                         payload.get("busy_seconds", 0.0) or 0.0
+                    )
+                    worker_cpu[worker_id] = float(
+                        payload.get("cpu_seconds", 0.0) or 0.0
                     )
                 process = active.pop(worker_id, None)
                 if process is None:
@@ -948,6 +958,7 @@ def _label_selected_candidates(
 
         elapsed = time.perf_counter() - started
         busy = sum(worker_busy.values())
+        cpu = sum(worker_cpu.values())
         return rows, {
             "configured_workers": int(collection_workers),
             "effective_workers": effective,
@@ -959,8 +970,12 @@ def _label_selected_candidates(
             "sequential_elapsed_seconds": None,
             "parity_elapsed_seconds": parity_elapsed,
             "worker_busy_seconds": busy,
+            "worker_cpu_seconds": cpu,
             "observed_parallelism": (
                 busy / parallel_elapsed if parallel_elapsed > 0 else 0.0
+            ),
+            "observed_cpu_cores": (
+                cpu / parallel_elapsed if parallel_elapsed > 0 else 0.0
             ),
             "parity_probes": parity_count,
             "parity_status": "PASS",

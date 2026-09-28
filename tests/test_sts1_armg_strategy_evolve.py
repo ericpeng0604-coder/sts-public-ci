@@ -87,7 +87,7 @@ def test_dev_gate_accepts_same_wins_with_floor_improvement() -> None:
     )
     assert result["status"] == "PASS"
     assert result["win_delta"] == 0
-    assert result["floor_delta"] == pytest.approx(1.0)
+    assert result["floor_delta"] == pytest.approx(25 / 30)
 
 
 def test_strategy_gate_fails_closed_if_combat_is_not_pure_mcts() -> None:

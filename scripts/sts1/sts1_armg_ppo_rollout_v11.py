@@ -117,7 +117,7 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int]) -> dict[
                 10.0
                 if victory and index == len(decisions) - 1
                 else -2.0
-                if (not victory and index == len(decisions) - 1
+                if (not victory and index == len(decisions) - 1)
                 else 0.0
             )
         )

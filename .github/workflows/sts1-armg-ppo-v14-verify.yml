@@ -8,10 +8,13 @@ on:
     paths:
       - scripts/sts1/sts1_armg_ppo_train_v14_sharded.py
       - scripts/sts1/sts1_armg_ppo_rollout_v14.py
+      - scripts/sts1/sts1_armg_ppo_v14_replay.py
+      - scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py
       - scripts/sts1/sts1_armg_ppo_v14_gate.py
       - scripts/sts1/sts1_armg_ppo_v14_state.py
       - scripts/sts1/sts1_armg_ppo_v13_adapt.py
       - tests/test_sts1_armg_ppo_v14.py
+      - tests/test_sts1_armg_ppo_v14_replay.py
       - tests/test_sts1_armg_ppo_v13_adapt.py
       - control/sts1-v14-final-promotion-seeds-50.txt
       - .github/workflows/sts1-armg-ppo-v13-auto-loop.yml
@@ -47,11 +50,14 @@ jobs:
           python -m py_compile \
             scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
             scripts/sts1/sts1_armg_ppo_rollout_v14.py \
+            scripts/sts1/sts1_armg_ppo_v14_replay.py \
+            scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py \
             scripts/sts1/sts1_armg_ppo_v14_gate.py \
             scripts/sts1/sts1_armg_ppo_v14_state.py \
             scripts/sts1/sts1_armg_ppo_v13_adapt.py
           pytest -q \
             tests/test_sts1_armg_ppo_v14.py \
+            tests/test_sts1_armg_ppo_v14_replay.py \
             tests/test_sts1_armg_ppo_v13_adapt.py
 
       - name: Hydrate pinned simulator
@@ -107,6 +113,133 @@ jobs:
             --rollouts "$RUNNER_TEMP/v14-rollouts" \
             --output-dir "$RUNNER_TEMP/v14-shards" \
             --checkpoint-id v14-ratio-smoke
+
+      - name: Build first replay generation
+        run: |
+          mkdir -p "$RUNNER_TEMP/v14-replay-state"
+          python scripts/sts1/sts1_armg_ppo_v14_replay.py \
+            --fresh-dir "$RUNNER_TEMP/v14-shards" \
+            --state-dir "$RUNNER_TEMP/v14-replay-state" \
+            --output-dir "$RUNNER_TEMP/v14-replay-round1" \
+            --checkpoint-id v14-ratio-smoke \
+            --round-index 1 \
+            --max-ppo-games 20 \
+            --replay-fraction 0.50 \
+            --max-elite-games 20 \
+            --elite-min-floor 0
+          test -f "$RUNNER_TEMP/v14-replay-state/ppo-replay.npz"
+          test -f "$RUNNER_TEMP/v14-replay-state/elite-replay.npz"
+
+      - name: Collect second-temperature rollout
+        run: |
+          python scripts/sts1/sts1_armg_ppo_rollout_v14.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/v14-armg \
+            --weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --out "$RUNNER_TEMP/v14-rollout2/worker-0" \
+            --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+            --seed-start 2026092914 \
+            --games 4 \
+            --temperature 0.98 \
+            --reward-mode v14_dense \
+            --checkpoint-id v14-ratio-smoke \
+            --worker 0 \
+            --parallel-games 2
+
+          mkdir -p "$RUNNER_TEMP/v14-rollouts2/worker-0"
+          cp "$RUNNER_TEMP/v14-rollout2/worker-0/rollout.npz" "$RUNNER_TEMP/v14-rollouts2/worker-0/rollout.npz"
+          python scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py \
+            --rollouts "$RUNNER_TEMP/v14-rollouts2" \
+            --output-dir "$RUNNER_TEMP/v14-shards2" \
+            --checkpoint-id v14-ratio-smoke
+
+          python scripts/sts1/sts1_armg_ppo_v14_replay.py \
+            --fresh-dir "$RUNNER_TEMP/v14-shards2" \
+            --state-dir "$RUNNER_TEMP/v14-replay-state" \
+            --output-dir "$RUNNER_TEMP/v14-replay-round2" \
+            --checkpoint-id v14-ratio-smoke \
+            --round-index 2 \
+            --max-ppo-games 20 \
+            --replay-fraction 0.50 \
+            --max-elite-games 20 \
+            --elite-min-floor 0
+
+      - name: Verify replay log-prob identity across temperature
+        run: |
+          python - <<'PY'
+          import importlib, math, os, sys
+          from pathlib import Path
+          import numpy as np
+          import torch
+
+          root=Path(".cache/v14-armg")
+          os.environ["STS_BOT_DIR"]=str(root)
+          sys.path.insert(0,str(root))
+          m=importlib.import_module("armG_train")
+          m.card_idx=lambda n:m._vocab.get(n,m.VOCAB_CAP-1)
+          actor=m.Scorer((128,128))
+          actor.load_state_dict(torch.load(
+              "external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt",
+              weights_only=True,
+              map_location="cpu",
+          ))
+          path=Path(os.environ["RUNNER_TEMP"])/"v14-replay-round2/replay_00.npz"
+          with np.load(path,allow_pickle=False) as d:
+              assert len(d["action"])>0
+              temps=np.asarray(d["behavior_temperature"],np.float32)
+              assert np.allclose(temps,1.12,atol=1e-6), set(map(float,temps))
+              errors=[]
+              for i in range(min(64,len(d["action"]))):
+                  b,e=int(d["offsets"][i]),int(d["offsets"][i+1])
+                  ds=torch.from_numpy(d["desc"][b:e].astype(np.float32))
+                  o=torch.from_numpy(d["obs"][i].astype(np.float32)).repeat(len(ds),1)
+                  logits=actor.net(torch.cat([o,ds],1)).squeeze(1)/float(temps[i])
+                  lp=torch.log_softmax(logits,0)[int(d["action"][i])].item()
+                  errors.append(abs(lp-float(d["old_logp"][i])))
+              assert max(errors)<1e-4, max(errors)
+          print("PPO_V14_REPLAY_RATIO_PASS",max(errors))
+          PY
+
+      - name: Real replay plus Elite BC train smoke
+        run: |
+          python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
+            --shards "$RUNNER_TEMP/v14-shards2" \
+            --replay-shards "$RUNNER_TEMP/v14-replay-round2" \
+            --elite-replay "$RUNNER_TEMP/v14-replay-state/elite-replay.npz" \
+            --armg-root .cache/v14-armg \
+            --base-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --output "$RUNNER_TEMP/v14-replay-candidate.pt" \
+            --critic-output "$RUNNER_TEMP/v14-replay-critic.pt" \
+            --checkpoint-id v14-ratio-smoke \
+            --epochs 1 \
+            --lr 3e-5 \
+            --clip 0.20 \
+            --target-kl 0.02 \
+            --behavior-temperature 0.98 \
+            --entropy 0.001 \
+            --anchor-coef 0.02 \
+            --bc-coef 0.01 \
+            --bc-max-decisions 128 \
+            --threads 4
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report=json.loads(Path(os.environ["RUNNER_TEMP"]+"/v14-replay-candidate.json").read_text())
+          assert report["fresh_shards"]==1, report
+          assert report["replay_shards"]==1, report
+          assert report["fresh_decisions"]>0 and report["replay_decisions"]>0, report
+          assert report["replay_decisions"]<=report["fresh_decisions"], report
+          assert report["elite_bc_total_decisions"]>0, report
+          assert report["initial_ratio_abs_error"]<1e-4, report
+          print(
+              "PPO_V14_REPLAY_TRAIN_PASS",
+              report["fresh_decisions"],
+              report["replay_decisions"],
+              report["elite_bc_total_decisions"],
+          )
+          PY
 
       - name: Verify temperature-correct PPO ratio
         run: |

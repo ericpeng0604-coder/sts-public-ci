@@ -665,6 +665,7 @@ def _teacher_parallel_process(
 ) -> None:
     selected = _TEACHER_PARALLEL_SELECTED
     config = _TEACHER_PARALLEL_CONFIG
+    worker_started = time.perf_counter()
     try:
         if (
             selected is None
@@ -687,7 +688,14 @@ def _teacher_parallel_process(
                 temperature=float(config["temperature"]),
             )
             result_queue.put(("result", worker_id, index, row))
-        result_queue.put(("done", worker_id, None, None))
+        result_queue.put(
+            (
+                "done",
+                worker_id,
+                None,
+                {"busy_seconds": time.perf_counter() - worker_started},
+            )
+        )
     except BaseException as exc:
         result_queue.put(
             ("error", worker_id, None, f"{type(exc).__name__}:{exc}")
@@ -705,12 +713,15 @@ def _label_selected_candidates(
     temperature: float,
     collection_workers: int,
     parallel_timeout_seconds: int,
+    parallel_parity_probes: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Label independent Teacher states in forked processes, with safe fallback."""
     if collection_workers < 1:
         raise RuntimeError("collection-workers must be positive")
     if parallel_timeout_seconds < 1:
         raise RuntimeError("parallel Teacher timeout must be positive")
+    if parallel_parity_probes < 0:
+        raise RuntimeError("parallel Teacher parity probes must be non-negative")
 
     effective = min(
         int(collection_workers),
@@ -741,6 +752,10 @@ def _label_selected_candidates(
             "fallback_reason": reason,
             "available_cpu": int(os.cpu_count() or 1),
             "elapsed_seconds": time.perf_counter() - started,
+            "worker_busy_seconds": None,
+            "observed_parallelism": 1.0,
+            "parity_probes": 0,
+            "parity_status": "not_applicable",
         }
 
     if effective <= 1 or len(selected) <= 1:
@@ -783,6 +798,7 @@ def _label_selected_candidates(
         deadline = time.monotonic() + parallel_timeout_seconds
         results: dict[int, dict[str, Any]] = {}
         done_workers: set[int] = set()
+        worker_busy: dict[int, float] = {}
         error: str | None = None
 
         while len(done_workers) < len(processes):
@@ -808,6 +824,10 @@ def _label_selected_candidates(
                 results[int(index)] = dict(payload)
             elif kind == "done":
                 done_workers.add(int(worker_id))
+                if isinstance(payload, Mapping):
+                    worker_busy[int(worker_id)] = float(
+                        payload.get("busy_seconds", 0.0) or 0.0
+                    )
             elif kind == "error":
                 error = str(payload)
                 break
@@ -838,13 +858,53 @@ def _label_selected_candidates(
             )
 
         rows = [results[index] for index in range(len(selected))]
+        parity_count = min(
+            int(parallel_parity_probes),
+            len(processes),
+            len(selected),
+        )
+        for index in range(parity_count):
+            reference = _branch_example(
+                selected[index]["gc"],
+                sts=sts,
+                armg=armg,
+                mcts_sims=mcts_sims,
+                max_game_steps=max_game_steps,
+                max_battle_steps=max_battle_steps,
+                temperature=temperature,
+            )
+            parallel = rows[index]
+            stable_fields = (
+                "kind",
+                "current_armg_index",
+                "teacher_best_index",
+                "branch_quality",
+                "target_probs",
+            )
+            mismatch = [
+                field
+                for field in stable_fields
+                if parallel.get(field) != reference.get(field)
+            ]
+            if mismatch:
+                return sequential(
+                    "RuntimeError:parallel Teacher parity mismatch "
+                    f"index={index} fields={','.join(mismatch)}"
+                )
+
+        elapsed = time.perf_counter() - started
+        busy = sum(worker_busy.values())
         return rows, {
             "configured_workers": int(collection_workers),
             "effective_workers": len(processes),
             "mode": "fork_processes",
             "fallback_reason": None,
             "available_cpu": int(os.cpu_count() or 1),
-            "elapsed_seconds": time.perf_counter() - started,
+            "elapsed_seconds": elapsed,
+            "worker_busy_seconds": busy,
+            "observed_parallelism": (busy / elapsed) if elapsed > 0 else 0.0,
+            "parity_probes": parity_count,
+            "parity_status": "PASS",
         }
     finally:
         for process in processes:
@@ -876,6 +936,7 @@ def _collect_dataset(
     min_labels_per_kind: int,
     collection_workers: int,
     parallel_timeout_seconds: int,
+    parallel_parity_probes: int,
 ) -> dict[str, Any]:
     """Scout cheaply first, then spend MCTS only on high-value Strategy states."""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1015,6 +1076,7 @@ def _collect_dataset(
         temperature=temperature,
         collection_workers=collection_workers,
         parallel_timeout_seconds=parallel_timeout_seconds,
+        parallel_parity_probes=parallel_parity_probes,
     )
     with output.open("w", encoding="utf-8") as handle:
         for candidate, example in zip(selected, raw_examples, strict=True):
@@ -1614,6 +1676,7 @@ def main() -> int:
     parser.add_argument("--min-labels-per-kind", type=int, default=3)
     parser.add_argument("--collection-workers", type=int, default=1)
     parser.add_argument("--parallel-teacher-timeout-seconds", type=int, default=2400)
+    parser.add_argument("--parallel-parity-probes", type=int, default=0)
     parser.add_argument("--max-game-steps", type=int, default=600)
     parser.add_argument("--max-battle-steps", type=int, default=1200)
     parser.add_argument("--temperature", type=float, default=2.0)
@@ -1647,7 +1710,11 @@ def main() -> int:
         raise RuntimeError("epochs/max-stagnation must be positive")
     if args.teacher_label_budget < 1 or args.min_labels_per_kind < 0:
         raise RuntimeError("Teacher selection limits are invalid")
-    if args.collection_workers < 1 or args.parallel_teacher_timeout_seconds < 1:
+    if (
+        args.collection_workers < 1
+        or args.parallel_teacher_timeout_seconds < 1
+        or args.parallel_parity_probes < 0
+    ):
         raise RuntimeError("Parallel Teacher settings are invalid")
     if args.elite_mining_seeds < 0 or args.elite_examples_per_seed < 1:
         raise RuntimeError("Elite mining limits are invalid")
@@ -1726,6 +1793,7 @@ def main() -> int:
             min_labels_per_kind=args.min_labels_per_kind,
             collection_workers=args.collection_workers,
             parallel_timeout_seconds=args.parallel_teacher_timeout_seconds,
+            parallel_parity_probes=args.parallel_parity_probes,
         )
         replay_report = _merge_replay(
             replay_path,

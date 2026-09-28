@@ -322,7 +322,7 @@ jobs:
               "last_gate_30": gate["gate_30"],
               "last_gate_50": gate["gate_50"],
               "last_run_id": run_id,
-              "pending_real_game_validation": promoted,
+              "pending_real_game_validation": bool(state.get("pending_real_game_validation", False) or promoted),
               "production_champion_replaced": False,
           })
           state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")

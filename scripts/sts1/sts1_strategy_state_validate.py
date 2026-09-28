@@ -59,6 +59,7 @@ def validate_state_dir(state_dir: Path) -> dict[str, object]:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise RuntimeError(f"invalid non-negative integer state field: {key}")
 
+    normalized_history: dict[str, set[int]] = {}
     for key in ("used_training_seeds", "used_evaluation_seeds"):
         values = payload.get(key, [])
         if not isinstance(values, list):
@@ -70,6 +71,17 @@ def validate_state_dir(state_dir: Path) -> dict[str, object]:
             normalized.append(int(raw))
         if len(normalized) != len(set(normalized)):
             raise RuntimeError(f"{key} contains duplicate seeds")
+        normalized_history[key] = set(normalized)
+
+    if (
+        normalized_history["used_training_seeds"]
+        & normalized_history["used_evaluation_seeds"]
+    ):
+        raise RuntimeError("training/evaluation seed history overlap")
+
+    base_sha = payload.get("base_strategy_sha256")
+    if not isinstance(base_sha, str) or len(base_sha) != 64:
+        raise RuntimeError("state missing valid base_strategy_sha256")
 
     replay = state_dir / "strategy-replay.jsonl"
     replay_lines = 0

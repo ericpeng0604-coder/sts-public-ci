@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import statistics
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,12 +17,10 @@ from roguelike_ai.sts1_phase3.champion_gate import (
     evaluate_fixed_seed_gate,
 )
 
-_RUNTIME_PATH = Path(__file__).with_name("sts1_armg_ppo_v13_auto_gate.py")
-_SPEC = importlib.util.spec_from_file_location("sts1_v13_gate_runtime", _RUNTIME_PATH)
-if _SPEC is None or _SPEC.loader is None:
-    raise RuntimeError("unable to load v1.3 gate runtime")
-rt = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(rt)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+import sts1_armg_ppo_v13_auto_gate as rt
 
 CACHE_SCHEMA = "sts1-armg-ppo-v14-eval-cache-v1"
 DEV_POLICY = GatePolicy("dev-parent-30", 30, 0)

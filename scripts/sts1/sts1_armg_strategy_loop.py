@@ -715,7 +715,7 @@ def _label_selected_candidates(
     parallel_timeout_seconds: int,
     parallel_parity_probes: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Label independent Teacher states in forked processes, with safe fallback."""
+    """Label independent Teacher states with rolling forked processes."""
     if collection_workers < 1:
         raise RuntimeError("collection-workers must be positive")
     if parallel_timeout_seconds < 1:
@@ -733,6 +733,7 @@ def _label_selected_candidates(
     def sequential(
         reason: str | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        sequential_started = time.perf_counter()
         rows = [
             _branch_example(
                 candidate["gc"],
@@ -745,6 +746,7 @@ def _label_selected_candidates(
             )
             for candidate in selected
         ]
+        sequential_elapsed = time.perf_counter() - sequential_started
         return rows, {
             "configured_workers": int(collection_workers),
             "effective_workers": 1,
@@ -752,6 +754,9 @@ def _label_selected_candidates(
             "fallback_reason": reason,
             "available_cpu": int(os.cpu_count() or 1),
             "elapsed_seconds": time.perf_counter() - started,
+            "parallel_elapsed_seconds": 0.0,
+            "sequential_elapsed_seconds": sequential_elapsed,
+            "parity_elapsed_seconds": 0.0,
             "worker_busy_seconds": None,
             "observed_parallelism": 1.0,
             "parity_probes": 0,
@@ -780,98 +785,102 @@ def _label_selected_candidates(
     context = mp.get_context("fork")
     result_queue = context.Queue()
     processes: list[Any] = []
+    active: dict[int, Any] = {}
+
+    def launch(index: int) -> None:
+        process = context.Process(
+            target=_teacher_parallel_process,
+            args=(index, (index,), result_queue),
+        )
+        processes.append(process)
+        active[index] = process
+        process.start()
 
     try:
         results: dict[int, dict[str, Any]] = {}
         worker_busy: dict[int, float] = {}
         deadline = time.monotonic() + parallel_timeout_seconds
         error: str | None = None
+        next_index = 0
 
-        # A fresh child per Teacher state avoids process-local native simulator
-        # state leaking from one GameContext into the next. Concurrency stays
-        # bounded by the configured effective worker count.
-        for batch_start in range(0, len(selected), effective):
-            batch = list(
-                range(
-                    batch_start,
-                    min(len(selected), batch_start + effective),
-                )
-            )
-            batch_processes = [
-                context.Process(
-                    target=_teacher_parallel_process,
-                    args=(index, (index,), result_queue),
-                )
-                for index in batch
-            ]
-            processes.extend(batch_processes)
-            for process in batch_processes:
-                process.start()
+        # Keep a rolling window full. Each Teacher state still gets a fresh
+        # child process, but a fast state no longer waits for the slowest state
+        # in a fixed batch before the next state can start.
+        while next_index < min(effective, len(selected)):
+            launch(next_index)
+            next_index += 1
 
-            done_workers: set[int] = set()
-            while len(done_workers) < len(batch_processes):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    error = (
-                        "TimeoutError:parallel Teacher exceeded "
-                        f"{parallel_timeout_seconds}s"
-                    )
-                    break
-                try:
-                    kind, worker_id, index, payload = result_queue.get(
-                        timeout=min(1.0, remaining)
-                    )
-                except Exception:
-                    dead = [
-                        p
-                        for p in batch_processes
-                        if not p.is_alive() and p.exitcode not in (None, 0)
-                    ]
-                    if dead:
-                        error = (
-                            "RuntimeError:parallel Teacher child exited abnormally"
-                        )
-                        break
-                    continue
-
-                if kind == "result":
-                    results[int(index)] = dict(payload)
-                elif kind == "done":
-                    done_workers.add(int(worker_id))
-                    if isinstance(payload, Mapping):
-                        worker_busy[int(worker_id)] = float(
-                            payload.get("busy_seconds", 0.0) or 0.0
-                        )
-                elif kind == "error":
-                    error = str(payload)
-                    break
-                else:
-                    error = (
-                        "RuntimeError:unknown parallel Teacher message "
-                        f"{kind!r}"
-                    )
-                    break
-
-            if error is not None:
-                for process in batch_processes:
-                    if process.is_alive():
-                        process.terminate()
-                for process in batch_processes:
-                    process.join()
-                break
-
-            for process in batch_processes:
-                process.join()
-            bad = [p.exitcode for p in batch_processes if p.exitcode != 0]
-            if bad:
+        parallel_started = time.perf_counter()
+        while active and error is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 error = (
-                    "RuntimeError:parallel Teacher nonzero child "
-                    f"exitcodes={bad}"
+                    "TimeoutError:parallel Teacher exceeded "
+                    f"{parallel_timeout_seconds}s"
                 )
                 break
+
+            try:
+                kind, worker_id, index, payload = result_queue.get(
+                    timeout=min(1.0, remaining)
+                )
+            except Exception:
+                dead_bad = [
+                    (worker_id, process.exitcode)
+                    for worker_id, process in active.items()
+                    if not process.is_alive()
+                    and process.exitcode not in (None, 0)
+                ]
+                if dead_bad:
+                    error = (
+                        "RuntimeError:parallel Teacher child exited abnormally "
+                        f"{dead_bad}"
+                    )
+                continue
+
+            worker_id = int(worker_id)
+            if kind == "result":
+                results[int(index)] = dict(payload)
+            elif kind == "done":
+                if isinstance(payload, Mapping):
+                    worker_busy[worker_id] = float(
+                        payload.get("busy_seconds", 0.0) or 0.0
+                    )
+                process = active.pop(worker_id, None)
+                if process is None:
+                    error = (
+                        "RuntimeError:parallel Teacher completed unknown worker "
+                        f"{worker_id}"
+                    )
+                    break
+                process.join()
+                if process.exitcode != 0:
+                    error = (
+                        "RuntimeError:parallel Teacher nonzero child exitcode="
+                        f"{process.exitcode} worker={worker_id}"
+                    )
+                    break
+                if next_index < len(selected):
+                    launch(next_index)
+                    next_index += 1
+            elif kind == "error":
+                error = str(payload)
+            else:
+                error = (
+                    "RuntimeError:unknown parallel Teacher message "
+                    f"{kind!r}"
+                )
+
+        parallel_elapsed = time.perf_counter() - parallel_started
 
         if error is not None:
+            for process in active.values():
+                if process.is_alive():
+                    process.terminate()
+            for process in active.values():
+                process.join()
             return sequential(error)
+
         if len(results) != len(selected):
             return sequential(
                 "RuntimeError:parallel Teacher lost rows "
@@ -901,11 +910,12 @@ def _label_selected_candidates(
                 f"kind={first['kind']} expected={first['expected']} "
                 f"actual={first['actual']} count={len(drifts)}"
             )
+
         parity_count = min(
             int(parallel_parity_probes),
-            len(processes),
             len(selected),
         )
+        parity_started = time.perf_counter()
         for index in range(parity_count):
             reference = _branch_example(
                 selected[index]["gc"],
@@ -934,18 +944,24 @@ def _label_selected_candidates(
                     "RuntimeError:parallel Teacher parity mismatch "
                     f"index={index} fields={','.join(mismatch)}"
                 )
+        parity_elapsed = time.perf_counter() - parity_started
 
         elapsed = time.perf_counter() - started
         busy = sum(worker_busy.values())
         return rows, {
             "configured_workers": int(collection_workers),
             "effective_workers": effective,
-            "mode": "fork_per_candidate",
+            "mode": "fork_rolling",
             "fallback_reason": None,
             "available_cpu": int(os.cpu_count() or 1),
             "elapsed_seconds": elapsed,
+            "parallel_elapsed_seconds": parallel_elapsed,
+            "sequential_elapsed_seconds": None,
+            "parity_elapsed_seconds": parity_elapsed,
             "worker_busy_seconds": busy,
-            "observed_parallelism": (busy / elapsed) if elapsed > 0 else 0.0,
+            "observed_parallelism": (
+                busy / parallel_elapsed if parallel_elapsed > 0 else 0.0
+            ),
             "parity_probes": parity_count,
             "parity_status": "PASS",
         }

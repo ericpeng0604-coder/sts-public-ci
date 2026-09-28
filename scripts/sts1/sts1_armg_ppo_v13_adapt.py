@@ -170,7 +170,10 @@ def main() -> int:
     args = parser.parse_args()
 
     state = json.loads(args.state.read_text(encoding="utf-8"))
-    if state.get("schema_version") != "sts1-armg-ppo-v13-loop-state-v1":
+    if state.get("schema_version") not in {
+        "sts1-armg-ppo-v13-loop-state-v1",
+        "sts1-armg-ppo-v14-loop-state-v1",
+    }:
         raise RuntimeError("unexpected PPO loop state schema")
 
     order, control = parse_control(args.control)

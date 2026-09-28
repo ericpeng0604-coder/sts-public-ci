@@ -41,13 +41,40 @@ def hydrate(meta: dict, dst: Path, *, submodules: bool = False) -> str:
     if dst.exists():
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    run("git", "clone", "--no-checkout", meta["repository"], str(dst))
-    run("git", "checkout", "--detach", meta["commit"], cwd=dst)
+
+    # Hosted CI only needs one pinned commit. Fetch that commit shallowly first
+    # instead of cloning full repository history on every rollout worker.
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+        run("git", "init", str(dst))
+        run("git", "remote", "add", "origin", meta["repository"], cwd=dst)
+        run("git", "fetch", "--depth", "1", "origin", meta["commit"], cwd=dst)
+        run("git", "checkout", "--detach", meta["commit"], cwd=dst)
+    except subprocess.CalledProcessError:
+        # Some Git servers disallow fetching a raw SHA. Preserve the old exact
+        # clone path as a correctness fallback rather than weakening provenance.
+        if dst.exists():
+            shutil.rmtree(dst)
+        run("git", "clone", "--no-checkout", meta["repository"], str(dst))
+        run("git", "checkout", "--detach", meta["commit"], cwd=dst)
+
     head = run("git", "rev-parse", "HEAD", cwd=dst)
     if head != meta["commit"]:
         raise RuntimeError(f"Pinned HEAD mismatch for {dst}: {head} != {meta['commit']}")
     if submodules:
-        run("git", "submodule", "update", "--init", "--recursive", cwd=dst)
+        try:
+            run(
+                "git",
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "--depth",
+                "1",
+                cwd=dst,
+            )
+        except subprocess.CalledProcessError:
+            run("git", "submodule", "update", "--init", "--recursive", cwd=dst)
     return head
 
 

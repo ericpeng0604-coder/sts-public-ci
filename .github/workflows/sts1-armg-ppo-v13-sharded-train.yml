@@ -8,7 +8,10 @@ permissions: {actions: read, contents: read}
 jobs:
   train:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
+    concurrency:
+      group: sts1-ppo-v13-train
+      cancel-in-progress: false
     env: {GH_TOKEN: "${{ github.token }}", SIM_HEAD: "7476a81954020087da31d41d16fddf475746ec2d"}
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +52,37 @@ jobs:
           assert total==20533,total
           print("SHARDED_DATA_PREFLIGHT_PASS",json.dumps({"shards":len(fs),"decisions":total}))
           PY
+      - name: Full preflight
+        run: |
+          set -a; source control/sts1-armg-ppo-v13-sharded-train.request; set +a
+          test "$checkpoint_id" = "armg-original-15k-v11-r1"
+          test "$source_preprocess_artifact" = "10927301893"
+          test -s external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt
+          test "$(find evidence/sts1/ppo-v11-preprocessed -name 'shard_*.npz' | wc -l)" -eq 8
+          python - <<'PY'
+          import numpy as np
+          from pathlib import Path
+          fs=sorted(Path("evidence/sts1/ppo-v11-preprocessed").glob("shard_*.npz"))
+          total=cands=0
+          required={"obs","desc","offsets","action","reward","old_logp","done","checkpoint_id"}
+          for f in fs:
+              with np.load(f,allow_pickle=False) as d:
+                  assert required <= set(d.files),(f,required-set(d.files))
+                  n=len(d["obs"]); assert n>0
+                  assert d["obs"].shape[1]==412
+                  assert d["desc"].shape[1]==368
+                  assert len(d["offsets"])==n+1 and int(d["offsets"][0])==0 and int(d["offsets"][-1])==len(d["desc"])
+                  assert np.all(np.diff(d["offsets"])>0)
+                  assert np.all((d["action"]>=0)&(d["action"]<np.diff(d["offsets"])))
+                  assert np.isfinite(d["obs"]).all() and np.isfinite(d["desc"]).all()
+                  assert np.isfinite(d["reward"]).all() and np.isfinite(d["old_logp"]).all()
+                  assert set(map(str,d["checkpoint_id"]))=={"armg-original-15k-v11-r1"}
+                  total+=n;cands+=len(d["desc"])
+          assert total==20533 and cands==79573,(total,cands)
+          print("V13_FULL_PREFLIGHT_PASS",{"shards":len(fs),"decisions":total,"candidates":cands})
+          PY
+          python -c 'import slaythespire; print("V13_PREFLIGHT_SIM_PASS")'
+          STS_BOT_DIR=.cache/sts1-armg python -c 'import sys,torch;sys.path.insert(0,".cache/sts1-armg");import armG_train as m;n=m.Scorer((128,128));n.load_state_dict(torch.load("external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt",weights_only=True,map_location="cpu"));print("V13_PREFLIGHT_WEIGHT_PASS")'
       - name: Train candidate
         run: |
           set -a; source control/sts1-armg-ppo-v13-sharded-train.request; set +a

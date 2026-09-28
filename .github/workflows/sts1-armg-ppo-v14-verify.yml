@@ -15,6 +15,7 @@ on:
       - tests/test_sts1_armg_ppo_v13_adapt.py
       - control/sts1-v14-final-promotion-seeds-50.txt
       - .github/workflows/sts1-armg-ppo-v13-auto-loop.yml
+      - .github/workflows/sts1-armg-ppo-v14-auto-loop.yml
       - .github/workflows/sts1-armg-ppo-v14-verify.yml
 
 permissions:

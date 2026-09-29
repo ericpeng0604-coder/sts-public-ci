@@ -76,6 +76,68 @@ def should_reset_critic(
     return critic_loaded and health_explained_variance < threshold
 
 
+def update_smart_early_stop(
+    *,
+    epoch: int,
+    min_epochs: int,
+    patience: int,
+    stale_epochs: int,
+    critic_progress: bool,
+    approx_kl: float,
+    clip_fraction: float,
+    previous_kl: float | None,
+    previous_clip_fraction: float | None,
+    elite_bc_loss: float | None,
+    best_elite_bc_loss: float | None,
+    kl_delta: float,
+    clip_delta: float,
+    bc_loss_delta: float,
+) -> tuple[int, float | None, dict[str, bool | float | int | None]]:
+    """Update conservative learning-plateau state for one PPO epoch.
+
+    Smart stopping is intentionally stricter than simply watching loss:
+    training stays active while the Critic makes meaningful progress,
+    elite imitation improves, or the policy is still moving materially.
+    Only consecutive plateau epochs after the minimum epoch can stop training.
+    A patience of zero disables this plateau stop entirely.
+    """
+    enabled = patience > 0
+    bc_progress = False
+    next_best_bc = best_elite_bc_loss
+    if elite_bc_loss is not None:
+        if (
+            best_elite_bc_loss is None
+            or elite_bc_loss < best_elite_bc_loss - bc_loss_delta
+        ):
+            bc_progress = True
+            next_best_bc = elite_bc_loss
+
+    policy_moving = False
+    if previous_kl is not None and previous_clip_fraction is not None:
+        policy_moving = (
+            abs(approx_kl - previous_kl) >= kl_delta
+            or abs(clip_fraction - previous_clip_fraction) >= clip_delta
+        )
+
+    useful_progress = critic_progress or bc_progress or policy_moving
+    if not enabled or epoch < min_epochs or useful_progress:
+        next_stale = 0
+    else:
+        next_stale = stale_epochs + 1
+
+    should_stop = enabled and epoch >= min_epochs and next_stale >= patience
+    return next_stale, next_best_bc, {
+        "enabled": enabled,
+        "should_stop": should_stop,
+        "stale_epochs": next_stale,
+        "critic_progress": critic_progress,
+        "elite_bc_progress": bc_progress,
+        "policy_moving": policy_moving,
+        "useful_progress": useful_progress,
+        "best_elite_bc_loss": next_best_bc,
+    }
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("shards", "armg-root", "base-weight", "output"):
@@ -99,6 +161,12 @@ def main() -> int:
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--bc-coef", type=float, default=0.01)
     p.add_argument("--bc-max-decisions", type=int, default=1024)
+    p.add_argument("--early-stop-min-epochs", type=int, default=3)
+    p.add_argument("--early-stop-patience", type=int, default=2)
+    p.add_argument("--early-stop-critic-delta", type=float, default=1e-4)
+    p.add_argument("--early-stop-kl-delta", type=float, default=5e-5)
+    p.add_argument("--early-stop-clip-delta", type=float, default=0.002)
+    p.add_argument("--early-stop-bc-delta", type=float, default=1e-5)
     a = p.parse_args()
 
     if not 0.25 <= a.behavior_temperature <= 2.0:
@@ -113,6 +181,18 @@ def main() -> int:
         raise RuntimeError("bc-coef outside safe bounds")
     if not 0 <= a.bc_max_decisions <= 4096:
         raise RuntimeError("bc-max-decisions outside safe bounds")
+    if a.early_stop_min_epochs < 1:
+        raise RuntimeError("early-stop-min-epochs must be >= 1")
+    if a.early_stop_patience < 0:
+        raise RuntimeError("early-stop-patience must be >= 0")
+    for value, label in (
+        (a.early_stop_critic_delta, "early-stop-critic-delta"),
+        (a.early_stop_kl_delta, "early-stop-kl-delta"),
+        (a.early_stop_clip_delta, "early-stop-clip-delta"),
+        (a.early_stop_bc_delta, "early-stop-bc-delta"),
+    ):
+        if value < 0.0:
+            raise RuntimeError(f"{label} must be >= 0")
 
     os.environ["STS_BOT_DIR"] = str(a.armg_root)
     sys.path.insert(0, str(a.armg_root))
@@ -304,6 +384,14 @@ def main() -> int:
     first_ratio_abs_error: float | None = None
     total_bc_updates = 0
     total_bc_decisions = 0
+    smart_stop_stale_epochs = 0
+    best_elite_bc_loss: float | None = None
+    previous_kl: float | None = None
+    previous_clip_fraction: float | None = None
+    early_stop_triggered = False
+    early_stop_reason: str | None = None
+    early_stop_epoch: int | None = None
+    effective_min_epochs = min(a.early_stop_min_epochs, a.epochs)
 
     for ep in range(1, a.epochs + 1):
         losses: list[float] = []
@@ -524,6 +612,9 @@ def main() -> int:
             np.concatenate(epoch_value_predictions),
             np.concatenate(fixed_returns),
         )
+        critic_progress_for_stop = (
+            epoch_ev > best_critic_ev + a.early_stop_critic_delta
+        )
         critic_improved = epoch_ev > best_critic_ev + 1e-9
         if critic_improved:
             best_critic_ev = epoch_ev
@@ -547,6 +638,36 @@ def main() -> int:
             "elite_bc_mean_loss": bc_mean_loss,
             "seconds": time.time() - t0,
         }
+        smart_stop_stale_epochs, best_elite_bc_loss, smart_status = (
+            update_smart_early_stop(
+                epoch=ep,
+                min_epochs=effective_min_epochs,
+                patience=a.early_stop_patience,
+                stale_epochs=smart_stop_stale_epochs,
+                critic_progress=critic_progress_for_stop,
+                approx_kl=float(epoch_rec["approx_kl"]),
+                clip_fraction=float(epoch_rec["clip_fraction"]),
+                previous_kl=previous_kl,
+                previous_clip_fraction=previous_clip_fraction,
+                elite_bc_loss=(bc_mean_loss if bc_used > 0 else None),
+                best_elite_bc_loss=best_elite_bc_loss,
+                kl_delta=a.early_stop_kl_delta,
+                clip_delta=a.early_stop_clip_delta,
+                bc_loss_delta=a.early_stop_bc_delta,
+            )
+        )
+        previous_kl = float(epoch_rec["approx_kl"])
+        previous_clip_fraction = float(epoch_rec["clip_fraction"])
+        epoch_rec["smart_early_stop_stale_epochs"] = smart_stop_stale_epochs
+        epoch_rec["smart_early_stop_critic_progress"] = bool(
+            smart_status["critic_progress"]
+        )
+        epoch_rec["smart_early_stop_elite_bc_progress"] = bool(
+            smart_status["elite_bc_progress"]
+        )
+        epoch_rec["smart_early_stop_policy_moving"] = bool(
+            smart_status["policy_moving"]
+        )
         history.append(epoch_rec)
         print(
             "TRAIN_EPOCH_V14",
@@ -564,6 +685,16 @@ def main() -> int:
                     "fixed_rollout_targets": True,
                     "best_critic_epoch": best_critic_epoch,
                     "best_critic_explained_variance": best_critic_ev,
+                    "smart_early_stop": {
+                        "enabled": a.early_stop_patience > 0,
+                        "min_epochs": effective_min_epochs,
+                        "patience": a.early_stop_patience,
+                        "stale_epochs": smart_stop_stale_epochs,
+                        "critic_delta": a.early_stop_critic_delta,
+                        "kl_delta": a.early_stop_kl_delta,
+                        "clip_delta": a.early_stop_clip_delta,
+                        "bc_delta": a.early_stop_bc_delta,
+                    },
                 },
                 indent=2,
             )
@@ -572,14 +703,41 @@ def main() -> int:
         )
 
         if epoch_rec["approx_kl"] > a.target_kl:
+            early_stop_triggered = True
+            early_stop_reason = "target_kl"
+            early_stop_epoch = ep
             print(
                 "PPO_V14_EARLY_STOP",
                 json.dumps(
                     {
                         "epoch": ep,
+                        "reason": early_stop_reason,
                         "approx_kl": epoch_rec["approx_kl"],
                         "target_kl": a.target_kl,
                     }
+                ),
+                flush=True,
+            )
+            break
+
+        if bool(smart_status["should_stop"]):
+            early_stop_triggered = True
+            early_stop_reason = "learning_plateau"
+            early_stop_epoch = ep
+            print(
+                "PPO_V14_EARLY_STOP",
+                json.dumps(
+                    {
+                        "epoch": ep,
+                        "reason": early_stop_reason,
+                        "min_epochs": effective_min_epochs,
+                        "patience": a.early_stop_patience,
+                        "stale_epochs": smart_stop_stale_epochs,
+                        "critic_progress": smart_status["critic_progress"],
+                        "elite_bc_progress": smart_status["elite_bc_progress"],
+                        "policy_moving": smart_status["policy_moving"],
+                    },
+                    sort_keys=True,
                 ),
                 flush=True,
             )
@@ -609,6 +767,21 @@ def main() -> int:
         "initial_critic_explained_variance": initial_ev,
         "best_critic_epoch": best_critic_epoch,
         "best_critic_explained_variance": best_critic_ev,
+        "epochs_requested": a.epochs,
+        "epochs_executed": len(history),
+        "early_stop": {
+            "triggered": early_stop_triggered,
+            "reason": early_stop_reason,
+            "epoch": early_stop_epoch,
+            "smart_enabled": a.early_stop_patience > 0,
+            "min_epochs": effective_min_epochs,
+            "patience": a.early_stop_patience,
+            "stale_epochs": smart_stop_stale_epochs,
+            "critic_delta": a.early_stop_critic_delta,
+            "kl_delta": a.early_stop_kl_delta,
+            "clip_delta": a.early_stop_clip_delta,
+            "bc_delta": a.early_stop_bc_delta,
+        },
         "history": history,
     }
     a.output.with_suffix(".json").write_text(

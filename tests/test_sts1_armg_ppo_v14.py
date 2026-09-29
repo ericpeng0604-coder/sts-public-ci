@@ -205,14 +205,14 @@ def test_identical_candidate_is_not_adopted():
     assert result["mean_paired_floor_delta"] == 0.0
 
 
-def test_dev_gate_accepts_small_paired_floor_progress_without_win_regression():
+def test_dev_gate_rejects_floor_progress_without_more_wins():
     parent = [run(i, 30 + (i % 5), win=i in {1, 2}) for i in range(30)]
-    candidate = [run(i, 31 + (i % 5), win=i in {1, 2}) for i in range(30)]
+    candidate = [run(i, 40 + (i % 5), win=i in {1, 2}) for i in range(30)]
     result = gate._dev_gate(parent, candidate)
-    assert result["status"] == "PASS"
-    assert result["decision"] == "ADOPT_PARENT"
+    assert result["status"] == "HOLD"
+    assert result["decision"] == "HOLD_PARENT"
     assert result["win_delta"] == 0
-    assert result["mean_paired_floor_delta"] == 1.0
+    assert "no_dev_win_improvement" in result["reasons"]
 
 
 def test_dev_gate_accepts_one_more_win():
@@ -225,18 +225,18 @@ def test_dev_gate_accepts_one_more_win():
 
 def test_dev_gate_rejects_win_regression_even_if_floor_rises():
     parent = [run(i, 30, win=i in {1, 2}) for i in range(30)]
-    candidate = [run(i, 35, win=i == 1) for i in range(30)]
+    candidate = [run(i, 50, win=i == 1) for i in range(30)]
     result = gate._dev_gate(parent, candidate)
     assert result["status"] == "HOLD"
-    assert "dev_wins_regressed" in result["reasons"]
+    assert "no_dev_win_improvement" in result["reasons"]
 
 
 def test_dev_gate_rejects_noise_level_floor_change():
     parent = [run(i, 35) for i in range(30)]
-    candidate = [run(i, 35 + (1 if i < 10 else 0)) for i in range(30)]
+    candidate = [run(i, 50 if i < 10 else 35) for i in range(30)]
     result = gate._dev_gate(parent, candidate)
     assert result["status"] == "HOLD"
-    assert "no_material_dev_improvement" in result["reasons"]
+    assert "no_dev_win_improvement" in result["reasons"]
 
 
 def test_dev_gate_rejects_safety_failure_even_with_extra_win():
@@ -526,14 +526,16 @@ def test_v14_candidate_pool_prefers_dev_pass():
     }
     passed = {
         "name": "half",
+        "step_scale": 0.5,
         "dev_gate": {
             "status": "PASS",
-            "win_delta": 0,
-            "mean_paired_floor_delta": 0.8,
-            "median_paired_floor_delta": 0.0,
-            "reach50_delta": 0,
+            "win_delta": 1,
+            "mean_paired_floor_delta": -5.0,
+            "median_paired_floor_delta": -6.0,
+            "reach50_delta": -2,
         },
     }
+    held["step_scale"] = 1.0
 
     assert gate._select_dev_candidate([held, passed])["name"] == "half"
 
@@ -701,3 +703,26 @@ def test_gate_parallel_timeout_terminates_pool(monkeypatch, tmp_path: Path):
 
     assert calls["terminated"] >= 1
     assert calls["joined"] >= 1
+
+
+
+def test_v14_candidate_pool_ignores_floor_when_wins_tie():
+    small_step = {
+        "name": "quarter",
+        "step_scale": 0.25,
+        "dev_gate": {
+            "status": "PASS",
+            "win_delta": 2,
+            "mean_paired_floor_delta": -20.0,
+        },
+    }
+    large_step = {
+        "name": "full",
+        "step_scale": 1.0,
+        "dev_gate": {
+            "status": "PASS",
+            "win_delta": 2,
+            "mean_paired_floor_delta": 20.0,
+        },
+    }
+    assert gate._select_dev_candidate([large_step, small_step])["name"] == "quarter"

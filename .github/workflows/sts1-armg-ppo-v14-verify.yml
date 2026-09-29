@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - gpt/sts1-ppo-v13-auto-loop-20260928
-      - gpt/sts1-ppo-v14-smart-early-stop-20260929
     paths:
       - scripts/sts1/sts1_armg_ppo_train_v14_sharded.py
       - scripts/sts1/sts1_armg_ppo_rollout_v14.py

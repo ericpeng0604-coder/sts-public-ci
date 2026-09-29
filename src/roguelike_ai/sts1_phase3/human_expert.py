@@ -18,7 +18,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from roguelike_ai.sts1_phase3.simulator import ArmGNoncombatPolicy, SimulatorRunError
 
 
-PRIOR_SCHEMA_VERSION = "sts1-human-expert-card-prior-v1"
+PRIOR_SCHEMA_VERSION = "sts1-human-expert-card-prior-v2"
 SKIP_TOKEN = "__SKIP__"
 _UPGRADE_RE = re.compile(r"\+\d+$")
 
@@ -107,12 +107,20 @@ def _fit_scores(
     examples: Sequence[tuple[int, str, list[str], float]],
     *,
     alpha: float,
-) -> tuple[dict[str, float], dict[str, dict[str, float]], dict[str, Any]]:
+) -> tuple[
+    dict[str, float],
+    dict[str, dict[str, float]],
+    dict[str, dict[str, float]],
+    dict[str, Any],
+]:
+    """Fit base card utility plus direct card-vs-card matchup preferences."""
     wins: dict[str, float] = defaultdict(float)
     losses: dict[str, float] = defaultdict(float)
     act_wins: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     act_losses: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    pair_wins: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     pair_count = 0
+
     for act, picked, alternatives, weight in examples:
         for other in alternatives:
             if other == picked:
@@ -121,6 +129,7 @@ def _fit_scores(
             losses[other] += weight
             act_wins[act][picked] += weight
             act_losses[act][other] += weight
+            pair_wins[picked][other] += weight
             pair_count += 1
 
     names = sorted(set(wins) | set(losses))
@@ -128,6 +137,7 @@ def _fit_scores(
         name: math.log((wins[name] + alpha) / (losses[name] + alpha))
         for name in names
     }
+
     by_act: dict[str, dict[str, float]] = {}
     for act in sorted(set(act_wins) | set(act_losses)):
         act_names = sorted(set(act_wins[act]) | set(act_losses[act]))
@@ -137,13 +147,31 @@ def _fit_scores(
             )
             for name in act_names
         }
-    return global_scores, by_act, {
+
+    pairwise_scores: dict[str, dict[str, float]] = {}
+    matchup_pairs = 0
+    for left in names:
+        row: dict[str, float] = {}
+        for right in names:
+            if left == right:
+                continue
+            forward = float(pair_wins[left].get(right, 0.0))
+            backward = float(pair_wins[right].get(left, 0.0))
+            if forward <= 0.0 and backward <= 0.0:
+                continue
+            row[right] = math.log((forward + alpha) / (backward + alpha))
+            matchup_pairs += 1
+        if row:
+            pairwise_scores[left] = row
+
+    return global_scores, by_act, pairwise_scores, {
         "pairwise_examples": pair_count,
         "unique_cards": len(names),
+        "observed_matchup_directions": matchup_pairs,
     }
 
 
-def prior_card_score(prior: Mapping[str, Any], card_name: str, *, floor: int) -> float:
+def _base_card_score(prior: Mapping[str, Any], card_name: str, *, floor: int) -> float:
     name = normalize_card_name(card_name)
     global_score = float((prior.get("global_scores") or {}).get(name, 0.0) or 0.0)
     act_score = float(
@@ -151,6 +179,35 @@ def prior_card_score(prior: Mapping[str, Any], card_name: str, *, floor: int) ->
         or 0.0
     )
     return 0.30 * global_score + 0.70 * act_score
+
+
+def prior_card_score(
+    prior: Mapping[str, Any],
+    card_name: str,
+    *,
+    floor: int,
+    offered: Sequence[str] | None = None,
+) -> float:
+    """Score a card using Act-aware utility plus offered-set matchup context."""
+    name = normalize_card_name(card_name)
+    base = _base_card_score(prior, name, floor=floor)
+    mix = float(prior.get("matchup_mix", 0.0) or 0.0)
+    if not offered or mix <= 0.0:
+        return base
+
+    row = (prior.get("pairwise_scores") or {}).get(name, {}) or {}
+    matchup_values: list[float] = []
+    for other in offered:
+        other_name = normalize_card_name(other)
+        if other_name == name:
+            continue
+        if other_name in row:
+            matchup_values.append(float(row[other_name]))
+
+    if not matchup_values:
+        return base
+    matchup = sum(matchup_values) / len(matchup_values)
+    return (1.0 - mix) * base + mix * matchup
 
 
 def _top1_accuracy(
@@ -163,8 +220,9 @@ def _top1_accuracy(
     total = 0
     for act, picked, alternatives, _weight in examples:
         options = [picked] + [value for value in alternatives if value != picked]
+        floor = 1 if act == 1 else 17 if act == 2 else 34 if act == 3 else 51
         scores = [
-            prior_card_score(prior, value, floor=(1 if act == 1 else 17 if act == 2 else 34 if act == 3 else 51))
+            prior_card_score(prior, value, floor=floor, offered=options)
             for value in options
         ]
         best = max(range(len(options)), key=scores.__getitem__)
@@ -229,17 +287,42 @@ def build_card_prior(
     if not train_examples:
         raise RuntimeError("expert corpus produced an empty training split")
 
-    global_scores, act_scores, stats = _fit_scores(train_examples, alpha=alpha)
-    train_prior = {
+    global_scores, act_scores, pairwise_scores, stats = _fit_scores(
+        train_examples,
+        alpha=alpha,
+    )
+    baseline_prior = {
         "schema_version": PRIOR_SCHEMA_VERSION,
         "global_scores": global_scores,
         "act_scores": act_scores,
+        "pairwise_scores": pairwise_scores,
+        "matchup_mix": 0.0,
     }
-    holdout_top1 = _top1_accuracy(holdout_examples, train_prior)
+    baseline_holdout_top1 = _top1_accuracy(holdout_examples, baseline_prior)
 
-    # Validate on a stable holdout, then fit the deployable prior on every
-    # permitted expert decision.  The holdout is never used for the metric above.
-    global_scores, act_scores, full_stats = _fit_scores(all_examples, alpha=alpha)
+    # Select how much direct offered-set matchup context to trust using a stable
+    # holdout.  Ties prefer the smaller mix, so v2 cannot become more complex
+    # without measured holdout benefit.
+    mix_candidates = (0.0, 0.25, 0.50, 0.75, 1.0)
+    mix_results: list[dict[str, float]] = []
+    for mix in mix_candidates:
+        candidate_prior = dict(baseline_prior)
+        candidate_prior["matchup_mix"] = float(mix)
+        accuracy = _top1_accuracy(holdout_examples, candidate_prior)
+        mix_results.append({"matchup_mix": float(mix), "holdout_top1": float(accuracy)})
+    selected = max(
+        mix_results,
+        key=lambda row: (row["holdout_top1"], -row["matchup_mix"]),
+    )
+    matchup_mix = float(selected["matchup_mix"])
+    holdout_top1 = float(selected["holdout_top1"])
+
+    # Validate hyperparameters on the stable holdout, then fit deployable
+    # statistics on every permitted expert decision.
+    global_scores, act_scores, pairwise_scores, full_stats = _fit_scores(
+        all_examples,
+        alpha=alpha,
+    )
     payload = {
         "schema_version": PRIOR_SCHEMA_VERSION,
         "character": "IRONCLAD",
@@ -252,11 +335,16 @@ def build_card_prior(
         "card_choice_examples": len(all_examples),
         "train_examples": len(train_examples),
         "holdout_examples": len(holdout_examples),
+        "baseline_holdout_top1": baseline_holdout_top1,
         "holdout_top1": holdout_top1,
+        "matchup_mix": matchup_mix,
+        "matchup_mix_search": mix_results,
         "pairwise_examples": full_stats["pairwise_examples"],
+        "observed_matchup_directions": full_stats["observed_matchup_directions"],
         "unique_cards": full_stats["unique_cards"],
         "global_scores": global_scores,
         "act_scores": act_scores,
+        "pairwise_scores": pairwise_scores,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -306,17 +394,20 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
         additions = [0.0] * len(descs)
 
         if kind == "card" and self.expert_strength > 0:
-            for index, desc in enumerate(descs):
+            card_names: list[str] = []
+            for desc in descs:
                 semantic = self.describe_choice("card", desc)
-                card_name = (
+                card_names.append(
                     SKIP_TOKEN
                     if semantic.get("choice") == "skip"
                     else normalize_card_name(semantic.get("card_name"))
                 )
+            for index, card_name in enumerate(card_names):
                 additions[index] = self.expert_strength * prior_card_score(
                     self.expert_prior,
                     card_name,
                     floor=floor,
+                    offered=card_names,
                 )
                 adjusted[index] += additions[index]
 

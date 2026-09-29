@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
 
 ROOT = Path(__file__).parents[1]
@@ -492,3 +493,46 @@ def test_parent_hold_preserves_both_replay_archives(tmp_path: Path):
 
     assert (state_dir / "ppo-replay.npz").read_bytes() == b"same-parent-replay"
     assert (state_dir / "elite-replay.npz").read_bytes() == b"elite"
+
+
+def test_v14_candidate_interpolation_scales_actor_update(tmp_path: Path):
+    parent = tmp_path / "parent.pt"
+    trained = tmp_path / "trained.pt"
+    candidate = tmp_path / "candidate.pt"
+    torch.save({"weight": torch.tensor([0.0, 2.0])}, parent)
+    torch.save({"weight": torch.tensor([4.0, 6.0])}, trained)
+
+    gate._interpolate_checkpoint(
+        parent_weight=parent,
+        trained_weight=trained,
+        output_weight=candidate,
+        alpha=0.25,
+    )
+
+    payload = torch.load(candidate, weights_only=True, map_location="cpu")
+    assert torch.allclose(payload["weight"], torch.tensor([1.0, 3.0]))
+
+
+def test_v14_candidate_pool_prefers_dev_pass():
+    held = {
+        "name": "full",
+        "dev_gate": {
+            "status": "HOLD",
+            "win_delta": 3,
+            "mean_paired_floor_delta": 3.0,
+            "median_paired_floor_delta": 2.0,
+            "reach50_delta": 2,
+        },
+    }
+    passed = {
+        "name": "half",
+        "dev_gate": {
+            "status": "PASS",
+            "win_delta": 0,
+            "mean_paired_floor_delta": 0.8,
+            "median_paired_floor_delta": 0.0,
+            "reach50_delta": 0,
+        },
+    }
+
+    assert gate._select_dev_candidate([held, passed])["name"] == "half"

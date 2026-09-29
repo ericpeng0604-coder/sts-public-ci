@@ -58,8 +58,9 @@ from roguelike_ai.sts1_phase3.simulator import (
 STATE_SCHEMA_VERSION = "sts1-armg-strategy-loop-state-v1"
 ROUND_SCHEMA_VERSION = "sts1-armg-strategy-round-v1"
 EVAL_SCHEMA_VERSION = "sts1-armg-strategy-eval-v1"
-DATA_EFFICIENCY_VERSION = 3
+DATA_EFFICIENCY_VERSION = 4
 ELITE_POOL_SCHEMA_VERSION = "sts1-strategy-elite-pool-v1"
+CANDIDATE_STEP_SCALES = (0.25, 0.50, 1.00)
 PARALLEL_CPU_VERSION = 1
 
 _TEACHER_PARALLEL_SELECTED: Sequence[Mapping[str, Any]] | None = None
@@ -203,6 +204,22 @@ def _prelabel_priority(
         + 0.35 * danger_bonus
         + 0.20 * complexity_bonus
     )
+
+
+def _teacher_confidence_weight(margin: float) -> float:
+    """Down-weight ambiguous Teacher labels without weakening evaluation gates."""
+    margin = float(margin)
+    if not math.isfinite(margin) or margin < 0:
+        raise RuntimeError("teacher margin must be finite and non-negative")
+    if margin <= 0.25:
+        return 0.10
+    if margin <= 1.0:
+        return 0.25
+    if margin <= 3.0:
+        return 0.50
+    if margin <= 8.0:
+        return 0.75
+    return 1.00
 
 
 def _select_teacher_candidates(
@@ -635,6 +652,9 @@ def _branch_example(
         teacher_best_index=best_index,
         branch_values=values,
     )
+    ordered_values = sorted(values, reverse=True)
+    teacher_margin = ordered_values[0] - ordered_values[1]
+    confidence_weight = _teacher_confidence_weight(teacher_margin)
     return {
         "schema_version": STRATEGY_DATASET_SCHEMA_VERSION,
         "type": "armg_strategy_branch_example",
@@ -649,9 +669,8 @@ def _branch_example(
         "branch_quality": values,
         "target_probs": list(targets),
         "priority": priority,
-        "teacher_margin": (
-            sorted(values, reverse=True)[0] - sorted(values, reverse=True)[1]
-        ),
+        "teacher_margin": teacher_margin,
+        "confidence_weight": confidence_weight,
         "branches": branches,
         "combat_policy": f"mcts_{mcts_sims}",
     }
@@ -1387,17 +1406,42 @@ def _merge_replay(
     new_dataset_path: Path,
     *,
     max_examples: int,
+    shop_max_fraction: float = 0.25,
 ) -> dict[str, Any]:
-    """Deduplicate, prioritize mistakes, and preserve decision-kind diversity."""
+    """Deduplicate, confidence-rank, and prevent noisy Shop replay domination."""
     if max_examples < 1:
         raise RuntimeError("max replay examples must be positive")
+    if not 0.0 < shop_max_fraction <= 1.0:
+        raise RuntimeError("shop max fraction must be in (0, 1]")
     rows = _read_examples(replay_path) + _read_examples(new_dataset_path)
 
     dedup: dict[str, dict[str, Any]] = {}
     for row in rows:
         key = _example_identity(row)
         old = dedup.get(key)
-        if old is None or float(row.get("priority", 1.0)) >= float(old.get("priority", 1.0)):
+        row_margin = float(row.get("teacher_margin", 0.0))
+        row_confidence = float(
+            row.get("confidence_weight", _teacher_confidence_weight(row_margin))
+        )
+        row["confidence_weight"] = row_confidence
+        if old is None:
+            dedup[key] = row
+            continue
+        old_margin = float(old.get("teacher_margin", 0.0))
+        old_confidence = float(
+            old.get("confidence_weight", _teacher_confidence_weight(old_margin))
+        )
+        new_rank = (
+            row_confidence,
+            float(row.get("priority", 1.0)),
+            row_margin,
+        )
+        old_rank = (
+            old_confidence,
+            float(old.get("priority", 1.0)),
+            old_margin,
+        )
+        if new_rank >= old_rank:
             dedup[key] = row
 
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1406,15 +1450,30 @@ def _merge_replay(
     for values in groups.values():
         values.sort(
             key=lambda row: (
+                float(row.get("confidence_weight", 0.10)),
                 float(row.get("priority", 1.0)),
                 float(row.get("teacher_margin", 0.0)),
             ),
             reverse=True,
         )
 
-    # Round-robin kinds so map/card/shop/rest/event cannot silently starve.
+    dropped_shop_examples = 0
+    shop_cap = len(groups.get("shop", []))
+    nonshop_count = sum(
+        len(values) for kind, values in groups.items() if kind != "shop"
+    )
+    if "shop" in groups and shop_max_fraction < 1.0 and nonshop_count > 0:
+        ratio_cap = int(
+            math.floor(
+                nonshop_count * shop_max_fraction / (1.0 - shop_max_fraction)
+            )
+        )
+        shop_cap = max(1, min(len(groups["shop"]), ratio_cap, max_examples))
+        dropped_shop_examples = max(0, len(groups["shop"]) - shop_cap)
+        groups["shop"] = groups["shop"][:shop_cap]
+
     kept: list[dict[str, Any]] = []
-    kind_names = sorted(groups)
+    kind_names = sorted(kind for kind, values in groups.items() if values)
     cursor = 0
     while len(kept) < max_examples and kind_names:
         kind = kind_names[cursor % len(kind_names)]
@@ -1436,6 +1495,7 @@ def _merge_replay(
         encoding="utf-8",
     )
     by_kind = Counter(str(row.get("kind", "unknown")) for row in kept)
+    confidences = [float(row.get("confidence_weight", 0.10)) for row in kept]
     return {
         "examples": len(kept),
         "examples_by_kind": dict(sorted(by_kind.items())),
@@ -1443,8 +1503,15 @@ def _merge_replay(
             int(row.get("current_armg_index") != row.get("teacher_best_index"))
             for row in kept
         ),
+        "shop_max_fraction": float(shop_max_fraction),
+        "shop_cap": int(shop_cap),
+        "dropped_shop_examples": int(dropped_shop_examples),
+        "mean_confidence_weight": (
+            sum(confidences) / len(confidences) if confidences else 0.0
+        ),
+        "low_confidence_examples": sum(value <= 0.25 for value in confidences),
+        "high_confidence_examples": sum(value >= 0.75 for value in confidences),
     }
-
 
 def _teacher_accuracy(
     net: Any,
@@ -1533,7 +1600,11 @@ def _train_candidate(
 
             priority = float(row.get("priority", 1.0))
             balance = kind_weight[str(row.get("kind", "unknown"))]
-            loss = priority * balance * ce + anchor_coef * anchor
+            margin = float(row.get("teacher_margin", 0.0))
+            confidence = float(
+                row.get("confidence_weight", _teacher_confidence_weight(margin))
+            )
+            loss = confidence * priority * balance * ce + anchor_coef * anchor
 
             optimizer.zero_grad()
             loss.backward()
@@ -1554,6 +1625,15 @@ def _train_candidate(
         "epochs": epochs,
         "learning_rate": learning_rate,
         "anchor_coef": anchor_coef,
+        "mean_confidence_weight": sum(
+            float(
+                row.get(
+                    "confidence_weight",
+                    _teacher_confidence_weight(float(row.get("teacher_margin", 0.0))),
+                )
+            )
+            for row in examples
+        ) / len(examples),
         "before_teacher_top1": before,
         "after_teacher_top1": after,
         "before_teacher_top1_by_kind": before_by_kind,
@@ -1564,6 +1644,58 @@ def _train_candidate(
         "source_sha256": _sha256(source_weight),
         "candidate_sha256": _sha256(output_weight),
     }
+
+
+def _interpolate_checkpoint(
+    *,
+    source_weight: Path,
+    trained_weight: Path,
+    output_weight: Path,
+    alpha: float,
+) -> None:
+    """Create a Parent-protected Candidate by scaling one learned update."""
+    alpha = float(alpha)
+    if not 0.0 < alpha <= 1.0:
+        raise RuntimeError("candidate step alpha must be in (0, 1]")
+    source = torch.load(source_weight, weights_only=True, map_location="cpu")
+    trained = torch.load(trained_weight, weights_only=True, map_location="cpu")
+    if set(source) != set(trained):
+        raise RuntimeError("candidate checkpoint keys drifted from Parent")
+    interpolated: dict[str, Any] = {}
+    for name in source:
+        parent_value = source[name]
+        trained_value = trained[name]
+        if getattr(parent_value, "shape", None) != getattr(trained_value, "shape", None):
+            raise RuntimeError(f"candidate checkpoint shape drift: {name}")
+        if torch.is_floating_point(parent_value):
+            interpolated[name] = parent_value + alpha * (trained_value - parent_value)
+        else:
+            if not torch.equal(parent_value, trained_value):
+                raise RuntimeError(f"non-floating checkpoint value drift: {name}")
+            interpolated[name] = parent_value
+    output_weight.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(interpolated, output_weight)
+
+
+def _dev_gate_rank(gate: Mapping[str, Any]) -> tuple[float, ...]:
+    paired = gate.get("paired") or {}
+    floor_delta = gate.get("floor_delta")
+    return (
+        1.0 if gate.get("status") == "PASS" else 0.0,
+        float(gate.get("win_delta", -10**9) or 0.0),
+        float(floor_delta) if isinstance(floor_delta, (int, float)) else -10**9,
+        float(paired.get("candidate_better", 0) or 0)
+        - float(paired.get("candidate_worse", 0) or 0),
+        -float(paired.get("one_sided_sign_p", 1.0) or 1.0),
+    )
+
+
+def _select_dev_candidate(
+    candidates: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if not candidates:
+        raise RuntimeError("candidate pool is empty")
+    return max(candidates, key=lambda row: _dev_gate_rank(row["dev_gate"]))
 
 
 def _evaluate_seed_worker(
@@ -1781,6 +1913,7 @@ def main() -> int:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--anchor-coef", type=float, default=0.01)
     parser.add_argument("--max-replay-examples", type=int, default=10000)
+    parser.add_argument("--shop-max-fraction", type=float, default=0.25)
     parser.add_argument("--max-stagnation", type=int, default=5)
     parser.add_argument("--elite-mining-seeds", type=int, default=2)
     parser.add_argument("--elite-examples-per-seed", type=int, default=2)
@@ -1805,6 +1938,8 @@ def main() -> int:
         raise RuntimeError("branch limits are invalid")
     if args.epochs < 1 or args.max_stagnation < 0:
         raise RuntimeError("epochs must be positive and max-stagnation non-negative")
+    if not 0.0 < args.shop_max_fraction <= 1.0:
+        raise RuntimeError("shop-max-fraction must be in (0, 1]")
     if args.teacher_label_budget < 1 or args.min_labels_per_kind < 0:
         raise RuntimeError("Teacher selection limits are invalid")
     if (
@@ -1899,6 +2034,7 @@ def main() -> int:
             replay_path,
             dataset_path,
             max_examples=args.max_replay_examples,
+            shop_max_fraction=args.shop_max_fraction,
         )
 
         elite_mining_seeds: tuple[int, ...] = ()
@@ -1940,32 +2076,91 @@ def main() -> int:
                     replay_path,
                     elite_dataset,
                     max_examples=args.max_replay_examples,
+                    shop_max_fraction=args.shop_max_fraction,
                 )
 
-        candidate_weight = round_dir / "candidate-strategy.pt"
+        trained_weight = round_dir / "candidate-trained-full.pt"
         train_report = _train_candidate(
             armg=armg,
             source_weight=current_weight,
             replay_path=replay_path,
-            output_weight=candidate_weight,
+            output_weight=trained_weight,
             epochs=args.epochs,
             learning_rate=args.learning_rate,
             anchor_coef=args.anchor_coef,
             rng_seed=args.rng_seed + round_no * 1000 + 2,
         )
 
-        current_dev, candidate_dev, dev_gate = _eval_and_gate(
-            current_weight=current_weight,
-            candidate_weight=candidate_weight,
+        current_dev = _evaluate_weight(
             seeds=dev30,
             module_dir=args.module_dir,
             armg_root=args.armg_root,
+            strategy_weight=current_weight,
             mcts_sims=args.combat_mcts_sims,
             workers=args.eval_workers,
-            policy=DEV_STRATEGY_GATE,
         )
         _write_json(round_dir / "eval-current-dev30.json", current_dev)
+        candidate_records: list[dict[str, Any]] = []
+        for candidate_index, step_scale in enumerate(CANDIDATE_STEP_SCALES):
+            label = f"step-{int(round(step_scale * 100)):03d}"
+            variant_weight = round_dir / f"candidate-{label}.pt"
+            _interpolate_checkpoint(
+                source_weight=current_weight,
+                trained_weight=trained_weight,
+                output_weight=variant_weight,
+                alpha=step_scale,
+            )
+            candidate_eval = _evaluate_weight(
+                seeds=dev30,
+                module_dir=args.module_dir,
+                armg_root=args.armg_root,
+                strategy_weight=variant_weight,
+                mcts_sims=args.combat_mcts_sims,
+                workers=args.eval_workers,
+            )
+            gate = evaluate_strategy_gate(
+                current_dev,
+                candidate_eval,
+                policy=DEV_STRATEGY_GATE,
+                expected_combat_policy=f"mcts_{args.combat_mcts_sims}",
+            )
+            _write_json(round_dir / f"eval-candidate-dev30-{label}.json", candidate_eval)
+            candidate_records.append(
+                {
+                    "index": candidate_index,
+                    "name": label,
+                    "step_scale": float(step_scale),
+                    "weight_path": str(variant_weight),
+                    "candidate_strategy_sha256": _sha256(variant_weight),
+                    "candidate_eval": candidate_eval,
+                    "dev_gate": gate,
+                }
+            )
+
+        chosen_candidate = _select_dev_candidate(candidate_records)
+        candidate_weight = round_dir / "candidate-strategy.pt"
+        shutil.copy2(Path(str(chosen_candidate["weight_path"])), candidate_weight)
+        candidate_dev = dict(chosen_candidate["candidate_eval"])
+        dev_gate = dict(chosen_candidate["dev_gate"])
         _write_json(round_dir / "eval-candidate-dev30.json", candidate_dev)
+        candidate_pool_report = [
+            {
+                "index": int(row["index"]),
+                "name": str(row["name"]),
+                "step_scale": float(row["step_scale"]),
+                "candidate_strategy_sha256": str(row["candidate_strategy_sha256"]),
+                "dev_gate": row["dev_gate"],
+                "selected": row is chosen_candidate,
+            }
+            for row in candidate_records
+        ]
+        train_report = {
+            **train_report,
+            "candidate_step_scales": list(CANDIDATE_STEP_SCALES),
+            "selected_step_scale": float(chosen_candidate["step_scale"]),
+            "selected_candidate_name": str(chosen_candidate["name"]),
+            "selected_candidate_sha256": _sha256(candidate_weight),
+        }
 
         hidden_seeds: tuple[int, ...] = ()
         fresh_seeds: tuple[int, ...] = ()
@@ -2103,6 +2298,7 @@ def main() -> int:
                 "update": elite_pool_update,
             },
             "training": train_report,
+            "candidate_pool": candidate_pool_report,
             "dev_gate": dev_gate,
             "hidden_gate": hidden_gate,
             "fresh_gate": fresh_gate,

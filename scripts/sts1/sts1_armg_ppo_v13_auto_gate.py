@@ -13,8 +13,8 @@ Safety invariants:
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor
 import hashlib
+import multiprocessing as mp
 import json
 from pathlib import Path
 import subprocess
@@ -118,11 +118,19 @@ def _evaluate_parallel(
     mcts_sims: int,
     all_formal_seeds: list[int],
     workers: int,
+    batch_timeout_seconds: int = 1800,
 ) -> dict[tuple[str, int], dict[str, Any]]:
+    """Evaluate with spawn workers so PyTorch state cannot deadlock after fork.
+
+    A hard batch timeout terminates the worker pool and fails closed. The outer
+    auto-loop supervisor can then retry without leaving a GitHub runner hung.
+    """
     if not requests:
         return {}
     if workers < 1:
         raise RuntimeError("workers must be positive")
+    if batch_timeout_seconds < 1:
+        raise RuntimeError("batch timeout must be positive")
     tasks = [
         (
             label,
@@ -137,22 +145,47 @@ def _evaluate_parallel(
         for label, weight, seed in requests
     ]
     results: dict[tuple[str, int], dict[str, Any]] = {}
-    with ProcessPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-        for label, seed, result in pool.map(_task, tasks):
-            results[(label, int(seed))] = result
-            print(
-                "PPO_V13_GATE_GAME",
-                json.dumps(
-                    {
-                        "label": label,
-                        "seed": seed,
-                        "outcome": result.get("outcome"),
-                        "final_floor": result.get("final_floor"),
-                    },
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
+    ctx = mp.get_context("spawn")
+    pool = ctx.Pool(processes=min(workers, len(tasks)), maxtasksperchild=16)
+    try:
+        async_result = pool.map_async(_task, tasks)
+        try:
+            rows = async_result.get(timeout=batch_timeout_seconds)
+        except mp.TimeoutError as exc:
+            pool.terminate()
+            pool.join()
+            raise RuntimeError(
+                f"PPO gate batch timed out after {batch_timeout_seconds}s "
+                f"for {len(tasks)} evaluations"
+            ) from exc
+        pool.close()
+        pool.join()
+    except BaseException:
+        try:
+            pool.terminate()
+        finally:
+            pool.join()
+        raise
+
+    for label, seed, result in rows:
+        results[(label, int(seed))] = result
+        print(
+            "PPO_V13_GATE_GAME",
+            json.dumps(
+                {
+                    "label": label,
+                    "seed": seed,
+                    "outcome": result.get("outcome"),
+                    "final_floor": result.get("final_floor"),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    print(
+        f"PPO_V13_GATE_BATCH_PASS mode=spawn tasks={len(tasks)} workers={min(workers, len(tasks))}",
+        flush=True,
+    )
     return results
 
 

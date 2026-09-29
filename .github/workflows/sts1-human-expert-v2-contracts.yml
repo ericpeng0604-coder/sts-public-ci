@@ -1,0 +1,36 @@
+name: STS1 Human Expert v2 Contracts
+
+on:
+  push:
+    branches:
+      - gpt/sts1-human-expert-loop-v2-20260929
+    paths:
+      - '.github/workflows/sts1-human-expert-v2-contracts.yml'
+      - 'src/roguelike_ai/sts1_phase3/human_expert.py'
+      - 'tests/test_sts1_human_expert.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+      - name: Compile
+        run: |
+          python -m py_compile src/roguelike_ai/sts1_phase3/human_expert.py
+      - name: Test Human Expert v2
+        run: |
+          pytest -q tests/test_sts1_human_expert.py

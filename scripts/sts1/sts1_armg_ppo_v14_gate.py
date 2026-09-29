@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import statistics
 import sys
 from pathlib import Path
 from typing import Any
+
+import torch
 
 from roguelike_ai.sts1_phase3.champion_gate import (
     FAST_GATE_POLICY,
@@ -24,6 +27,7 @@ import sts1_armg_ppo_v13_auto_gate as rt
 
 CACHE_SCHEMA = "sts1-armg-ppo-v14-eval-cache-v1"
 DEV_POLICY = GatePolicy("dev-parent-30", 30, 0)
+CANDIDATE_STEP_SCALES = (0.25, 0.50, 1.00)
 
 
 def _read_seeds(path: Path) -> list[int]:
@@ -217,6 +221,54 @@ def _dev_gate(parent_runs: list[dict[str, Any]], candidate_runs: list[dict[str, 
     }
 
 
+def _interpolate_checkpoint(
+    *,
+    parent_weight: Path,
+    trained_weight: Path,
+    output_weight: Path,
+    alpha: float,
+) -> None:
+    """Scale one PPO actor update so Dev can select a safer step size."""
+    alpha = float(alpha)
+    if not 0.0 < alpha <= 1.0:
+        raise RuntimeError("candidate step alpha must be in (0, 1]")
+    parent = torch.load(parent_weight, weights_only=True, map_location="cpu")
+    trained = torch.load(trained_weight, weights_only=True, map_location="cpu")
+    if set(parent) != set(trained):
+        raise RuntimeError("PPO candidate checkpoint keys drifted from Parent")
+    output: dict[str, Any] = {}
+    for name in parent:
+        p = parent[name]
+        t = trained[name]
+        if getattr(p, "shape", None) != getattr(t, "shape", None):
+            raise RuntimeError(f"PPO candidate shape drift: {name}")
+        if torch.is_floating_point(p):
+            output[name] = p + alpha * (t - p)
+        else:
+            if not torch.equal(p, t):
+                raise RuntimeError(f"PPO non-floating checkpoint drift: {name}")
+            output[name] = p
+    output_weight.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(output, output_weight)
+
+
+def _dev_candidate_rank(row: dict[str, Any]) -> tuple[float, ...]:
+    gate = row["dev_gate"]
+    return (
+        1.0 if gate.get("status") == "PASS" else 0.0,
+        float(gate.get("win_delta", -10**9)),
+        float(gate.get("mean_paired_floor_delta", -10**9)),
+        float(gate.get("median_paired_floor_delta", -10**9)),
+        float(gate.get("reach50_delta", -10**9)),
+    )
+
+
+def _select_dev_candidate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        raise RuntimeError("PPO v1.4 candidate pool is empty")
+    return max(rows, key=_dev_candidate_rank)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--module-dir", type=Path, required=True)
@@ -243,7 +295,7 @@ def main() -> int:
     simulator_id = rt._automatic_simulator_id(args.module_dir)
     parent_sha = rt._sha256(args.parent_weight)
     baseline_sha = rt._sha256(args.baseline_weight)
-    candidate_sha = rt._sha256(args.candidate_weight)
+    raw_candidate_sha = rt._sha256(args.candidate_weight)
 
     dev_parent = _load_cache(
         state,
@@ -265,19 +317,6 @@ def main() -> int:
         all_seeds=dev_seeds,
         workers=args.workers,
     )
-    dev_candidate: dict[int, dict[str, Any]] = {}
-    dev_candidate = _run_missing(
-        label="dev-candidate",
-        weight=args.candidate_weight,
-        seeds=dev_seeds[:30],
-        cache=dev_candidate,
-        module_dir=args.module_dir,
-        armg_root=args.armg_root,
-        output_dir=args.output_dir,
-        mcts_sims=args.mcts_sims,
-        all_seeds=dev_seeds,
-        workers=args.workers,
-    )
     _save_cache(
         state,
         key="dev_parent",
@@ -287,10 +326,61 @@ def main() -> int:
         simulator_id=simulator_id,
         runs=dev_parent,
     )
-    dev_gate = _dev_gate(
-        _ordered(dev_parent, dev_seeds[:30]),
-        _ordered(dev_candidate, dev_seeds[:30]),
-    )
+
+    candidate_rows: list[dict[str, Any]] = []
+    for index, step_scale in enumerate(CANDIDATE_STEP_SCALES):
+        label = f"step-{int(round(step_scale * 100)):03d}"
+        variant = args.output_dir / f"candidate-{label}.pt"
+        _interpolate_checkpoint(
+            parent_weight=args.parent_weight,
+            trained_weight=args.candidate_weight,
+            output_weight=variant,
+            alpha=step_scale,
+        )
+        dev_candidate: dict[int, dict[str, Any]] = {}
+        dev_candidate = _run_missing(
+            label=f"dev-candidate-{label}",
+            weight=variant,
+            seeds=dev_seeds[:30],
+            cache=dev_candidate,
+            module_dir=args.module_dir,
+            armg_root=args.armg_root,
+            output_dir=args.output_dir,
+            mcts_sims=args.mcts_sims,
+            all_seeds=dev_seeds,
+            workers=args.workers,
+        )
+        gate = _dev_gate(
+            _ordered(dev_parent, dev_seeds[:30]),
+            _ordered(dev_candidate, dev_seeds[:30]),
+        )
+        candidate_rows.append(
+            {
+                "index": index,
+                "name": label,
+                "step_scale": float(step_scale),
+                "weight": variant,
+                "weight_sha256": rt._sha256(variant),
+                "dev_gate": gate,
+            }
+        )
+
+    selected = _select_dev_candidate(candidate_rows)
+    selected_candidate = args.output_dir / "selected-candidate.pt"
+    shutil.copy2(Path(selected["weight"]), selected_candidate)
+    candidate_sha = rt._sha256(selected_candidate)
+    dev_gate = dict(selected["dev_gate"])
+    candidate_pool = [
+        {
+            "index": int(row["index"]),
+            "name": str(row["name"]),
+            "step_scale": float(row["step_scale"]),
+            "candidate_weight_sha256": str(row["weight_sha256"]),
+            "dev_gate": row["dev_gate"],
+            "selected": row is selected,
+        }
+        for row in candidate_rows
+    ]
 
     final30: dict[str, Any]
     final50: dict[str, Any]
@@ -318,7 +408,7 @@ def main() -> int:
         final_candidate: dict[int, dict[str, Any]] = {}
         final_candidate = _run_missing(
             label="final-candidate",
-            weight=args.candidate_weight,
+            weight=selected_candidate,
             seeds=final_seeds[:30],
             cache=final_candidate,
             module_dir=args.module_dir,
@@ -349,7 +439,7 @@ def main() -> int:
             )
             final_candidate = _run_missing(
                 label="final-candidate",
-                weight=args.candidate_weight,
+                weight=selected_candidate,
                 seeds=final_seeds[30:],
                 cache=final_candidate,
                 module_dir=args.module_dir,
@@ -403,7 +493,11 @@ def main() -> int:
         "real_game_gate_required_for_production": True,
         "parent_weight_sha256": parent_sha,
         "baseline_weight_sha256": baseline_sha,
+        "raw_candidate_weight_sha256": raw_candidate_sha,
         "candidate_weight_sha256": candidate_sha,
+        "selected_step_scale": float(selected["step_scale"]),
+        "selected_candidate_name": str(selected["name"]),
+        "candidate_pool": candidate_pool,
         "simulator_id": simulator_id,
         "mcts_sims": args.mcts_sims,
         "dev_gate": dev_gate,
@@ -415,6 +509,7 @@ def main() -> int:
         "decision": report["decision"],
         "final_readiness": report["final_readiness"],
         "candidate_weight_sha256": candidate_sha,
+        "selected_step_scale": float(selected["step_scale"]),
     }
     args.state.write_text(
         json.dumps(state, indent=2, sort_keys=True) + "\n",

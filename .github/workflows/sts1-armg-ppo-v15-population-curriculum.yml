@@ -331,13 +331,18 @@ jobs:
 
       - name: Install candidate runtime
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install -e . numpy torch==2.11.0
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
           root=.cache/sts1-armg
-          mkdir -p "$root"
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe" python -c 'import slaythespire; print("PPO_V15_CANDIDATE_RUNTIME_PASS")'
 
       - uses: actions/download-artifact@v4
         with:

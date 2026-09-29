@@ -31,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: setup-python
         with:
           python-version: '3.12'
 
@@ -44,6 +45,13 @@ jobs:
           echo "PPO_TEMPERATURE=$temperature" >> "$GITHUB_ENV"
           echo "PPO_REWARD_MODE=$reward_mode" >> "$GITHUB_ENV"
 
+      - name: Restore Python runtime cache
+        id: sts1-python-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: sts1-python-runtime-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-torch211-${{ hashFiles('pyproject.toml') }}
+
       - name: Restore pinned simulator cache
         id: sts1-baseline-cache
         uses: actions/cache@v4
@@ -56,8 +64,18 @@ jobs:
       - name: Install and hydrate
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -e . numpy torch==2.11.0
+          if [ "${{ steps.sts1-python-cache.outputs.cache-hit }}" != "true" ]; then
+            rm -rf .venv
+            python -m venv .venv
+            .venv/bin/python -m pip install --upgrade pip
+            .venv/bin/python -m pip install -e . numpy torch==2.11.0
+            echo "STS1_PYTHON_RUNTIME_CACHE_MISS_BUILT"
+          else
+            echo "STS1_PYTHON_RUNTIME_CACHE_HIT"
+          fi
+          source .venv/bin/activate
+          python -c 'import numpy, torch, roguelike_ai; print("STS1_PYTHON_RUNTIME_PASS", torch.__version__)'
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           if [ "${{ steps.sts1-baseline-cache.outputs.cache-hit }}" != "true" ]; then
             python scripts/sts1/hydrate_jialeiv_baseline_v0.py
             python scripts/sts1/build_probe.py
@@ -131,6 +149,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: setup-python
         with:
           python-version: '3.12'
 
@@ -148,6 +167,13 @@ jobs:
           echo "PPO_ANCHOR=$anchor_coef" >> "$GITHUB_ENV"
           echo "PPO_MCTS_SIMS=$mcts_sims" >> "$GITHUB_ENV"
 
+      - name: Restore Python runtime cache
+        id: sts1-python-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: sts1-python-runtime-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-torch211-${{ hashFiles('pyproject.toml') }}
+
       - name: Restore pinned simulator cache
         id: sts1-baseline-cache
         uses: actions/cache@v4
@@ -160,8 +186,18 @@ jobs:
       - name: Install and hydrate
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -e . numpy torch==2.11.0
+          if [ "${{ steps.sts1-python-cache.outputs.cache-hit }}" != "true" ]; then
+            rm -rf .venv
+            python -m venv .venv
+            .venv/bin/python -m pip install --upgrade pip
+            .venv/bin/python -m pip install -e . numpy torch==2.11.0
+            echo "STS1_PYTHON_RUNTIME_CACHE_MISS_BUILT"
+          else
+            echo "STS1_PYTHON_RUNTIME_CACHE_HIT"
+          fi
+          source .venv/bin/activate
+          python -c 'import numpy, torch, roguelike_ai; print("STS1_PYTHON_RUNTIME_PASS", torch.__version__)'
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           if [ "${{ steps.sts1-baseline-cache.outputs.cache-hit }}" != "true" ]; then
             python scripts/sts1/hydrate_jialeiv_baseline_v0.py
             python scripts/sts1/build_probe.py

@@ -257,3 +257,92 @@ def test_tournament_evidence_seed_map_fails_closed():
     duplicate = rows + [dict(rows[0])]
     with pytest.raises(RuntimeError, match="invalid/duplicate"):
         mod._runs_by_seed(duplicate, seeds)
+
+
+
+PARENT_CACHE_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v15_parent_cache.py"
+PARENT_CACHE_SPEC = importlib.util.spec_from_file_location(
+    "sts1_armg_ppo_v15_parent_cache_test",
+    PARENT_CACHE_SCRIPT,
+)
+assert PARENT_CACHE_SPEC and PARENT_CACHE_SPEC.loader
+parent_cache_mod = importlib.util.module_from_spec(PARENT_CACHE_SPEC)
+sys.modules[PARENT_CACHE_SPEC.name] = parent_cache_mod
+PARENT_CACHE_SPEC.loader.exec_module(parent_cache_mod)
+
+
+def test_parent_fast_cache_materializes_without_external_hydration(tmp_path):
+    import json
+
+    weight = tmp_path / "parent.pt"
+    weight.write_bytes(b"parent-weight")
+    seeds = list(range(1, 51))
+    runs = [_complete_eval_run(seed) for seed in seeds[:30]]
+    sim_head = "7476a81954020087da31d41d16fddf475746ec2d"
+    cache = {
+        "schema_version": parent_cache_mod.CACHE_SCHEMA,
+        "weight_sha256": parent_cache_mod.sha256(weight),
+        "seeds": seeds,
+        "mcts_sims": 2000,
+        "simulator_id": parent_cache_mod.simulator_id(sim_head),
+        "runs": runs,
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"v14_eval_caches": {"dev_parent": cache}}) + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+
+    assert parent_cache_mod.materialize_cached_parent(
+        state_path=state_path,
+        parent_weight=weight,
+        output_dir=out,
+        mcts_sims=2000,
+        sim_head=sim_head,
+    )
+    payload = json.loads((out / "parent-eval.json").read_text(encoding="utf-8"))
+    assert payload["fresh_runs"] == 0
+    assert payload["cache_hits_before"] == 30
+    assert payload["all_dev_seeds"] == seeds
+    assert len(payload["runs"]) == 30
+
+
+def test_parent_fast_cache_fails_closed_on_identity_or_safety_drift(tmp_path):
+    import json
+
+    weight = tmp_path / "parent.pt"
+    weight.write_bytes(b"parent-weight")
+    seeds = list(range(1, 51))
+    runs = [_complete_eval_run(seed) for seed in seeds[:30]]
+    sim_head = "7476a81954020087da31d41d16fddf475746ec2d"
+    cache = {
+        "schema_version": parent_cache_mod.CACHE_SCHEMA,
+        "weight_sha256": parent_cache_mod.sha256(weight),
+        "seeds": seeds,
+        "mcts_sims": 2000,
+        "simulator_id": parent_cache_mod.simulator_id(sim_head),
+        "runs": runs,
+    }
+    state_path = tmp_path / "state.json"
+
+    cache["mcts_sims"] = 50000
+    state_path.write_text(json.dumps({"v14_eval_caches": {"dev_parent": cache}}))
+    assert not parent_cache_mod.materialize_cached_parent(
+        state_path=state_path,
+        parent_weight=weight,
+        output_dir=tmp_path / "bad-mcts",
+        mcts_sims=2000,
+        sim_head=sim_head,
+    )
+
+    cache["mcts_sims"] = 2000
+    cache["runs"][0]["timeout_count"] = 1
+    state_path.write_text(json.dumps({"v14_eval_caches": {"dev_parent": cache}}))
+    assert not parent_cache_mod.materialize_cached_parent(
+        state_path=state_path,
+        parent_weight=weight,
+        output_dir=tmp_path / "unsafe",
+        mcts_sims=2000,
+        sim_head=sim_head,
+    )

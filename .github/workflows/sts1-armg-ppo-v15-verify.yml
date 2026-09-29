@@ -1212,7 +1212,7 @@ jobs:
           ]
           missing=[item for item in required if item not in text]
           assert not missing, missing
-          assert "for spec in \"A:0.00\"" not in text
+          assert 'for spec in "A:0.00"' not in text
           print("PPO_V15_PARALLEL_WIRING_PASS")
           PY
 

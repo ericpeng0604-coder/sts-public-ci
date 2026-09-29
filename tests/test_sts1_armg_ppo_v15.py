@@ -292,11 +292,14 @@ def test_parent_fast_cache_materializes_without_external_hydration(tmp_path):
         json.dumps({"v14_eval_caches": {"dev_parent": cache}}) + "\n",
         encoding="utf-8",
     )
+    seed_file = tmp_path / "dev-seeds.txt"
+    seed_file.write_text("\n".join(str(seed) for seed in seeds) + "\n", encoding="utf-8")
     out = tmp_path / "out"
 
     assert parent_cache_mod.materialize_cached_parent(
         state_path=state_path,
         parent_weight=weight,
+        dev_seed_file=seed_file,
         output_dir=out,
         mcts_sims=2000,
         sim_head=sim_head,
@@ -325,12 +328,15 @@ def test_parent_fast_cache_fails_closed_on_identity_or_safety_drift(tmp_path):
         "runs": runs,
     }
     state_path = tmp_path / "state.json"
+    seed_file = tmp_path / "dev-seeds.txt"
+    seed_file.write_text("\n".join(str(seed) for seed in seeds) + "\n", encoding="utf-8")
 
     cache["mcts_sims"] = 50000
     state_path.write_text(json.dumps({"v14_eval_caches": {"dev_parent": cache}}))
     assert not parent_cache_mod.materialize_cached_parent(
         state_path=state_path,
         parent_weight=weight,
+        dev_seed_file=seed_file,
         output_dir=tmp_path / "bad-mcts",
         mcts_sims=2000,
         sim_head=sim_head,
@@ -342,7 +348,41 @@ def test_parent_fast_cache_fails_closed_on_identity_or_safety_drift(tmp_path):
     assert not parent_cache_mod.materialize_cached_parent(
         state_path=state_path,
         parent_weight=weight,
+        dev_seed_file=seed_file,
         output_dir=tmp_path / "unsafe",
+        mcts_sims=2000,
+        sim_head=sim_head,
+    )
+
+
+def test_parent_fast_cache_rejects_seed_pin_drift(tmp_path):
+    import json
+
+    weight = tmp_path / "parent.pt"
+    weight.write_bytes(b"parent-weight")
+    seeds = list(range(1, 51))
+    runs = [_complete_eval_run(seed) for seed in seeds[:30]]
+    sim_head = "7476a81954020087da31d41d16fddf475746ec2d"
+    cache = {
+        "schema_version": parent_cache_mod.CACHE_SCHEMA,
+        "weight_sha256": parent_cache_mod.sha256(weight),
+        "seeds": seeds,
+        "mcts_sims": 2000,
+        "simulator_id": parent_cache_mod.simulator_id(sim_head),
+        "runs": runs,
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"v14_eval_caches": {"dev_parent": cache}}))
+    seed_file = tmp_path / "dev-seeds.txt"
+    drifted = list(seeds)
+    drifted[-1] = 999999
+    seed_file.write_text("\n".join(str(seed) for seed in drifted) + "\n", encoding="utf-8")
+
+    assert not parent_cache_mod.materialize_cached_parent(
+        state_path=state_path,
+        parent_weight=weight,
+        dev_seed_file=seed_file,
+        output_dir=tmp_path / "seed-drift",
         mcts_sims=2000,
         sim_head=sim_head,
     )

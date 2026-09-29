@@ -1,0 +1,206 @@
+name: STS1 Human Expert v1 Fixed 500 Confirm
+
+on:
+  push:
+    branches:
+      - gpt/sts1-human-expert-loop-v1-20260929
+    paths:
+      - '.github/workflows/sts1-human-expert-500-confirm.yml'
+      - 'scripts/sts1/sts1_human_expert_500_eval.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: sts1-human-expert-v1-fixed-500
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+  GH_TOKEN: ${{ github.token }}
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  EXPERT_DATA_REPO: 'https://github.com/MaT1g3R/Slay-the-Spire-data.git'
+  EXPERT_DATA_SHA: '097aaf3564c2247835162d267cbc7c55d2c9039e'
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+
+      - name: Verify fixed-500 contracts
+        run: |
+          python -m py_compile scripts/sts1/sts1_human_expert_500_eval.py
+          pytest -q tests/test_sts1_human_expert.py tests/test_sts1_armg_strategy_evolve.py
+
+  shard:
+    needs: contract
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install and hydrate pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          git -C external/sts_lightspeed/source apply --check "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          git -C external/sts_lightspeed/source apply "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          python scripts/sts1/build_probe.py
+
+          root=".cache/sts1-human-expert-500"
+          rm -rf "$root"
+          mkdir -p "$root"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Fetch pinned expert data
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/expert-data"
+          git clone --filter=blob:none "$EXPERT_DATA_REPO" "$data"
+          git -C "$data" checkout "$EXPERT_DATA_SHA"
+          test "$(git -C "$data" rev-parse HEAD)" = "$EXPERT_DATA_SHA"
+          echo "DATA_ROOT=$data" >> "$GITHUB_ENV"
+
+      - name: Run shard
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/human-expert-500
+          python scripts/sts1/sts1_human_expert_500_eval.py shard             --shard-index "${{ matrix.shard }}"             --data-root "$DATA_ROOT"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-human-expert-500             --armg-base-weight .cache/sts1-human-expert-500/armG_model_G128x128_15k.pt             --output "evidence/sts1/human-expert-500/shard-${{ matrix.shard }}.json"             --candidate-strength 2.0             --combat-mcts-sims 2000             --eval-workers 4             --min-ascension 15             --alpha 2.0
+
+      - name: Verify shard shape
+        run: |
+          python - "evidence/sts1/human-expert-500/shard-${{ matrix.shard }}.json" "${{ matrix.shard }}" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          assert p["schema_version"] == "sts1-human-expert-confirm-500-v1"
+          assert p["mode"] == "shard"
+          assert p["shard_index"] == int(sys.argv[2])
+          assert p["seed_count"] == 100
+          assert len(p["current"]["runs"]) == 100
+          assert len(p["candidate"]["runs"]) == 100
+          assert p["candidate_strength"] == 2.0
+          assert p["combat_policy"] == "mcts_2000"
+          print("PASS_SHARD", p["shard_index"])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-human-expert-500-shard-${{ matrix.shard }}
+          path: evidence/sts1/human-expert-500/shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sts1-human-expert-500-shard-*
+          path: evidence/sts1/human-expert-500/shards
+          merge-multiple: false
+
+      - name: Aggregate fixed 500
+        run: |
+          python scripts/sts1/sts1_human_expert_500_eval.py aggregate             --input-dir evidence/sts1/human-expert-500/shards             --output evidence/sts1/human-expert-500/fixed-500-report.json
+
+      - name: Verify final invariants
+        run: |
+          python - evidence/sts1/human-expert-500/fixed-500-report.json <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          assert p["schema_version"] == "sts1-human-expert-confirm-500-v1"
+          assert p["result"] == "PASS_HUMAN_EXPERT_500_COMPLETE"
+          assert p["seed_count"] == 500
+          assert p["candidate_strength"] == 2.0
+          assert p["combat_policy"] == "mcts_2000"
+          assert p["production_champion_replaced"] is False
+          g=p["gate"]
+          for side in ("current","candidate"):
+              assert g[side]["complete_runs"] == 500
+              assert g[side]["pure_mcts_runs"] == 500
+              assert all(v == 0 for v in g[side]["safety"].values())
+          assert g["paired_wins"]["candidate_better"] + g["paired_wins"]["candidate_worse"] + g["paired_wins"]["ties"] == 500
+          print("PASS_FIXED_500_INVARIANTS", p["decision"], g["current"]["victories"], g["candidate"]["victories"])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-human-expert-fixed-500-report
+          path: evidence/sts1/human-expert-500/fixed-500-report.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report result
+        run: |
+          eval "$(python - evidence/sts1/human-expert-500/fixed-500-report.json <<'PY'
+          import json, shlex, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          g=p["gate"]
+          vals={
+            "DECISION":p["decision"],
+            "CURRENT_WINS":g["current"]["victories"],
+            "CANDIDATE_WINS":g["candidate"]["victories"],
+            "WIN_DELTA":g["win_delta"],
+            "CURRENT_FLOOR":round(g["current"]["mean_final_floor"],3),
+            "CANDIDATE_FLOOR":round(g["candidate"]["mean_final_floor"],3),
+            "BETTER":g["paired_wins"]["candidate_better"],
+            "WORSE":g["paired_wins"]["candidate_worse"],
+            "P":g["paired_wins"]["one_sided_sign_p"],
+            "STATUS":g["status"],
+          }
+          for k,v in vals.items():
+              print(f"{k}={shlex.quote(str(v))}")
+          PY
+          )"
+          run_url="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          printf -v body '@ericpeng0604-coder\n\n## Human Expert v1 — Fixed 500 confirmation\n\n- Run：%s\n- Parent：%s / 500 wins\n- Human Expert strength 2.0：%s / 500 wins\n- Win delta：%s\n- Mean floor：%s → %s\n- Paired wins：better %s / worse %s\n- one-sided sign p：%s\n- Gate：**%s**\n- Decision：**%s**\n- Safety：**0 errors required and verified**\n- 正式 PPO / Strategy Champion：**未修改**'             "$run_url" "$CURRENT_WINS" "$CANDIDATE_WINS" "$WIN_DELTA" "$CURRENT_FLOOR" "$CANDIDATE_FLOOR" "$BETTER" "$WORSE" "$P" "$STATUS" "$DECISION"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$body" >/dev/null

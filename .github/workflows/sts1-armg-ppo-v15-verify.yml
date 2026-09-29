@@ -71,15 +71,24 @@ jobs:
       - name: Verify v1.5 auto-loop controller
         run: |
           mkdir -p "$RUNNER_TEMP/v15-controller"
-          cat > "$RUNNER_TEMP/v15-controller/state.json" <<'JSON'
-          {"schema_version":"sts1-armg-ppo-v14-loop-state-v1","round_index":86,"parent_generation":3,"stagnation_count":4,"last_decision":"HOLD_PARENT","last_dev_gate":{"win_delta":-2,"mean_paired_floor_delta":0.43}}
-          JSON
+          printf '%s\n' '{"schema_version":"sts1-armg-ppo-v14-loop-state-v1","round_index":86,"parent_generation":3,"stagnation_count":4,"last_decision":"HOLD_PARENT","last_dev_gate":{"win_delta":-2,"mean_paired_floor_delta":0.43}}' > "$RUNNER_TEMP/v15-controller/state.json"
           python scripts/sts1/sts1_armg_ppo_v15_adapt.py \
             --state "$RUNNER_TEMP/v15-controller/state.json" \
             --control control/sts1-armg-ppo-v15-auto-loop.request \
             --output-control "$RUNNER_TEMP/v15-controller/next.request" \
             --report "$RUNNER_TEMP/v15-controller/adaptation.json"
-          grep -q '^ppo_version=1.5        run: |
+          grep -q '^ppo_version=1.5$' "$RUNNER_TEMP/v15-controller/next.request"
+          grep -q '^max_rounds=0$' "$RUNNER_TEMP/v15-controller/next.request"
+          python - "$RUNNER_TEMP/v15-controller/adaptation.json" <<'PY'
+          import json,sys
+          r=json.load(open(sys.argv[1]))
+          assert r["schema_version"]=="sts1-armg-ppo-v15-adaptation-v1", r
+          assert r["profile"]["name"]=="escape", r
+          print("PPO_V15_AUTO_LOOP_CONTROLLER_PASS", r["profile"]["name"])
+          PY
+
+      - name: Hydrate pinned simulator
+        run: |
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
           test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
           python scripts/sts1/build_probe.py

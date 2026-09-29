@@ -58,9 +58,14 @@ from roguelike_ai.sts1_phase3.simulator import (
 STATE_SCHEMA_VERSION = "sts1-armg-strategy-loop-state-v1"
 ROUND_SCHEMA_VERSION = "sts1-armg-strategy-round-v1"
 EVAL_SCHEMA_VERSION = "sts1-armg-strategy-eval-v1"
-DATA_EFFICIENCY_VERSION = 4
+DATA_EFFICIENCY_VERSION = 5
 ELITE_POOL_SCHEMA_VERSION = "sts1-strategy-elite-pool-v1"
-CANDIDATE_STEP_SCALES = (0.25, 0.50, 1.00)
+CANDIDATE_RECIPES = (
+    {"name": "balanced", "min_teacher_confidence": 0.0, "step_scale": 0.25},
+    {"name": "confident", "min_teacher_confidence": 0.50, "step_scale": 0.50},
+    {"name": "strict", "min_teacher_confidence": 0.75, "step_scale": 1.00},
+)
+AMBIGUITY_PARENT_DISTILL_COEF = 1.0
 PARALLEL_CPU_VERSION = 1
 
 _TEACHER_PARALLEL_SELECTED: Sequence[Mapping[str, Any]] | None = None
@@ -220,6 +225,16 @@ def _teacher_confidence_weight(margin: float) -> float:
     if margin <= 8.0:
         return 0.75
     return 1.00
+
+
+def _teacher_mix_weight(confidence: float, *, min_teacher_confidence: float) -> float:
+    confidence = float(confidence)
+    min_teacher_confidence = float(min_teacher_confidence)
+    if not 0.0 <= confidence <= 1.0:
+        raise RuntimeError("teacher confidence must be in [0, 1]")
+    if not 0.0 <= min_teacher_confidence <= 1.0:
+        raise RuntimeError("minimum teacher confidence must be in [0, 1]")
+    return confidence if confidence >= min_teacher_confidence else 0.0
 
 
 def _select_teacher_candidates(
@@ -1552,17 +1567,21 @@ def _train_candidate(
     learning_rate: float,
     anchor_coef: float,
     rng_seed: int,
+    min_teacher_confidence: float = 0.0,
+    parent_distill_coef: float = AMBIGUITY_PARENT_DISTILL_COEF,
 ) -> dict[str, Any]:
     examples = _read_examples(replay_path)
     if not examples:
         raise RuntimeError("strategy replay is empty")
 
     module = armg.module
+    source_state = torch.load(source_weight, weights_only=True, map_location="cpu")
     candidate = module.Scorer((128, 128))
-    candidate.load_state_dict(
-        torch.load(source_weight, weights_only=True, map_location="cpu")
-    )
+    candidate.load_state_dict(source_state)
     candidate.train()
+    parent = module.Scorer((128, 128))
+    parent.load_state_dict(source_state)
+    parent.eval()
     source_params = {
         name: value.detach().clone()
         for name, value in candidate.named_parameters()
@@ -1581,7 +1600,9 @@ def _train_candidate(
     rng = random.Random(rng_seed)
     losses: list[float] = []
     ce_losses: list[float] = []
+    parent_distill_losses: list[float] = []
     anchor_losses: list[float] = []
+    teacher_mix_values: list[float] = []
     for _ in range(epochs):
         order = list(range(len(examples)))
         rng.shuffle(order)
@@ -1591,6 +1612,12 @@ def _train_candidate(
             scores = candidate.score(obs, row["descs"])
             target = torch.tensor(row["target_probs"], dtype=torch.float32)
             ce = -(target * torch.log_softmax(scores, dim=0)).sum()
+            with torch.no_grad():
+                parent_scores = parent.score(obs, row["descs"])
+                parent_probs = torch.softmax(parent_scores, dim=0)
+            parent_distill = -(
+                parent_probs * torch.log_softmax(scores, dim=0)
+            ).sum()
 
             anchor_terms = [
                 (param - source_params[name]).pow(2).mean()
@@ -1604,7 +1631,15 @@ def _train_candidate(
             confidence = float(
                 row.get("confidence_weight", _teacher_confidence_weight(margin))
             )
-            loss = confidence * priority * balance * ce + anchor_coef * anchor
+            teacher_mix = _teacher_mix_weight(
+                confidence,
+                min_teacher_confidence=min_teacher_confidence,
+            )
+            strategy_loss = (
+                teacher_mix * ce
+                + parent_distill_coef * (1.0 - teacher_mix) * parent_distill
+            )
+            loss = priority * balance * strategy_loss + anchor_coef * anchor
 
             optimizer.zero_grad()
             loss.backward()
@@ -1613,7 +1648,9 @@ def _train_candidate(
 
             losses.append(float(loss.item()))
             ce_losses.append(float(ce.item()))
+            parent_distill_losses.append(float(parent_distill.item()))
             anchor_losses.append(float(anchor.item()))
+            teacher_mix_values.append(float(teacher_mix))
 
     after, after_by_kind = _teacher_accuracy(candidate, examples)
     candidate.eval()
@@ -1625,6 +1662,11 @@ def _train_candidate(
         "epochs": epochs,
         "learning_rate": learning_rate,
         "anchor_coef": anchor_coef,
+        "min_teacher_confidence": min_teacher_confidence,
+        "parent_distill_coef": parent_distill_coef,
+        "mean_teacher_mix": sum(teacher_mix_values) / len(teacher_mix_values),
+        "teacher_driven_updates": sum(value > 0.0 for value in teacher_mix_values),
+        "parent_preservation_updates": sum(value < 1.0 for value in teacher_mix_values),
         "mean_confidence_weight": sum(
             float(
                 row.get(
@@ -1640,6 +1682,9 @@ def _train_candidate(
         "after_teacher_top1_by_kind": after_by_kind,
         "mean_loss": sum(losses) / len(losses),
         "mean_cross_entropy": sum(ce_losses) / len(ce_losses),
+        "mean_parent_distill_loss": (
+            sum(parent_distill_losses) / len(parent_distill_losses)
+        ),
         "mean_anchor_loss": sum(anchor_losses) / len(anchor_losses),
         "source_sha256": _sha256(source_weight),
         "candidate_sha256": _sha256(output_weight),
@@ -2079,18 +2124,6 @@ def main() -> int:
                     shop_max_fraction=args.shop_max_fraction,
                 )
 
-        trained_weight = round_dir / "candidate-trained-full.pt"
-        train_report = _train_candidate(
-            armg=armg,
-            source_weight=current_weight,
-            replay_path=replay_path,
-            output_weight=trained_weight,
-            epochs=args.epochs,
-            learning_rate=args.learning_rate,
-            anchor_coef=args.anchor_coef,
-            rng_seed=args.rng_seed + round_no * 1000 + 2,
-        )
-
         current_dev = _evaluate_weight(
             seeds=dev30,
             module_dir=args.module_dir,
@@ -2100,9 +2133,26 @@ def main() -> int:
             workers=args.eval_workers,
         )
         _write_json(round_dir / "eval-current-dev30.json", current_dev)
+
         candidate_records: list[dict[str, Any]] = []
-        for candidate_index, step_scale in enumerate(CANDIDATE_STEP_SCALES):
-            label = f"step-{int(round(step_scale * 100)):03d}"
+        training_variants: list[dict[str, Any]] = []
+        for candidate_index, recipe in enumerate(CANDIDATE_RECIPES):
+            recipe_name = str(recipe["name"])
+            min_teacher_confidence = float(recipe["min_teacher_confidence"])
+            step_scale = float(recipe["step_scale"])
+            trained_weight = round_dir / f"candidate-trained-{recipe_name}.pt"
+            variant_train_report = _train_candidate(
+                armg=armg,
+                source_weight=current_weight,
+                replay_path=replay_path,
+                output_weight=trained_weight,
+                epochs=args.epochs,
+                learning_rate=args.learning_rate,
+                anchor_coef=args.anchor_coef,
+                rng_seed=args.rng_seed + round_no * 1000 + 2 + candidate_index,
+                min_teacher_confidence=min_teacher_confidence,
+            )
+            label = f"{recipe_name}-step-{int(round(step_scale * 100)):03d}"
             variant_weight = round_dir / f"candidate-{label}.pt"
             _interpolate_checkpoint(
                 source_weight=current_weight,
@@ -2125,15 +2175,25 @@ def main() -> int:
                 expected_combat_policy=f"mcts_{args.combat_mcts_sims}",
             )
             _write_json(round_dir / f"eval-candidate-dev30-{label}.json", candidate_eval)
+            training_variants.append(
+                {
+                    **variant_train_report,
+                    "recipe": recipe_name,
+                    "step_scale": step_scale,
+                }
+            )
             candidate_records.append(
                 {
                     "index": candidate_index,
                     "name": label,
-                    "step_scale": float(step_scale),
+                    "recipe": recipe_name,
+                    "step_scale": step_scale,
+                    "min_teacher_confidence": min_teacher_confidence,
                     "weight_path": str(variant_weight),
                     "candidate_strategy_sha256": _sha256(variant_weight),
                     "candidate_eval": candidate_eval,
                     "dev_gate": gate,
+                    "training": variant_train_report,
                 }
             )
 
@@ -2147,7 +2207,9 @@ def main() -> int:
             {
                 "index": int(row["index"]),
                 "name": str(row["name"]),
+                "recipe": str(row["recipe"]),
                 "step_scale": float(row["step_scale"]),
+                "min_teacher_confidence": float(row["min_teacher_confidence"]),
                 "candidate_strategy_sha256": str(row["candidate_strategy_sha256"]),
                 "dev_gate": row["dev_gate"],
                 "selected": row is chosen_candidate,
@@ -2155,8 +2217,17 @@ def main() -> int:
             for row in candidate_records
         ]
         train_report = {
-            **train_report,
-            "candidate_step_scales": list(CANDIDATE_STEP_SCALES),
+            **dict(chosen_candidate["training"]),
+            "candidate_recipes": [
+                {
+                    "name": str(recipe["name"]),
+                    "min_teacher_confidence": float(recipe["min_teacher_confidence"]),
+                    "step_scale": float(recipe["step_scale"]),
+                }
+                for recipe in CANDIDATE_RECIPES
+            ],
+            "training_variants": training_variants,
+            "selected_recipe": str(chosen_candidate["recipe"]),
             "selected_step_scale": float(chosen_candidate["step_scale"]),
             "selected_candidate_name": str(chosen_candidate["name"]),
             "selected_candidate_sha256": _sha256(candidate_weight),

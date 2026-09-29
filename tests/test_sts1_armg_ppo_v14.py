@@ -90,6 +90,96 @@ def test_poisoned_persistent_critic_requests_reset():
     )
 
 
+def _smart_stop_step(
+    *,
+    epoch: int,
+    stale: int,
+    critic_progress: bool = False,
+    approx_kl: float = 0.001,
+    clip_fraction: float = 0.01,
+    previous_kl: float | None = 0.001,
+    previous_clip_fraction: float | None = 0.01,
+    elite_bc_loss: float | None = None,
+    best_elite_bc_loss: float | None = None,
+):
+    return train.update_smart_early_stop(
+        epoch=epoch,
+        min_epochs=3,
+        patience=2,
+        stale_epochs=stale,
+        critic_progress=critic_progress,
+        approx_kl=approx_kl,
+        clip_fraction=clip_fraction,
+        previous_kl=previous_kl,
+        previous_clip_fraction=previous_clip_fraction,
+        elite_bc_loss=elite_bc_loss,
+        best_elite_bc_loss=best_elite_bc_loss,
+        kl_delta=5e-5,
+        clip_delta=0.002,
+        bc_loss_delta=1e-5,
+    )
+
+
+def test_smart_early_stop_requires_minimum_epochs_and_patience():
+    stale, best_bc, status = _smart_stop_step(epoch=2, stale=0)
+    assert stale == 0
+    assert not status["should_stop"]
+
+    stale, best_bc, status = _smart_stop_step(
+        epoch=3,
+        stale=stale,
+        best_elite_bc_loss=best_bc,
+    )
+    assert stale == 1
+    assert not status["should_stop"]
+
+    stale, _, status = _smart_stop_step(
+        epoch=4,
+        stale=stale,
+        best_elite_bc_loss=best_bc,
+    )
+    assert stale == 2
+    assert status["should_stop"]
+
+
+def test_smart_early_stop_resets_when_critic_improves():
+    stale, _, status = _smart_stop_step(
+        epoch=4,
+        stale=1,
+        critic_progress=True,
+    )
+    assert stale == 0
+    assert status["useful_progress"]
+    assert not status["should_stop"]
+
+
+def test_smart_early_stop_keeps_running_while_policy_is_moving():
+    stale, _, status = _smart_stop_step(
+        epoch=4,
+        stale=1,
+        approx_kl=0.0012,
+        previous_kl=0.0010,
+        clip_fraction=0.0105,
+        previous_clip_fraction=0.0100,
+    )
+    assert stale == 0
+    assert status["policy_moving"]
+    assert not status["should_stop"]
+
+
+def test_smart_early_stop_keeps_running_when_elite_bc_improves():
+    stale, best_bc, status = _smart_stop_step(
+        epoch=4,
+        stale=1,
+        elite_bc_loss=0.0028,
+        best_elite_bc_loss=0.0030,
+    )
+    assert stale == 0
+    assert best_bc == 0.0028
+    assert status["elite_bc_progress"]
+    assert not status["should_stop"]
+
+
 
 def run(seed: int, floor: int, *, win: bool = False, illegal: int = 0):
     return {

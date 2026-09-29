@@ -51,21 +51,23 @@ class StrategyGatePolicy:
 DEV_STRATEGY_GATE = StrategyGatePolicy(
     "strategy-dev-30",
     30,
-    min_win_delta=0,
-    min_floor_delta=0.5,
+    min_win_delta=1,
+    min_floor_delta=0.0,
+    max_floor_regression_with_win_gain=60.0,
 )
 HIDDEN_STRATEGY_GATE = StrategyGatePolicy(
     "strategy-hidden-50",
     50,
-    min_win_delta=0,
-    min_floor_delta=0.5,
+    min_win_delta=1,
+    min_floor_delta=0.0,
+    max_floor_regression_with_win_gain=60.0,
 )
 FRESH_STRATEGY_GATE = StrategyGatePolicy(
     "strategy-fresh-100",
     100,
     min_win_delta=1,
     min_floor_delta=0.0,
-    max_floor_regression_with_win_gain=0.5,
+    max_floor_regression_with_win_gain=60.0,
     max_one_sided_sign_p=0.10,
 )
 
@@ -226,6 +228,33 @@ def _one_sided_sign_p(better: int, worse: int) -> float:
     return numerator / float(2**n)
 
 
+def _paired_win_superiority(
+    left: Mapping[str, Mapping[str, Any]],
+    right: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Paired signal using victories only; floor depth never counts as a win."""
+    better = worse = ties = 0
+    for seed in sorted(left):
+        a = left[seed]
+        b = right[seed]
+        if not (_is_complete(a) and _is_complete(b)):
+            continue
+        a_win = a.get("outcome") == "victory"
+        b_win = b.get("outcome") == "victory"
+        if a_win == b_win:
+            ties += 1
+        elif b_win:
+            better += 1
+        else:
+            worse += 1
+    return {
+        "candidate_better": better,
+        "candidate_worse": worse,
+        "ties": ties,
+        "one_sided_sign_p": _one_sided_sign_p(better, worse),
+    }
+
+
 def _paired_superiority(
     left: Mapping[str, Mapping[str, Any]],
     right: Mapping[str, Mapping[str, Any]],
@@ -311,11 +340,12 @@ def evaluate_strategy_gate(
         floor_ok = floor_delta >= policy.min_floor_delta
 
     paired = _paired_superiority(left, right)
+    paired_wins = _paired_win_superiority(left, right)
     sign_ok = (
         policy.max_one_sided_sign_p is None
         or (
-            paired["candidate_better"] > paired["candidate_worse"]
-            and paired["one_sided_sign_p"] <= policy.max_one_sided_sign_p
+            paired_wins["candidate_better"] > paired_wins["candidate_worse"]
+            and paired_wins["one_sided_sign_p"] <= policy.max_one_sided_sign_p
         )
     )
 
@@ -348,6 +378,7 @@ def evaluate_strategy_gate(
         "current": current_summary,
         "candidate": candidate_summary,
         "paired": paired,
+        "paired_wins": paired_wins,
         "reasons": reasons,
     }
 

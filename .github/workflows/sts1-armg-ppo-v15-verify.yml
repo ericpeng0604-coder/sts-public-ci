@@ -85,7 +85,7 @@ jobs:
               "curriculum: '1.00'",
               "strategy-replay.jsonl",
               "--strategy-bc-coef",
-              "Evaluate Candidate ${{ matrix.name }} on same 30 seeds",
+              "on same 30 seeds",
               "merge-multiple: true",
               "needs: [prepare, eval-parent, candidate]",
               "Assemble parallel 4-Candidate tournament",

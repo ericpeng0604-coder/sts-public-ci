@@ -323,7 +323,7 @@ jobs:
               fi
             fi
 
-            printf -v body '@ericpeng0604-coder\n\n## Human Expert v4 — Round %s\n\n- Run：%s\n- Expert corpus：%s Runs / %s card choices\n- Human holdout top-1：%s\n- Combat：**MCTS-2000 固定**\n- Gate：Dev **%s** → Hidden **%s** → Fresh **%s**\n- Promotion：**%s**\n- Selected expert strength：%s\n- Human Expert generation：%s\n- Accepted / Rejected：%s / %s\n- Current expert strength：%s\n- 正式 PPO / Strategy Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$RUNS" "$CHOICES" "$HOLDOUT" "$DEV" "$HIDDEN" "$FRESH" "$CONFIRM500" "$ESCALATED" "$PROMOTION" "$SELECTED" "$GEN" "$ACCEPTED" "$REJECTED" "$STRENGTH"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
+            printf -v body '@ericpeng0604-coder\n\n## Human Expert v4 — Round %s\n\n- Run：%s\n- Expert corpus：%s Runs / %s card choices\n- Human holdout top-1：%s\n- Combat：**MCTS-2000 固定**\n- Gate：Dev **%s** → Hidden **%s** → Fresh **%s** → Confirm500 **%s**\n- 500-seed escalation：**%s**\n- Promotion：**%s**\n- Selected expert strength：%s\n- Human Expert generation：%s\n- Accepted / Rejected：%s / %s\n- Current expert strength：%s\n- 正式 PPO / Strategy Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$RUNS" "$CHOICES" "$HOLDOUT" "$DEV" "$HIDDEN" "$FRESH" "$CONFIRM500" "$ESCALATED" "$PROMOTION" "$SELECTED" "$GEN" "$ACCEPTED" "$REJECTED" "$STRENGTH"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body" >/dev/null
           else
             next_retry="$((retry_count + 1))"

@@ -102,7 +102,10 @@ def test_build_prior_filters_to_high_ascension_ironclad(tmp_path: Path) -> None:
     assert report["sources"]["rotating"] == 8
     assert report["holdout_examples"] > 0
     assert report["train_examples"] > 0
-    assert 0.0 <= report["holdout_top1"] <= 1.0
+    assert 0.0 <= report["baseline_holdout_top1"] <= 1.0
+    assert report["holdout_top1"] >= report["baseline_holdout_top1"]
+    assert 0.0 <= report["matchup_mix"] <= 1.0
+    assert report["observed_matchup_directions"] > 0
     assert prior_card_score(report, "Inflame", floor=3) > prior_card_score(
         report,
         "Flex",
@@ -142,3 +145,18 @@ def test_fresh_seed_generator_is_disjoint_and_deterministic() -> None:
     assert a == b
     assert len(set(a)) == 10
     assert not (set(a) & {1, 2, 3})
+
+
+def test_pairwise_offered_context_changes_score() -> None:
+    prior = {
+        "global_scores": {"A": 0.0, "B": 0.0, "C": 0.0},
+        "act_scores": {"1": {"A": 0.0, "B": 0.0, "C": 0.0}},
+        "pairwise_scores": {
+            "A": {"B": 2.0, "C": -2.0},
+            "B": {"A": -2.0},
+            "C": {"A": 2.0},
+        },
+        "matchup_mix": 1.0,
+    }
+    assert prior_card_score(prior, "A", floor=3, offered=["A", "B"]) > 0.0
+    assert prior_card_score(prior, "A", floor=3, offered=["A", "C"]) < 0.0

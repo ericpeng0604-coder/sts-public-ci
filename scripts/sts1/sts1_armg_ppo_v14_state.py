@@ -41,6 +41,19 @@ def main() -> int:
     migrating_from_v13 = state.get("schema_version") != "sts1-armg-ppo-v14-loop-state-v1"
     if migrating_from_v13:
         state["stagnation_count"] = 0
+
+        # The accepted Candidate is now the next Training Parent. Re-key its
+        # already completed 30-seed Dev evaluation so the next round does not
+        # spend time re-evaluating an unchanged model.
+        caches = state.get("v14_eval_caches")
+        if isinstance(caches, dict):
+            candidate_cache = caches.get("dev_candidate")
+            if (
+                isinstance(candidate_cache, dict)
+                and candidate_cache.get("weight_sha256") == sha256(args.candidate)
+            ):
+                caches["dev_parent"] = dict(candidate_cache)
+                print("PPO_V14_PROMOTED_DEV_CACHE_REUSED", flush=True)
         state["accepted_parent_rounds"] = 0
         state["rejected_parent_rounds"] = 0
 

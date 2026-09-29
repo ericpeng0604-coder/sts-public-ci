@@ -126,3 +126,64 @@ def test_strategy_teacher_import_fails_closed_on_mcts_policy_drift(tmp_path):
             max_examples=32,
             combat_policy="mcts_2000",
         )
+
+
+
+ADAPT_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v15_adapt.py"
+ADAPT_SPEC = importlib.util.spec_from_file_location("sts1_armg_ppo_v15_adapt_test", ADAPT_SCRIPT)
+assert ADAPT_SPEC and ADAPT_SPEC.loader
+adapt_mod = importlib.util.module_from_spec(ADAPT_SPEC)
+sys.modules[ADAPT_SPEC.name] = adapt_mod
+ADAPT_SPEC.loader.exec_module(adapt_mod)
+
+
+def test_v15_adapt_heals_missing_teacher_parallel_control_keys():
+    state = {
+        "schema_version": "sts1-armg-ppo-v14-loop-state-v1",
+        "round_index": 7,
+        "stagnation_count": 6,
+        "last_decision": "HOLD_PARENT",
+        "last_dev_gate": {
+            "win_delta": -1,
+            "mean_paired_floor_delta": 0.1,
+        },
+    }
+    order = [
+        "attempt",
+        "retry_count",
+        "games_per_worker",
+        "mcts_sims",
+        "max_rounds",
+        "ppo_version",
+    ]
+    control = {
+        "attempt": "4",
+        "retry_count": "0",
+        "games_per_worker": "80",
+        "mcts_sims": "2000",
+        "max_rounds": "0",
+        "ppo_version": "1.5",
+    }
+
+    updated, report = adapt_mod.adapt(
+        state=state,
+        control_order=order,
+        control=control,
+    )
+
+    assert updated["strategy_teacher_coef"] == "0.01"
+    assert updated["strategy_teacher_max_examples"] == "512"
+    assert updated["strategy_teacher_required"] == "1"
+    assert updated["candidate_threads"] == "4"
+    assert updated["mcts_sims"] == "2000"
+    assert updated["max_rounds"] == "0"
+    assert all(
+        key in order
+        for key in (
+            "strategy_teacher_coef",
+            "strategy_teacher_max_examples",
+            "strategy_teacher_required",
+            "candidate_threads",
+        )
+    )
+    assert report["production_champion_changed"] is False

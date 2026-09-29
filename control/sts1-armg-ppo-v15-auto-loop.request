@@ -18,3 +18,7 @@ strategy_profile=near_miss_refine
 stagnation_seen=6
 ppo_version=1.5
 reason=adaptive_stagnation_near_miss_refine
+strategy_teacher_coef=0.01
+strategy_teacher_max_examples=512
+strategy_teacher_required=1
+candidate_threads=4

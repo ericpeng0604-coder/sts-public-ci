@@ -76,9 +76,23 @@ def test_soft_targets_and_priority_emphasize_clear_mistakes() -> None:
     ) == 1.0
 
 
-def test_dev_gate_accepts_same_wins_with_floor_improvement() -> None:
+def test_dev_gate_rejects_floor_gain_without_more_victories() -> None:
     current = _runs(30, victories=5, floor=20)
-    candidate = _runs(30, victories=5, floor=21)
+    candidate = _runs(30, victories=5, floor=40)
+    result = evaluate_strategy_gate(
+        current,
+        candidate,
+        policy=DEV_STRATEGY_GATE,
+        expected_combat_policy="mcts_2000",
+    )
+    assert result["status"] == "ROLLBACK"
+    assert result["win_delta"] == 0
+    assert any(reason.startswith("win_delta_") for reason in result["reasons"])
+
+
+def test_dev_gate_accepts_more_victories_despite_large_floor_regression() -> None:
+    current = _runs(30, victories=5, floor=45)
+    candidate = _runs(30, victories=6, floor=10)
     result = evaluate_strategy_gate(
         current,
         candidate,
@@ -86,8 +100,8 @@ def test_dev_gate_accepts_same_wins_with_floor_improvement() -> None:
         expected_combat_policy="mcts_2000",
     )
     assert result["status"] == "PASS"
-    assert result["win_delta"] == 0
-    assert result["floor_delta"] == pytest.approx(25 / 30)
+    assert result["win_delta"] == 1
+    assert result["floor_delta"] < -20.0
 
 
 def test_strategy_gate_fails_closed_if_combat_is_not_pure_mcts() -> None:
@@ -142,8 +156,9 @@ def test_fresh_gate_requires_win_gain_and_paired_superiority() -> None:
     )
     assert result["status"] == "PASS"
     assert result["win_delta"] == 4
-    assert result["paired"]["candidate_better"] > result["paired"]["candidate_worse"]
-    assert result["paired"]["one_sided_sign_p"] <= 0.10
+    assert result["paired_wins"]["candidate_better"] == 4
+    assert result["paired_wins"]["candidate_worse"] == 0
+    assert result["paired_wins"]["one_sided_sign_p"] <= 0.10
 
     weak = _runs(100, victories=11, floor=20)
     result = evaluate_strategy_gate(
@@ -153,6 +168,8 @@ def test_fresh_gate_requires_win_gain_and_paired_superiority() -> None:
         expected_combat_policy="mcts_2000",
     )
     assert result["status"] == "ROLLBACK"
+    assert result["paired_wins"]["candidate_better"] == 1
+    assert result["paired_wins"]["candidate_worse"] == 0
     assert "paired_superiority_not_strong_enough" in result["reasons"]
 
 

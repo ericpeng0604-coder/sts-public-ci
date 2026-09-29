@@ -126,7 +126,7 @@ jobs:
           set -a
           source control/sts1-armg-ppo-v15-auto-loop.request
           set +a
-          echo "PPO_TEACHER_REQUIRED=$strategy_teacher_required" >> "$GITHUB_ENV"
+          echo "PPO_TEACHER_REQUIRED=${strategy_teacher_required:-1}" >> "$GITHUB_ENV"
 
       - name: Install preprocess runtime
         run: |
@@ -324,10 +324,10 @@ jobs:
           echo "PPO_TARGET_KL=$target_kl" >> "$GITHUB_ENV"
           echo "PPO_ENTROPY=$entropy" >> "$GITHUB_ENV"
           echo "PPO_ANCHOR=$anchor_coef" >> "$GITHUB_ENV"
-          echo "PPO_STRATEGY_BC_COEF=$strategy_teacher_coef" >> "$GITHUB_ENV"
-          echo "PPO_STRATEGY_BC_MAX=$strategy_teacher_max_examples" >> "$GITHUB_ENV"
-          echo "PPO_STRATEGY_REQUIRED=$strategy_teacher_required" >> "$GITHUB_ENV"
-          echo "PPO_CANDIDATE_THREADS=$candidate_threads" >> "$GITHUB_ENV"
+          echo "PPO_STRATEGY_BC_COEF=${strategy_teacher_coef:-0.01}" >> "$GITHUB_ENV"
+          echo "PPO_STRATEGY_BC_MAX=${strategy_teacher_max_examples:-512}" >> "$GITHUB_ENV"
+          echo "PPO_STRATEGY_REQUIRED=${strategy_teacher_required:-1}" >> "$GITHUB_ENV"
+          echo "PPO_CANDIDATE_THREADS=${candidate_threads:-4}" >> "$GITHUB_ENV"
 
       - name: Install candidate runtime
         run: |

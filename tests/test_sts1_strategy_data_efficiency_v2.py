@@ -221,3 +221,27 @@ def test_candidate_recipes_are_distinct_and_increasingly_strict() -> None:
     assert [row["name"] for row in recipes] == ["balanced", "confident", "strict"]
     assert [float(row["min_teacher_confidence"]) for row in recipes] == [0.0, 0.5, 0.75]
     assert [float(row["step_scale"]) for row in recipes] == [0.25, 0.5, 1.0]
+
+
+def test_candidate_rank_ignores_floor_when_victories_match() -> None:
+    high_floor = {
+        "status": "PASS",
+        "win_delta": 1,
+        "floor_delta": 20.0,
+        "paired_wins": {
+            "candidate_better": 1,
+            "candidate_worse": 0,
+            "one_sided_sign_p": 0.5,
+        },
+    }
+    stronger_wins = {
+        "status": "PASS",
+        "win_delta": 1,
+        "floor_delta": -20.0,
+        "paired_wins": {
+            "candidate_better": 4,
+            "candidate_worse": 1,
+            "one_sided_sign_p": 0.1875,
+        },
+    }
+    assert m._dev_gate_rank(stronger_wins) > m._dev_gate_rank(high_floor)

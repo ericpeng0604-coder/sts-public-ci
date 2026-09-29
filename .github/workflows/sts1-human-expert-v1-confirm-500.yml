@@ -1,0 +1,149 @@
+name: STS1 Human Expert v1 Confirm 500
+
+on:
+  push:
+    branches:
+      - gpt/sts1-human-expert-loop-v1-20260929
+    paths:
+      - '.github/workflows/sts1-human-expert-v1-confirm-500.yml'
+      - 'scripts/sts1/sts1_human_expert_confirm_500.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: sts1-human-expert-v1-confirm-500
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+  GH_TOKEN: ${{ github.token }}
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  EXPERT_DATA_REPO: 'https://github.com/MaT1g3R/Slay-the-Spire-data.git'
+  EXPERT_DATA_SHA: '097aaf3564c2247835162d267cbc7c55d2c9039e'
+  STATE_ARTIFACT: 'sts1-human-expert-loop-state-v1'
+
+jobs:
+  confirm-500:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install and hydrate pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          git -C external/sts_lightspeed/source apply --check "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          git -C external/sts_lightspeed/source apply "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          python scripts/sts1/build_probe.py
+
+          root=".cache/sts1-human-expert-confirm"
+          rm -rf "$root"
+          mkdir -p "$root"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Fetch pinned permitted expert data
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/expert-data"
+          git clone --filter=blob:none "$EXPERT_DATA_REPO" "$data"
+          git -C "$data" checkout "$EXPERT_DATA_SHA"
+          test "$(git -C "$data" rev-parse HEAD)" = "$EXPERT_DATA_SHA"
+          echo "HUMAN_DATA_ROOT=$data" >> "$GITHUB_ENV"
+
+      - name: Restore latest paused v1 state
+        run: |
+          set -euo pipefail
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT&per_page=100"             --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
+          test -n "$artifact_id"
+          mkdir -p "$RUNNER_TEMP/human-state"
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/human-state.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+          unzip -q "$RUNNER_TEMP/human-state.zip" -d "$RUNNER_TEMP/human-state"
+          state="$(find "$RUNNER_TEMP/human-state" -name human-expert-state.json -print -quit)"
+          test -n "$state"
+          python - "$state" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          assert p["schema_version"]=="sts1-human-expert-loop-state-v1"
+          assert p.get("search_exhausted") is True
+          print("PASS_V1_PAUSED_STATE", p.get("accepted_rounds"), p.get("rejected_rounds"))
+          PY
+          echo "HUMAN_STATE_JSON=$state" >> "$GITHUB_ENV"
+
+      - name: Run 500 fresh-seed confirmation
+        run: |
+          set -euo pipefail
+          rm -rf evidence/sts1/human-expert-confirm-500
+          python scripts/sts1/sts1_human_expert_confirm_500.py             --data-root "$HUMAN_DATA_ROOT"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-human-expert-confirm             --armg-base-weight .cache/sts1-human-expert-confirm/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --state-json "$HUMAN_STATE_JSON"             --output-dir evidence/sts1/human-expert-confirm-500             --candidate-strength 2.0             --seed-count 500             --combat-mcts-sims 2000             --eval-workers 4             --rng-seed 2026092910             --min-ascension 15             --alpha 2.0
+
+      - name: Verify confirmation invariants
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("evidence/sts1/human-expert-confirm-500/confirm-report.json")
+          r=json.loads(p.read_text())
+          assert r["schema_version"]=="sts1-human-expert-confirm-500-v1"
+          assert r["seed_count"]==500
+          assert r["candidate_strength"]==2.0
+          assert r["production_champion_replaced"] is False
+          g=r["gate"]
+          assert g["expected_seed_count"]==500
+          for side in ("current","candidate"):
+              assert g[side]["complete_runs"]==500
+              assert g[side]["pure_mcts_runs"]==500
+              assert all(v==0 for v in g[side]["safety"].values())
+          print("PASS_CONFIRM_500", g["status"], g["current"]["victories"], g["candidate"]["victories"], g["paired_wins"])
+          PY
+
+      - name: Upload confirmation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-human-expert-v1-confirm-500-${{ github.run_id }}
+          path: evidence/sts1/human-expert-confirm-500/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report result
+        if: success()
+        run: |
+          set -euo pipefail
+          eval "$(python - <<'PY'
+          import json, shlex
+          r=json.load(open("evidence/sts1/human-expert-confirm-500/confirm-report.json", encoding="utf-8"))
+          g=r["gate"]; p=g["paired_wins"]
+          vals={
+            "STATUS":g["status"],
+            "PARENT":g["current"]["victories"],
+            "CANDIDATE":g["candidate"]["victories"],
+            "DELTA":g["win_delta"],
+            "BETTER":p["candidate_better"],
+            "WORSE":p["candidate_worse"],
+            "P":p["one_sided_sign_p"],
+          }
+          for k,v in vals.items(): print(f"{k}={shlex.quote(str(v))}")
+          PY
+          )"
+          run_url="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          printf -v body '@ericpeng0604-coder\n\n## Human Expert v1 — 500 Fresh Seeds Confirmation\n\n- Run：%s\n- Parent wins：**%s / 500**\n- Human Expert strength 2.0：**%s / 500**\n- Win delta：**%s**\n- Paired wins：better %s / worse %s\n- One-sided sign p：**%s**\n- Confirmation Gate：**%s**\n- Combat：**MCTS-2000 固定**\n- 安全錯誤：**0**\n- 正式 Champion：**未修改**'             "$run_url" "$PARENT" "$CANDIDATE" "$DELTA" "$BETTER" "$WORSE" "$P" "$STATUS"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$body" >/dev/null

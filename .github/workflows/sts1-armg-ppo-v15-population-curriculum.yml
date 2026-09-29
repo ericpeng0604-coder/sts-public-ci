@@ -331,7 +331,88 @@ jobs:
           set +a
           echo "PPO_MCTS_SIMS=$mcts_sims" >> "$GITHUB_ENV"
 
-      - name: Install parent evaluation runtime
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-armg-ppo-v15-training-inputs-${{ github.run_id }}
+          path: evidence/sts1/ppo-v15-inputs
+
+      - name: Fast-path cached Parent 30 seeds
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+
+          def sha(path):
+              h=hashlib.sha256()
+              with Path(path).open("rb") as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          state_path=Path("evidence/sts1/ppo-v15-inputs/state/state.json")
+          parent_path=Path("evidence/sts1/ppo-v15-inputs/state/offline-champion.pt")
+          seed_path=Path("external/sts-rl-agent/source/eval/eval_seeds_50.txt")
+          seeds=[
+              int(x.strip()) for x in seed_path.read_text().splitlines()
+              if x.strip() and not x.lstrip().startswith("#")
+          ]
+          source=Path("external/sts_lightspeed/source")
+          head=subprocess.check_output(["git","-C",str(source),"rev-parse","HEAD"],text=True).strip()
+          simulator_id=":".join([
+              head,
+              sha("src/roguelike_ai/sts1_phase3/simulator.py"),
+              sha("src/roguelike_ai/sts1_phase3/champion_gate.py"),
+          ])
+          parent_sha=sha(parent_path)
+          state=json.loads(state_path.read_text())
+          cache=(state.get("v14_eval_caches") or {}).get("dev_parent")
+          expected={
+              "schema_version":"sts1-armg-ppo-v14-eval-cache-v1",
+              "weight_sha256":parent_sha,
+              "seeds":seeds,
+              "mcts_sims":int(os.environ["PPO_MCTS_SIMS"]),
+              "simulator_id":simulator_id,
+          }
+          hit=isinstance(cache,dict) and all(cache.get(k)==v for k,v in expected.items())
+          runs=[]
+          if hit:
+              by_seed={}
+              for row in cache.get("runs",[]):
+                  seed=int(row["seed"])
+                  if seed in by_seed or row.get("result")!="PASS_SIMULATOR_COMPLETE_RUN":
+                      hit=False
+                      break
+                  by_seed[seed]=row
+              if hit:
+                  try:
+                      runs=[by_seed[s] for s in seeds[:30]]
+                  except KeyError:
+                      hit=False
+          out=Path("evidence/sts1/ppo-v15-parent-eval")
+          out.mkdir(parents=True,exist_ok=True)
+          if hit:
+              payload={
+                  "schema_version":"sts1-armg-ppo-v15-parent-eval-v1",
+                  "parent_weight_sha256":parent_sha,
+                  "simulator_id":simulator_id,
+                  "mcts_sims":int(os.environ["PPO_MCTS_SIMS"]),
+                  "all_dev_seeds":seeds,
+                  "evaluated_seeds":seeds[:30],
+                  "cache_hits_before":30,
+                  "fresh_runs":0,
+                  "runs":runs,
+              }
+              (out/"parent-eval.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+              (out/"state.json").write_text(json.dumps(state,indent=2,sort_keys=True)+"\n")
+              print("PPO_V15_PARENT_FAST_CACHE_HIT runs=30")
+          else:
+              print("PPO_V15_PARENT_FAST_CACHE_MISS")
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as env:
+              env.write(f"PARENT_CACHE_HIT={1 if hit else 0}\n")
+          PY
+
+      - name: Install parent evaluation runtime on cache miss
+        if: env.PARENT_CACHE_HIT != '1'
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -346,12 +427,8 @@ jobs:
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: sts1-armg-ppo-v15-training-inputs-${{ github.run_id }}
-          path: evidence/sts1/ppo-v15-inputs
-
-      - name: Evaluate or reuse Parent 30 seeds
+      - name: Evaluate Parent 30 seeds on cache miss
+        if: env.PARENT_CACHE_HIT != '1'
         run: |
           set -euo pipefail
           python scripts/sts1/sts1_armg_ppo_v15_eval.py parent \

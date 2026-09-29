@@ -536,3 +536,57 @@ def test_v14_candidate_pool_prefers_dev_pass():
     }
 
     assert gate._select_dev_candidate([held, passed])["name"] == "half"
+
+
+def test_v14_state_rejects_candidate_sha_mismatch(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "offline-champion.pt").write_bytes(b"parent")
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "sts1-armg-ppo-v14-loop-state-v1",
+                "round_index": 1,
+                "generation": 1,
+                "parent_generation": 1,
+                "stagnation_count": 0,
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    candidate = tmp_path / "candidate.pt"
+    critic = tmp_path / "critic.pt"
+    candidate.write_bytes(b"wrong-candidate")
+    critic.write_bytes(b"critic")
+    summary = tmp_path / "gate.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "schema_version": "sts1-armg-ppo-v14-two-level-gate-v1",
+                "decision": "ADOPT_PARENT",
+                "final_readiness": "NOT_READY",
+                "candidate_weight_sha256": "0" * 64,
+                "dev_gate": {"status": "PASS"},
+                "final_gate_30": {"status": "HOLD"},
+                "final_gate_50": {"status": "SKIPPED"},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(STATE_SCRIPT),
+            "--state-dir", str(state_dir),
+            "--candidate", str(candidate),
+            "--candidate-critic", str(critic),
+            "--gate-summary", str(summary),
+            "--run-id", "999",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "selected Candidate SHA mismatch" in (proc.stdout + proc.stderr)
+    assert (state_dir / "offline-champion.pt").read_bytes() == b"parent"

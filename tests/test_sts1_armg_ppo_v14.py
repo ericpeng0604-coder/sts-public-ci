@@ -590,3 +590,114 @@ def test_v14_state_rejects_candidate_sha_mismatch(tmp_path: Path):
     assert proc.returncode != 0
     assert "selected Candidate SHA mismatch" in (proc.stdout + proc.stderr)
     assert (state_dir / "offline-champion.pt").read_bytes() == b"parent"
+
+
+
+def test_gate_parallel_uses_spawn_and_batch_timeout(monkeypatch, tmp_path: Path):
+    calls = {}
+
+    class FakeAsync:
+        def get(self, *, timeout):
+            calls["timeout"] = timeout
+            return [
+                (
+                    "candidate",
+                    123,
+                    {
+                        "result": "PASS_SIMULATOR_COMPLETE_RUN",
+                        "outcome": "victory",
+                        "final_floor": 60,
+                    },
+                )
+            ]
+
+    class FakePool:
+        def __init__(self, *, processes, maxtasksperchild):
+            calls["processes"] = processes
+            calls["maxtasksperchild"] = maxtasksperchild
+
+        def map_async(self, fn, tasks):
+            calls["tasks"] = list(tasks)
+            return FakeAsync()
+
+        def close(self):
+            calls["closed"] = True
+
+        def join(self):
+            calls["joined"] = True
+
+        def terminate(self):
+            calls["terminated"] = True
+
+    class FakeContext:
+        def Pool(self, **kwargs):
+            return FakePool(**kwargs)
+
+    def fake_get_context(name):
+        calls["context"] = name
+        return FakeContext()
+
+    monkeypatch.setattr(gate.rt.mp, "get_context", fake_get_context)
+    result = gate.rt._evaluate_parallel(
+        requests=[("candidate", tmp_path / "weight.pt", 123)],
+        module_dir=tmp_path / "module",
+        armg_root=tmp_path / "armg",
+        output_dir=tmp_path / "out",
+        mcts_sims=2000,
+        all_formal_seeds=[123],
+        workers=4,
+        batch_timeout_seconds=77,
+    )
+
+    assert calls["context"] == "spawn"
+    assert calls["timeout"] == 77
+    assert calls["processes"] == 1
+    assert calls["maxtasksperchild"] == 16
+    assert calls["closed"] is True
+    assert calls["joined"] is True
+    assert result[("candidate", 123)]["outcome"] == "victory"
+
+
+def test_gate_parallel_timeout_terminates_pool(monkeypatch, tmp_path: Path):
+    calls = {"terminated": 0, "joined": 0}
+
+    class FakeAsync:
+        def get(self, *, timeout):
+            raise gate.rt.mp.TimeoutError
+
+    class FakePool:
+        def map_async(self, fn, tasks):
+            return FakeAsync()
+
+        def close(self):
+            pass
+
+        def terminate(self):
+            calls["terminated"] += 1
+
+        def join(self):
+            calls["joined"] += 1
+
+    class FakeContext:
+        def Pool(self, **kwargs):
+            return FakePool()
+
+    monkeypatch.setattr(gate.rt.mp, "get_context", lambda name: FakeContext())
+    try:
+        gate.rt._evaluate_parallel(
+            requests=[("candidate", tmp_path / "weight.pt", 123)],
+            module_dir=tmp_path / "module",
+            armg_root=tmp_path / "armg",
+            output_dir=tmp_path / "out",
+            mcts_sims=2000,
+            all_formal_seeds=[123],
+            workers=1,
+            batch_timeout_seconds=1,
+        )
+    except RuntimeError as exc:
+        assert "timed out" in str(exc)
+    else:
+        raise AssertionError("timeout must fail closed")
+
+    assert calls["terminated"] >= 1
+    assert calls["joined"] >= 1

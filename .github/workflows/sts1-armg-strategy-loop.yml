@@ -444,9 +444,9 @@ jobs:
           assert s["parallel_cpu_version"] == 1
           assert s["collection_workers"] == int(__import__("os").environ["STRATEGY_COLLECTION_WORKERS"])
           assert s["combat_policy"] == f"mcts_{int(__import__('os').environ['STRATEGY_MCTS_SIMS'])}"
-          reports=s.get("reports") or []
-          assert reports, "Strategy v4 must emit at least one round report"
-          latest=reports[-1]
+          round_reports=sorted(Path("evidence/sts1/strategy-loop/runs").glob("round-*/round-report.json"))
+          assert round_reports, "Strategy v4 must emit at least one round report"
+          latest=json.loads(round_reports[-1].read_text())
           pool=latest.get("candidate_pool") or []
           assert len(pool) == 3, pool
           assert sum(bool(row.get("selected")) for row in pool) == 1, pool

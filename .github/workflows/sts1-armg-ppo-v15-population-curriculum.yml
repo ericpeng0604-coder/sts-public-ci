@@ -125,7 +125,8 @@ jobs:
             --reward-mode "$PPO_REWARD_MODE" \
             --checkpoint-id "$CHECKPOINT_ID" \
             --worker "$worker" \
-            --parallel-games 2
+            --parallel-games 2 \
+            --max-training-seed-rejections 8
 
       - uses: actions/upload-artifact@v4
         with:

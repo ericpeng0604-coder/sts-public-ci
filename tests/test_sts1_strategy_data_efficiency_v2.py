@@ -208,3 +208,16 @@ def test_candidate_pool_prefers_a_gate_pass() -> None:
         },
     }
     assert m._select_dev_candidate([rollback, passed])["name"] == "half"
+
+
+def test_teacher_mix_prefers_parent_for_ambiguous_examples() -> None:
+    assert m._teacher_mix_weight(0.10, min_teacher_confidence=0.50) == 0.0
+    assert m._teacher_mix_weight(0.50, min_teacher_confidence=0.50) == 0.50
+    assert m._teacher_mix_weight(1.00, min_teacher_confidence=0.75) == 1.00
+
+
+def test_candidate_recipes_are_distinct_and_increasingly_strict() -> None:
+    recipes = list(m.CANDIDATE_RECIPES)
+    assert [row["name"] for row in recipes] == ["balanced", "confident", "strict"]
+    assert [float(row["min_teacher_confidence"]) for row in recipes] == [0.0, 0.5, 0.75]
+    assert [float(row["step_scale"]) for row in recipes] == [0.25, 0.5, 1.0]

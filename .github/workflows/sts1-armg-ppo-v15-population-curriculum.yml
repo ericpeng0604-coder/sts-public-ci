@@ -110,10 +110,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  train-and-gate:
+  prepare:
     needs: rollout
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -126,30 +126,14 @@ jobs:
           set -a
           source control/sts1-armg-ppo-v15-auto-loop.request
           set +a
-          echo "PPO_TEMPERATURE=$temperature" >> "$GITHUB_ENV"
-          echo "PPO_EPOCHS=$epochs" >> "$GITHUB_ENV"
-          echo "PPO_LR=$learning_rate" >> "$GITHUB_ENV"
-          echo "PPO_CLIP=$clip" >> "$GITHUB_ENV"
-          echo "PPO_TARGET_KL=$target_kl" >> "$GITHUB_ENV"
-          echo "PPO_ENTROPY=$entropy" >> "$GITHUB_ENV"
-          echo "PPO_ANCHOR=$anchor_coef" >> "$GITHUB_ENV"
-          echo "PPO_MCTS_SIMS=$mcts_sims" >> "$GITHUB_ENV"
+          echo "PPO_TEACHER_REQUIRED=$strategy_teacher_required" >> "$GITHUB_ENV"
 
-      - name: Install and hydrate
+      - name: Install preprocess runtime
         run: |
-          set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -e . numpy torch==2.11.0
-          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
-          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
-          python scripts/sts1/build_probe.py
-          root=.cache/sts1-armg
-          mkdir -p "$root/sim/sts_lightspeed"
-          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
-          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
-          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          pip install -e . numpy
 
-      - name: Restore v1.5 state or migrate prior PPO state
+      - name: Restore v1.5 state
         run: |
           set -euo pipefail
           state="$RUNNER_TEMP/ppo-v15-state"
@@ -163,15 +147,12 @@ jobs:
             unzip -q "$RUNNER_TEMP/state.zip" -d "$state/raw"
             cp "$(find "$state/raw" -name offline-champion.pt -print -quit)" "$state/offline-champion.pt"
             cp "$(find "$state/raw" -name state.json -print -quit)" "$state/state.json"
-            crit="$(find "$state/raw" -name training-critic.pt -print -quit)"
-            [ -z "$crit" ] || cp "$crit" "$state/training-critic.pt"
-            pending="$(find "$state/raw" -name pending-real-game.pt -print -quit)"
-            [ -z "$pending" ] || cp "$pending" "$state/pending-real-game.pt"
-            ppo_replay="$(find "$state/raw" -name ppo-replay.npz -print -quit)"
-            [ -z "$ppo_replay" ] || cp "$ppo_replay" "$state/ppo-replay.npz"
-            elite_replay="$(find "$state/raw" -name elite-replay.npz -print -quit)"
-            [ -z "$elite_replay" ] || cp "$elite_replay" "$state/elite-replay.npz"
+            for name in training-critic.pt pending-real-game.pt ppo-replay.npz elite-replay.npz; do
+              src="$(find "$state/raw" -name "$name" -print -quit)"
+              [ -z "$src" ] || cp "$src" "$state/$name"
+            done
           else
+            python scripts/sts1/hydrate_jialeiv_baseline_v0.py
             cp external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt "$state/offline-champion.pt"
             printf '%s\n' '{"schema_version":"sts1-armg-ppo-v14-loop-state-v1","round_index":0,"generation":0,"parent_generation":0,"stagnation_count":0,"production_champion_replaced":false}' > "$state/state.json"
           fi
@@ -182,9 +163,8 @@ jobs:
           recorded=state.get("training_parent_sha256") or state.get("offline_champion_sha256")
           if recorded is not None and recorded != sys.argv[2]:
               raise SystemExit(f"training parent SHA drift: {recorded} != {sys.argv[2]}")
-          print("PPO_V14_STATE_INTEGRITY_PASS", sys.argv[2])
+          print("PPO_V15_STATE_INTEGRITY_PASS", sys.argv[2])
           PY
-          echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
           echo "STATE_DIR=$state" >> "$GITHUB_ENV"
           echo "CHECKPOINT_ID=armg-ppo-v15-$sha" >> "$GITHUB_ENV"
 
@@ -193,22 +173,84 @@ jobs:
           pattern: sts1-armg-ppo-v15-rollout-${{ github.run_id }}-*
           path: evidence/sts1/ppo-v14-rollouts
 
-      - name: Preprocess fresh shards
+      - name: Preprocess once and build replay once
         run: |
-          python scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py             --rollouts evidence/sts1/ppo-v14-rollouts             --output-dir evidence/sts1/ppo-v14-preprocessed             --checkpoint-id "$CHECKPOINT_ID"
+          set -euo pipefail
+          python scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py \
+            --rollouts evidence/sts1/ppo-v14-rollouts \
+            --output-dir evidence/sts1/ppo-v14-preprocessed \
+            --checkpoint-id "$CHECKPOINT_ID"
 
-      - name: Build bounded replay buffers
-        run: |
           round_index="$(python - "$STATE_DIR/state.json" <<'PY'
           import json,sys
           s=json.load(open(sys.argv[1],encoding="utf-8"))
           print(int(s.get("round_index",0))+1)
           PY
           )"
-          python scripts/sts1/sts1_armg_ppo_v14_replay.py             --fresh-dir evidence/sts1/ppo-v14-preprocessed             --state-dir "$STATE_DIR"             --output-dir evidence/sts1/ppo-v14-replay             --checkpoint-id "$CHECKPOINT_ID"             --round-index "$round_index"             --max-ppo-games 1600             --replay-fraction 0.50             --max-elite-games 600             --elite-min-floor 45
+          python scripts/sts1/sts1_armg_ppo_v14_replay.py \
+            --fresh-dir evidence/sts1/ppo-v14-preprocessed \
+            --state-dir "$STATE_DIR" \
+            --output-dir evidence/sts1/ppo-v14-replay \
+            --checkpoint-id "$CHECKPOINT_ID" \
+            --round-index "$round_index" \
+            --max-ppo-games 1600 \
+            --replay-fraction 0.50 \
+            --max-elite-games 600 \
+            --elite-min-floor 45
 
-      - name: Full preflight
+      - name: Pin latest Strategy Teacher replay
         run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/ppo-v15-inputs/strategy
+          strategy_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=sts1-armg-strategy-loop-state-v4&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
+          if [ -z "$strategy_id" ]; then
+            if [ "$PPO_TEACHER_REQUIRED" = "1" ]; then
+              echo "PPO_V15_STRATEGY_TEACHER_MISSING"
+              exit 1
+            fi
+            exit 0
+          fi
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/strategy.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$strategy_id/zip"
+          mkdir -p "$RUNNER_TEMP/strategy"
+          unzip -q "$RUNNER_TEMP/strategy.zip" -d "$RUNNER_TEMP/strategy"
+          replay="$(find "$RUNNER_TEMP/strategy" -name strategy-replay.jsonl -print -quit)"
+          if [ -z "$replay" ]; then
+            if [ "$PPO_TEACHER_REQUIRED" = "1" ]; then
+              echo "PPO_V15_STRATEGY_REPLAY_MISSING artifact=$strategy_id"
+              exit 1
+            fi
+            exit 0
+          fi
+          cp "$replay" evidence/sts1/ppo-v15-inputs/strategy/strategy-replay.jsonl
+          python - evidence/sts1/ppo-v15-inputs/strategy/strategy-replay.jsonl "$strategy_id" <<'PY'
+          import hashlib,json,sys
+          from collections import Counter
+          from pathlib import Path
+          p=Path(sys.argv[1]); rows=[]
+          for raw in p.read_text(encoding="utf-8").splitlines():
+              if not raw.strip(): continue
+              row=json.loads(raw)
+              assert row["schema_version"]=="sts1-armg-strategy-branch-dataset-v1"
+              assert row["combat_policy"]=="mcts_2000", row["combat_policy"]
+              rows.append(row)
+          mistakes=[r for r in rows if int(r["current_armg_index"]) != int(r["teacher_best_index"])]
+          kinds=Counter(str(r.get("kind","unknown")) for r in mistakes)
+          meta={
+              "schema_version":"sts1-ppo-v15-strategy-teacher-pin-v1",
+              "artifact_id":int(sys.argv[2]),
+              "sha256":hashlib.sha256(p.read_bytes()).hexdigest(),
+              "examples":len(rows),
+              "mistake_examples":len(mistakes),
+              "mistakes_by_kind":dict(sorted(kinds.items())),
+              "combat_policy":"mcts_2000",
+          }
+          Path("evidence/sts1/ppo-v15-inputs/strategy/meta.json").write_text(json.dumps(meta,indent=2,sort_keys=True)+"\n")
+          print("PPO_V15_STRATEGY_TEACHER_PINNED",json.dumps(meta,sort_keys=True))
+          PY
+
+      - name: Full shared-input preflight
+        run: |
+          set -euo pipefail
           python - <<'PY'
           import os
           from pathlib import Path
@@ -225,44 +267,203 @@ jobs:
                   assert np.isfinite(d["reward"]).all() and np.isfinite(d["old_logp"]).all()
                   total += len(d["action"])
           assert total>0
-          print("PPO_V14_PREFLIGHT_PASS", total)
+          print("PPO_V15_SHARED_INPUTS_PASS", total)
           PY
 
-      - name: Train PPO v1.5 Candidate population
+          root=evidence/sts1/ppo-v15-inputs
+          mkdir -p "$root/state"
+          cp "$STATE_DIR/state.json" "$root/state/state.json"
+          cp "$STATE_DIR/offline-champion.pt" "$root/state/offline-champion.pt"
+          for name in training-critic.pt pending-real-game.pt ppo-replay.npz elite-replay.npz; do
+            [ ! -f "$STATE_DIR/$name" ] || cp "$STATE_DIR/$name" "$root/state/$name"
+          done
+          rm -rf "$root/preprocessed" "$root/replay"
+          cp -R evidence/sts1/ppo-v14-preprocessed "$root/preprocessed"
+          cp -R evidence/sts1/ppo-v14-replay "$root/replay"
+          printf 'checkpoint_id=%s\n' "$CHECKPOINT_ID" > "$root/meta.env"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-armg-ppo-v15-training-inputs-${{ github.run_id }}
+          path: evidence/sts1/ppo-v15-inputs/
+          if-no-files-found: error
+          retention-days: 30
+
+  candidate:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: A
+            curriculum: '0.00'
+          - name: B
+            curriculum: '0.35'
+          - name: C
+            curriculum: '0.70'
+          - name: D
+            curriculum: '1.00'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Load v1.5 training control
+        run: |
+          set -a
+          source control/sts1-armg-ppo-v15-auto-loop.request
+          set +a
+          echo "PPO_TEMPERATURE=$temperature" >> "$GITHUB_ENV"
+          echo "PPO_EPOCHS=$epochs" >> "$GITHUB_ENV"
+          echo "PPO_LR=$learning_rate" >> "$GITHUB_ENV"
+          echo "PPO_CLIP=$clip" >> "$GITHUB_ENV"
+          echo "PPO_TARGET_KL=$target_kl" >> "$GITHUB_ENV"
+          echo "PPO_ENTROPY=$entropy" >> "$GITHUB_ENV"
+          echo "PPO_ANCHOR=$anchor_coef" >> "$GITHUB_ENV"
+          echo "PPO_STRATEGY_BC_COEF=$strategy_teacher_coef" >> "$GITHUB_ENV"
+          echo "PPO_STRATEGY_BC_MAX=$strategy_teacher_max_examples" >> "$GITHUB_ENV"
+          echo "PPO_STRATEGY_REQUIRED=$strategy_teacher_required" >> "$GITHUB_ENV"
+          echo "PPO_CANDIDATE_THREADS=$candidate_threads" >> "$GITHUB_ENV"
+
+      - name: Install candidate runtime
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          root=.cache/sts1-armg
+          mkdir -p "$root"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-armg-ppo-v15-training-inputs-${{ github.run_id }}
+          path: evidence/sts1/ppo-v15-inputs
+
+      - name: Train Candidate ${{ matrix.name }} in parallel
         run: |
           set -euo pipefail
-          mkdir -p evidence/sts1/ppo-v15-population
-          for spec in "A:0.00" "B:0.35" "C:0.70" "D:1.00"; do
-            name="${spec%%:*}"
-            strength="${spec##*:}"
-            out="evidence/sts1/ppo-v15-population/$name"
-            mkdir -p "$out"
-            extra=()
-            if [ -f "$STATE_DIR/training-critic.pt" ]; then
-              extra+=(--base-critic "$STATE_DIR/training-critic.pt")
-            fi
-            python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
-              --shards evidence/sts1/ppo-v14-preprocessed \
-              --replay-shards evidence/sts1/ppo-v14-replay \
-              --elite-replay "$STATE_DIR/elite-replay.npz" \
-              --armg-root .cache/sts1-armg \
-              --base-weight "$CURRENT_WEIGHT" \
-              --output "$out/actor.pt" \
-              --critic-output "$out/critic.pt" \
-              --checkpoint-id "$CHECKPOINT_ID" \
-              --epochs "$PPO_EPOCHS" \
-              --lr "$PPO_LR" \
-              --clip "$PPO_CLIP" \
-              --target-kl "$PPO_TARGET_KL" \
-              --entropy "$PPO_ENTROPY" \
-              --anchor-coef "$PPO_ANCHOR" \
-              --behavior-temperature "$PPO_TEMPERATURE" \
-              --bc-coef 0.01 \
-              --bc-max-decisions 1024 \
-              --curriculum-strength "$strength" \
-              --threads 4 \
-              "${extra[@]}"
+          source evidence/sts1/ppo-v15-inputs/meta.env
+          base=evidence/sts1/ppo-v15-inputs/state/offline-champion.pt
+          out="evidence/sts1/ppo-v15-population/${{ matrix.name }}"
+          mkdir -p "$out"
+          extra=()
+          [ ! -f evidence/sts1/ppo-v15-inputs/state/training-critic.pt ] || extra+=(--base-critic evidence/sts1/ppo-v15-inputs/state/training-critic.pt)
+          [ ! -f evidence/sts1/ppo-v15-inputs/state/elite-replay.npz ] || extra+=(--elite-replay evidence/sts1/ppo-v15-inputs/state/elite-replay.npz)
+          if [ -f evidence/sts1/ppo-v15-inputs/strategy/strategy-replay.jsonl ]; then
+            extra+=(
+              --strategy-replay evidence/sts1/ppo-v15-inputs/strategy/strategy-replay.jsonl
+              --strategy-bc-coef "$PPO_STRATEGY_BC_COEF"
+              --strategy-bc-max-examples "$PPO_STRATEGY_BC_MAX"
+              --strategy-combat-policy mcts_2000
+            )
+          elif [ "$PPO_STRATEGY_REQUIRED" = "1" ]; then
+            echo "PPO_V15_REQUIRED_STRATEGY_TEACHER_NOT_FOUND"
+            exit 1
+          fi
+
+          python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
+            --shards evidence/sts1/ppo-v15-inputs/preprocessed \
+            --replay-shards evidence/sts1/ppo-v15-inputs/replay \
+            --armg-root .cache/sts1-armg \
+            --base-weight "$base" \
+            --output "$out/actor.pt" \
+            --critic-output "$out/critic.pt" \
+            --checkpoint-id "$checkpoint_id" \
+            --epochs "$PPO_EPOCHS" \
+            --lr "$PPO_LR" \
+            --clip "$PPO_CLIP" \
+            --target-kl "$PPO_TARGET_KL" \
+            --entropy "$PPO_ENTROPY" \
+            --anchor-coef "$PPO_ANCHOR" \
+            --behavior-temperature "$PPO_TEMPERATURE" \
+            --bc-coef 0.01 \
+            --bc-max-decisions 1024 \
+            --curriculum-strength "${{ matrix.curriculum }}" \
+            --threads "$PPO_CANDIDATE_THREADS" \
+            "${extra[@]}"
+
+          python - "$out/actor.json" "${{ matrix.curriculum }}" "$PPO_STRATEGY_REQUIRED" <<'PY'
+          import json,sys
+          r=json.load(open(sys.argv[1]))
+          expected=float(sys.argv[2])
+          assert abs(float(r["curriculum_strength"])-expected)<1e-9, r
+          assert r["strategy_combat_policy"]=="mcts_2000", r
+          if sys.argv[3]=="1":
+              assert int(r["strategy_bc_source_examples"])>0, r
+              assert int(r["strategy_bc_total_examples"])>0, r
+          print("PPO_V15_PARALLEL_CANDIDATE_PASS", expected, r["strategy_bc_total_examples"])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-armg-ppo-v15-candidate-${{ github.run_id }}-${{ matrix.name }}
+          path: evidence/sts1/ppo-v15-population/
+          if-no-files-found: error
+          retention-days: 30
+
+  train-and-gate:
+    needs: [prepare, candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Load v1.5 gate control
+        run: |
+          set -a
+          source control/sts1-armg-ppo-v15-auto-loop.request
+          set +a
+          echo "PPO_MCTS_SIMS=$mcts_sims" >> "$GITHUB_ENV"
+
+      - name: Install and hydrate gate runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-armg-ppo-v15-training-inputs-${{ github.run_id }}
+          path: evidence/sts1/ppo-v15-inputs
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sts1-armg-ppo-v15-candidate-${{ github.run_id }}-*
+          path: evidence/sts1/ppo-v15-population
+          merge-multiple: true
+
+      - name: Restore shared state and verify population
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/ppo-v15-state"
+          rm -rf "$state"; mkdir -p "$state"
+          cp -a evidence/sts1/ppo-v15-inputs/state/. "$state/"
+          sha="$(sha256sum "$state/offline-champion.pt" | awk '{print $1}')"
+          echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
+          echo "STATE_DIR=$state" >> "$GITHUB_ENV"
+          echo "CHECKPOINT_ID=armg-ppo-v15-$sha" >> "$GITHUB_ENV"
+          for name in A B C D; do
+            test -f "evidence/sts1/ppo-v15-population/$name/actor.pt"
+            test -f "evidence/sts1/ppo-v15-population/$name/critic.pt"
           done
+          echo "PPO_V15_PARALLEL_POPULATION_READY"
 
       - name: Same-seed 4-Candidate tournament
         run: |
@@ -301,7 +502,12 @@ jobs:
 
       - name: Update durable v1.5 state
         run: |
-          python scripts/sts1/sts1_armg_ppo_v14_state.py             --state-dir "$STATE_DIR"             --candidate "$WINNER_WEIGHT"             --candidate-critic "$WINNER_CRITIC"             --gate-summary evidence/sts1/ppo-v15-gate/gate-summary.json             --run-id "$GITHUB_RUN_ID"
+          python scripts/sts1/sts1_armg_ppo_v14_state.py \
+            --state-dir "$STATE_DIR" \
+            --candidate "$WINNER_WEIGHT" \
+            --candidate-critic "$WINNER_CRITIC" \
+            --gate-summary evidence/sts1/ppo-v15-gate/gate-summary.json \
+            --run-id "$GITHUB_RUN_ID"
 
       - name: Upload durable v1.5 state
         uses: actions/upload-artifact@v4
@@ -323,8 +529,9 @@ jobs:
         with:
           name: sts1-armg-ppo-v15-loop-report-${{ github.run_id }}
           path: |
-            evidence/sts1/ppo-v14-preprocessed/manifest.json
-            evidence/sts1/ppo-v14-replay/replay-manifest.json
+            evidence/sts1/ppo-v15-inputs/preprocessed/manifest.json
+            evidence/sts1/ppo-v15-inputs/replay/replay-manifest.json
+            evidence/sts1/ppo-v15-inputs/strategy/**
             evidence/sts1/ppo-v15-population/**
             evidence/sts1/ppo-v15-tournament/**
             evidence/sts1/ppo-v15-gate/**

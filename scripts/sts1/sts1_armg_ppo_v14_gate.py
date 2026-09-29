@@ -265,7 +265,14 @@ def main() -> int:
         all_seeds=dev_seeds,
         workers=args.workers,
     )
-    dev_candidate: dict[int, dict[str, Any]] = {}
+    dev_candidate = _load_cache(
+        state,
+        key="dev_candidate",
+        weight_sha=candidate_sha,
+        seeds=dev_seeds,
+        mcts_sims=args.mcts_sims,
+        simulator_id=simulator_id,
+    )
     dev_candidate = _run_missing(
         label="dev-candidate",
         weight=args.candidate_weight,
@@ -286,6 +293,15 @@ def main() -> int:
         mcts_sims=args.mcts_sims,
         simulator_id=simulator_id,
         runs=dev_parent,
+    )
+    _save_cache(
+        state,
+        key="dev_candidate",
+        weight_sha=candidate_sha,
+        seeds=dev_seeds,
+        mcts_sims=args.mcts_sims,
+        simulator_id=simulator_id,
+        runs=dev_candidate,
     )
     dev_gate = _dev_gate(
         _ordered(dev_parent, dev_seeds[:30]),

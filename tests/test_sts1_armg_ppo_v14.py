@@ -90,6 +90,24 @@ def test_poisoned_persistent_critic_requests_reset():
     )
 
 
+def test_curriculum_focus_uses_dominant_failure_band_and_ignores_wins():
+    focus, counts = train.choose_curriculum_focus(
+        [10, 12, 20, 30, 45, 50],
+        [False, False, False, False, True, False],
+    )
+    assert counts == {"act1": 2, "act2": 2, "act3": 1}
+    assert focus == "act2"
+
+
+def test_curriculum_focus_is_none_when_every_game_wins():
+    focus, counts = train.choose_curriculum_focus(
+        [51, 51, 51],
+        [True, True, True],
+    )
+    assert counts == {"act1": 0, "act2": 0, "act3": 0}
+    assert focus == "none"
+
+
 
 def run(seed: int, floor: int, *, win: bool = False, illegal: int = 0):
     return {

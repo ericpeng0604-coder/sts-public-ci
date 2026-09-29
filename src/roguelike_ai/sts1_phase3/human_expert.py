@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from roguelike_ai.sts1_phase3.human_path_prior import SCHEMA_VERSION as PATH_PRIOR_SCHEMA_VERSION, path_prior_score
 from roguelike_ai.sts1_phase3.simulator import ArmGNoncombatPolicy, SimulatorRunError
 
 
@@ -471,6 +472,8 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
         *,
         expert_prior_path: Path,
         expert_strength: float,
+        path_prior_path: Path | None = None,
+        path_strength: float = 0.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -483,8 +486,25 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
             raise SimulatorRunError("human expert prior character mismatch")
         if not math.isfinite(float(expert_strength)) or float(expert_strength) < 0:
             raise SimulatorRunError("human expert strength must be finite and non-negative")
+        if not math.isfinite(float(path_strength)) or float(path_strength) < 0:
+            raise SimulatorRunError("human path strength must be finite and non-negative")
+
+        path_payload: dict[str, Any] | None = None
+        if path_prior_path is not None:
+            if not path_prior_path.is_file():
+                raise SimulatorRunError(f"human path prior missing: {path_prior_path}")
+            path_payload = json.loads(path_prior_path.read_text(encoding="utf-8"))
+            if path_payload.get("schema_version") != PATH_PRIOR_SCHEMA_VERSION:
+                raise SimulatorRunError("human path prior schema mismatch")
+            if str(path_payload.get("character")) != "IRONCLAD":
+                raise SimulatorRunError("human path prior character mismatch")
+        elif float(path_strength) > 0:
+            raise SimulatorRunError("human path strength requires a path prior")
+
         self.expert_prior = payload
         self.expert_strength = float(expert_strength)
+        self.path_prior = path_payload
+        self.path_strength = float(path_strength)
         self.last_expert_rerank: dict[str, Any] | None = None
 
     def decide(self, gc: Any, sts: Any) -> tuple[str, int, list[Any], list[Any], list[float]]:
@@ -522,6 +542,23 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
                     floor=floor,
                     offered=card_names,
                     deck_context=deck_context,
+                )
+                adjusted[index] += additions[index]
+
+        if kind == "map" and self.path_prior is not None and self.path_strength > 0:
+            hp = getattr(gc, "cur_hp", None)
+            max_hp = getattr(gc, "max_hp", None)
+            gold = getattr(gc, "gold", None)
+            for index, desc in enumerate(descs):
+                semantic = self.describe_choice("map", desc)
+                room = semantic.get("room")
+                additions[index] = self.path_strength * path_prior_score(
+                    self.path_prior,
+                    str(room or ""),
+                    floor=floor,
+                    hp=hp,
+                    max_hp=max_hp,
+                    gold=gold,
                 )
                 adjusted[index] += additions[index]
 

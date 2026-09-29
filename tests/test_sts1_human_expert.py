@@ -189,3 +189,53 @@ def test_deck_context_changes_score() -> None:
         floor=20,
         deck_context=["Clash"],
     ) < 0.0
+
+
+
+def test_fresh100_escalates_only_on_positive_significance_failure() -> None:
+    positive = {
+        "status": "ROLLBACK",
+        "win_delta": 2,
+        "reasons": ["paired_superiority_not_strong_enough"],
+        "paired_wins": {
+            "candidate_better": 3,
+            "candidate_worse": 1,
+            "one_sided_sign_p": 0.3125,
+        },
+    }
+    assert loop._should_escalate_to_500(positive) is True
+
+    losing = dict(positive)
+    losing["win_delta"] = 0
+    assert loop._should_escalate_to_500(losing) is False
+
+    unsafe = dict(positive)
+    unsafe["reasons"] = ["candidate_safety_failure"]
+    assert loop._should_escalate_to_500(unsafe) is False
+
+
+def test_confirm500_can_promote_without_weakening_fresh100_gate() -> None:
+    passed = {"status": "PASS"}
+    fresh_rollback = {
+        "status": "ROLLBACK",
+        "reasons": ["paired_superiority_not_strong_enough"],
+    }
+    confirm_pass = {"status": "PASS"}
+    result = loop._promotion_with_confirmation(
+        passed,
+        passed,
+        fresh_rollback,
+        confirm_pass,
+    )
+    assert result["decision"] == "PROMOTE_HUMAN_EXPERT"
+    assert result["all_gates_passed"] is True
+    assert result["escalated_to_500"] is True
+
+    confirm_fail = {"status": "ROLLBACK"}
+    result = loop._promotion_with_confirmation(
+        passed,
+        passed,
+        fresh_rollback,
+        confirm_fail,
+    )
+    assert result["decision"] == "ROLLBACK_STRATEGY"

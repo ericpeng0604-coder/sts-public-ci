@@ -104,6 +104,84 @@ def choose_curriculum_focus(
     return focus, counts
 
 
+STRATEGY_DATASET_SCHEMA_VERSION = "sts1-armg-strategy-branch-dataset-v1"
+
+
+def load_strategy_teacher_examples(
+    path: Path | None,
+    *,
+    max_examples: int,
+    combat_policy: str,
+) -> list[dict[str, object]]:
+    """Load high-value Strategy Teacher disagreements for soft-label BC."""
+    if path is None or not path.is_file() or max_examples <= 0:
+        return []
+
+    groups: dict[str, list[dict[str, object]]] = {}
+    for line_no, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not raw.strip():
+            continue
+        row = json.loads(raw)
+        if row.get("schema_version") != STRATEGY_DATASET_SCHEMA_VERSION:
+            raise RuntimeError(f"strategy replay schema mismatch at line {line_no}")
+        if row.get("combat_policy") != combat_policy:
+            raise RuntimeError(
+                f"strategy replay combat policy mismatch at line {line_no}: "
+                f"{row.get('combat_policy')!r} != {combat_policy!r}"
+            )
+        descs = row.get("descs")
+        probs = row.get("target_probs")
+        obs = row.get("obs")
+        if not isinstance(obs, list) or not isinstance(descs, list) or len(descs) < 2:
+            raise RuntimeError(f"strategy replay feature shape invalid at line {line_no}")
+        if not isinstance(probs, list) or len(probs) != len(descs):
+            raise RuntimeError(f"strategy replay target shape invalid at line {line_no}")
+        current = int(row.get("current_armg_index", -1))
+        teacher = int(row.get("teacher_best_index", -1))
+        if not (0 <= current < len(descs) and 0 <= teacher < len(descs)):
+            raise RuntimeError(f"strategy replay action index invalid at line {line_no}")
+        # Only disagreements are imported into PPO v1.5. Agreement examples are
+        # already represented by on-policy PPO and add little Teacher signal.
+        if current == teacher:
+            continue
+        target = np.asarray(probs, np.float32)
+        if not np.isfinite(target).all() or np.any(target < 0.0):
+            raise RuntimeError(f"strategy replay target probabilities invalid at line {line_no}")
+        total = float(target.sum())
+        if total <= 0.0:
+            raise RuntimeError(f"strategy replay target probabilities empty at line {line_no}")
+        clean = dict(row)
+        clean["target_probs"] = (target / total).tolist()
+        kind = str(row.get("kind", "unknown"))
+        groups.setdefault(kind, []).append(clean)
+
+    for rows in groups.values():
+        rows.sort(
+            key=lambda row: (
+                float(row.get("priority", 1.0)),
+                float(row.get("teacher_margin", 0.0)),
+                int(row.get("floor", 0)),
+            ),
+            reverse=True,
+        )
+
+    # Round-robin kinds so map/card/shop/rest/event all keep representation.
+    kept: list[dict[str, object]] = []
+    kinds = sorted(groups)
+    cursor = 0
+    while kinds and len(kept) < max_examples:
+        kind = kinds[cursor % len(kinds)]
+        bucket = groups[kind]
+        if bucket:
+            kept.append(bucket.pop(0))
+        if not bucket:
+            kinds.remove(kind)
+            cursor = 0
+        else:
+            cursor += 1
+    return kept
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("shards", "armg-root", "base-weight", "output"):
@@ -128,6 +206,10 @@ def main() -> int:
     p.add_argument("--bc-coef", type=float, default=0.01)
     p.add_argument("--bc-max-decisions", type=int, default=1024)
     p.add_argument("--curriculum-strength", type=float, default=0.0)
+    p.add_argument("--strategy-replay", type=Path)
+    p.add_argument("--strategy-bc-coef", type=float, default=0.0)
+    p.add_argument("--strategy-bc-max-examples", type=int, default=512)
+    p.add_argument("--strategy-combat-policy", default="mcts_2000")
     a = p.parse_args()
 
     if not 0.25 <= a.behavior_temperature <= 2.0:
@@ -144,6 +226,10 @@ def main() -> int:
         raise RuntimeError("bc-max-decisions outside safe bounds")
     if not 0.0 <= a.curriculum_strength <= 1.5:
         raise RuntimeError("curriculum-strength outside safe bounds")
+    if not 0.0 <= a.strategy_bc_coef <= 0.05:
+        raise RuntimeError("strategy-bc-coef outside safe bounds")
+    if not 0 <= a.strategy_bc_max_examples <= 4096:
+        raise RuntimeError("strategy-bc-max-examples outside safe bounds")
 
     os.environ["STS_BOT_DIR"] = str(a.armg_root)
     sys.path.insert(0, str(a.armg_root))
@@ -371,11 +457,51 @@ def main() -> int:
         if len(elite_data["action"]) + 1 != len(elite_data["offsets"]):
             raise RuntimeError("elite replay offsets invalid")
 
+    strategy_examples = load_strategy_teacher_examples(
+        a.strategy_replay,
+        max_examples=a.strategy_bc_max_examples,
+        combat_policy=a.strategy_combat_policy,
+    )
+    if strategy_examples:
+        expected_obs = int(m.OBS_DIM)
+        first_linear = next(
+            layer for layer in actor.net
+            if hasattr(layer, "in_features")
+        )
+        expected_desc = int(first_linear.in_features) - expected_obs
+        for row in strategy_examples:
+            obs_row = row["obs"]
+            desc_rows = row["descs"]
+            if len(obs_row) != expected_obs:
+                raise RuntimeError("strategy replay obs dimension mismatch")
+            if any(len(desc) != expected_desc for desc in desc_rows):
+                raise RuntimeError("strategy replay desc dimension mismatch")
+    strategy_kind_counts: dict[str, int] = {}
+    for row in strategy_examples:
+        kind = str(row.get("kind", "unknown"))
+        strategy_kind_counts[kind] = strategy_kind_counts.get(kind, 0) + 1
+    print(
+        "PPO_V15_STRATEGY_TEACHER",
+        json.dumps(
+            {
+                "examples": len(strategy_examples),
+                "examples_by_kind": dict(sorted(strategy_kind_counts.items())),
+                "coef": a.strategy_bc_coef,
+                "combat_policy": a.strategy_combat_policy,
+                "mistakes_only": True,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+
     history: list[dict[str, float | int]] = []
     first_ratio_mean: float | None = None
     first_ratio_abs_error: float | None = None
     total_bc_updates = 0
     total_bc_decisions = 0
+    total_strategy_bc_updates = 0
+    total_strategy_bc_examples = 0
 
     for ep in range(1, a.epochs + 1):
         losses: list[float] = []
@@ -605,6 +731,74 @@ def main() -> int:
                 bc_mean_loss = float(np.mean(batch_losses))
             torch.save(actor.state_dict(), a.output)
 
+        strategy_bc_mean_loss = 0.0
+        strategy_bc_used = 0
+        if (
+            strategy_examples
+            and a.strategy_bc_coef > 0.0
+            and a.strategy_bc_max_examples > 0
+        ):
+            rng = np.random.default_rng(20260929 + ep)
+            order = rng.permutation(len(strategy_examples))
+            kind_total = max(1, len(strategy_kind_counts))
+            kind_weights = {
+                kind: min(
+                    3.0,
+                    len(strategy_examples) / float(kind_total * count),
+                )
+                for kind, count in strategy_kind_counts.items()
+            }
+            batch_losses: list[float] = []
+            for start in range(0, len(order), 64):
+                chunk = order[start : start + 64]
+                teacher_terms = []
+                for raw_i in chunk:
+                    row = strategy_examples[int(raw_i)]
+                    obs_row = torch.tensor(row["obs"], dtype=torch.float32)
+                    ds = torch.tensor(row["descs"], dtype=torch.float32)
+                    o = obs_row.repeat(len(ds), 1)
+                    logits = actor.net(torch.cat([o, ds], 1)).squeeze(1)
+                    lp = torch.log_softmax(logits, 0)
+                    target = torch.tensor(
+                        row["target_probs"],
+                        dtype=torch.float32,
+                    )
+                    ce = -(target * lp).sum()
+                    priority = min(3.0, max(1.0, float(row.get("priority", 1.0))))
+                    balance = kind_weights[str(row.get("kind", "unknown"))]
+                    teacher_terms.append(priority * balance * ce)
+                if teacher_terms:
+                    teacher_loss = (
+                        torch.stack(teacher_terms).mean()
+                        * a.strategy_bc_coef
+                    )
+                    actor_opt.zero_grad()
+                    teacher_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        list(actor.parameters()), 1.0
+                    )
+                    actor_opt.step()
+                    batch_losses.append(float(teacher_loss.detach()))
+                    total_strategy_bc_updates += 1
+                    total_strategy_bc_examples += len(teacher_terms)
+                    strategy_bc_used += len(teacher_terms)
+            if batch_losses:
+                strategy_bc_mean_loss = float(np.mean(batch_losses))
+            torch.save(actor.state_dict(), a.output)
+            print(
+                "PPO_V15_STRATEGY_BC",
+                json.dumps(
+                    {
+                        "epoch": ep,
+                        "examples": strategy_bc_used,
+                        "mean_loss": strategy_bc_mean_loss,
+                        "combat_policy": a.strategy_combat_policy,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+
         # Evaluate Critic globally against the same fixed rollout targets.
         epoch_value_predictions: list[np.ndarray] = []
         with torch.no_grad():
@@ -641,6 +835,8 @@ def main() -> int:
             "best_critic_explained_variance": best_critic_ev,
             "elite_bc_decisions": bc_used,
             "elite_bc_mean_loss": bc_mean_loss,
+            "strategy_bc_examples": strategy_bc_used,
+            "strategy_bc_mean_loss": strategy_bc_mean_loss,
             "seconds": time.time() - t0,
         }
         history.append(epoch_rec)
@@ -701,6 +897,12 @@ def main() -> int:
         "curriculum_games": len(curriculum_floors),
         "elite_bc_total_updates": total_bc_updates,
         "elite_bc_total_decisions": total_bc_decisions,
+        "strategy_bc_coef": a.strategy_bc_coef,
+        "strategy_bc_source_examples": len(strategy_examples),
+        "strategy_bc_examples_by_kind": dict(sorted(strategy_kind_counts.items())),
+        "strategy_bc_total_updates": total_strategy_bc_updates,
+        "strategy_bc_total_examples": total_strategy_bc_examples,
+        "strategy_combat_policy": a.strategy_combat_policy,
         "actor_lr": a.lr,
         "critic_lr": a.critic_lr,
         "fixed_rollout_targets": True,

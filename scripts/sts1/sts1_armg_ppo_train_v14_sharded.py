@@ -76,6 +76,53 @@ def should_reset_critic(
     return critic_loaded and health_explained_variance < threshold
 
 
+def smart_early_stop_decision(
+    history: list[dict[str, object]],
+    *,
+    min_epochs: int,
+    patience: int,
+    target_kl: float,
+    kl_fraction: float,
+    max_clip_fraction: float,
+) -> tuple[bool, dict[str, object]]:
+    """Stop only after sustained Critic stagnation with small policy motion."""
+    if len(history) < min_epochs or len(history) < patience:
+        return False, {
+            "reason": "minimum_epochs_not_reached",
+            "epochs_completed": len(history),
+        }
+
+    window = history[-patience:]
+    critic_stagnant = all(
+        not bool(rec["critic_checkpoint_improved"]) for rec in window
+    )
+    kl_limit = target_kl * kl_fraction
+    low_policy_motion = all(
+        float(rec["approx_kl"]) <= kl_limit
+        and float(rec["clip_fraction"]) <= max_clip_fraction
+        for rec in window
+    )
+    should_stop = critic_stagnant and low_policy_motion
+    return should_stop, {
+        "reason": (
+            "critic_stagnant_low_policy_motion"
+            if should_stop
+            else "continue_learning"
+        ),
+        "epochs_completed": len(history),
+        "patience": patience,
+        "critic_stagnant": critic_stagnant,
+        "low_policy_motion": low_policy_motion,
+        "kl_limit": kl_limit,
+        "max_clip_fraction": max_clip_fraction,
+        "window_epochs": [int(rec["epoch"]) for rec in window],
+        "window_approx_kl": [float(rec["approx_kl"]) for rec in window],
+        "window_clip_fraction": [
+            float(rec["clip_fraction"]) for rec in window
+        ],
+    }
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("shards", "armg-root", "base-weight", "output"):
@@ -99,6 +146,15 @@ def main() -> int:
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--bc-coef", type=float, default=0.01)
     p.add_argument("--bc-max-decisions", type=int, default=1024)
+    p.add_argument("--smart-early-stop", action="store_true")
+    p.add_argument("--early-stop-min-epochs", type=int, default=4)
+    p.add_argument("--early-stop-patience", type=int, default=2)
+    p.add_argument("--early-stop-kl-fraction", type=float, default=0.25)
+    p.add_argument(
+        "--early-stop-max-clip-fraction",
+        type=float,
+        default=0.05,
+    )
     a = p.parse_args()
 
     if not 0.25 <= a.behavior_temperature <= 2.0:
@@ -113,6 +169,16 @@ def main() -> int:
         raise RuntimeError("bc-coef outside safe bounds")
     if not 0 <= a.bc_max_decisions <= 4096:
         raise RuntimeError("bc-max-decisions outside safe bounds")
+    if a.early_stop_min_epochs < 1:
+        raise RuntimeError("early-stop-min-epochs must be >= 1")
+    if a.early_stop_patience < 1:
+        raise RuntimeError("early-stop-patience must be >= 1")
+    if not 0.0 < a.early_stop_kl_fraction <= 1.0:
+        raise RuntimeError("early-stop-kl-fraction outside safe bounds")
+    if not 0.0 <= a.early_stop_max_clip_fraction <= 1.0:
+        raise RuntimeError(
+            "early-stop-max-clip-fraction outside safe bounds"
+        )
 
     os.environ["STS_BOT_DIR"] = str(a.armg_root)
     sys.path.insert(0, str(a.armg_root))
@@ -304,6 +370,8 @@ def main() -> int:
     first_ratio_abs_error: float | None = None
     total_bc_updates = 0
     total_bc_decisions = 0
+    early_stop_reason: str | None = None
+    early_stop_epoch: int | None = None
 
     for ep in range(1, a.epochs + 1):
         losses: list[float] = []
@@ -564,6 +632,9 @@ def main() -> int:
                     "fixed_rollout_targets": True,
                     "best_critic_epoch": best_critic_epoch,
                     "best_critic_explained_variance": best_critic_ev,
+                    "smart_early_stop_enabled": a.smart_early_stop,
+                    "early_stop_min_epochs": a.early_stop_min_epochs,
+                    "early_stop_patience": a.early_stop_patience,
                 },
                 indent=2,
             )
@@ -572,6 +643,8 @@ def main() -> int:
         )
 
         if epoch_rec["approx_kl"] > a.target_kl:
+            early_stop_reason = "target_kl"
+            early_stop_epoch = ep
             print(
                 "PPO_V14_EARLY_STOP",
                 json.dumps(
@@ -579,11 +652,38 @@ def main() -> int:
                         "epoch": ep,
                         "approx_kl": epoch_rec["approx_kl"],
                         "target_kl": a.target_kl,
+                        "reason": early_stop_reason,
                     }
                 ),
                 flush=True,
             )
             break
+
+        if a.smart_early_stop:
+            stop, stop_detail = smart_early_stop_decision(
+                history,
+                min_epochs=a.early_stop_min_epochs,
+                patience=a.early_stop_patience,
+                target_kl=a.target_kl,
+                kl_fraction=a.early_stop_kl_fraction,
+                max_clip_fraction=a.early_stop_max_clip_fraction,
+            )
+            if stop:
+                early_stop_reason = "smart_stagnation"
+                early_stop_epoch = ep
+                print(
+                    "PPO_V14_SMART_EARLY_STOP",
+                    json.dumps(
+                        {
+                            "epoch": ep,
+                            "reason": early_stop_reason,
+                            **stop_detail,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                break
 
     report = {
         "schema": "sts1-armg-ppo-v14-sharded-train",
@@ -609,6 +709,15 @@ def main() -> int:
         "initial_critic_explained_variance": initial_ev,
         "best_critic_epoch": best_critic_epoch,
         "best_critic_explained_variance": best_critic_ev,
+        "smart_early_stop_enabled": a.smart_early_stop,
+        "early_stop_min_epochs": a.early_stop_min_epochs,
+        "early_stop_patience": a.early_stop_patience,
+        "early_stop_kl_fraction": a.early_stop_kl_fraction,
+        "early_stop_max_clip_fraction": a.early_stop_max_clip_fraction,
+        "epochs_requested": a.epochs,
+        "epochs_completed": len(history),
+        "early_stop_reason": early_stop_reason,
+        "early_stop_epoch": early_stop_epoch,
         "history": history,
     }
     a.output.with_suffix(".json").write_text(

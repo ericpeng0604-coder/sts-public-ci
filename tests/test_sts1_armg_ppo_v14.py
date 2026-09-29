@@ -91,6 +91,96 @@ def test_poisoned_persistent_critic_requests_reset():
 
 
 
+
+
+def _early_epoch(
+    epoch: int,
+    *,
+    improved: bool = False,
+    approx_kl: float = 0.0005,
+    clip_fraction: float = 0.01,
+):
+    return {
+        "epoch": epoch,
+        "critic_checkpoint_improved": improved,
+        "approx_kl": approx_kl,
+        "clip_fraction": clip_fraction,
+    }
+
+
+def test_smart_early_stop_never_stops_before_minimum_epoch():
+    history = [_early_epoch(i) for i in range(1, 4)]
+    stop, detail = train.smart_early_stop_decision(
+        history,
+        min_epochs=4,
+        patience=2,
+        target_kl=0.008,
+        kl_fraction=0.25,
+        max_clip_fraction=0.05,
+    )
+    assert stop is False
+    assert detail["reason"] == "minimum_epochs_not_reached"
+
+
+def test_smart_early_stop_stops_after_two_stagnant_low_motion_epochs():
+    history = [
+        _early_epoch(1, improved=True),
+        _early_epoch(2, improved=True),
+        _early_epoch(3),
+        _early_epoch(4),
+    ]
+    stop, detail = train.smart_early_stop_decision(
+        history,
+        min_epochs=4,
+        patience=2,
+        target_kl=0.008,
+        kl_fraction=0.25,
+        max_clip_fraction=0.05,
+    )
+    assert stop is True
+    assert detail["critic_stagnant"] is True
+    assert detail["low_policy_motion"] is True
+    assert detail["window_epochs"] == [3, 4]
+
+
+def test_smart_early_stop_keeps_good_critic_progress_running():
+    history = [
+        _early_epoch(1),
+        _early_epoch(2),
+        _early_epoch(3),
+        _early_epoch(4, improved=True),
+    ]
+    stop, detail = train.smart_early_stop_decision(
+        history,
+        min_epochs=4,
+        patience=2,
+        target_kl=0.008,
+        kl_fraction=0.25,
+        max_clip_fraction=0.05,
+    )
+    assert stop is False
+    assert detail["critic_stagnant"] is False
+
+
+def test_smart_early_stop_keeps_large_policy_updates_running():
+    history = [
+        _early_epoch(1),
+        _early_epoch(2),
+        _early_epoch(3, approx_kl=0.003),
+        _early_epoch(4, clip_fraction=0.06),
+    ]
+    stop, detail = train.smart_early_stop_decision(
+        history,
+        min_epochs=4,
+        patience=2,
+        target_kl=0.008,
+        kl_fraction=0.25,
+        max_clip_fraction=0.05,
+    )
+    assert stop is False
+    assert detail["low_policy_motion"] is False
+
+
 def run(seed: int, floor: int, *, win: bool = False, illegal: int = 0):
     return {
         "seed": seed,

@@ -33,6 +33,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            pyproject.toml
+            .github/workflows/sts1-armg-ppo-v14-auto-loop.yml
 
       - name: Load v1.4 control
         run: |
@@ -44,14 +48,32 @@ jobs:
           echo "PPO_TEMPERATURE=$temperature" >> "$GITHUB_ENV"
           echo "PPO_REWARD_MODE=$reward_mode" >> "$GITHUB_ENV"
 
+      - name: Restore pinned simulator cache
+        id: sts1-baseline-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            external/sts-rl-agent/source
+            external/sts_lightspeed/source
+          key: sts1-baseline-v0-${{ runner.os }}-py312-${{ hashFiles('external/sts-rl-agent/UPSTREAM.json', 'external/sts_lightspeed/UPSTREAM.json', 'scripts/sts1/hydrate_jialeiv_baseline_v0.py', 'scripts/sts1/build_probe.py') }}
+
       - name: Install and hydrate
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -e . numpy torch==2.11.0
-          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          if [ "${{ steps.sts1-baseline-cache.outputs.cache-hit }}" != "true" ]; then
+            python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+            python scripts/sts1/build_probe.py
+            echo "STS1_BASELINE_CACHE_MISS_BUILT"
+          else
+            echo "STS1_BASELINE_CACHE_HIT"
+          fi
+          agent_head="$(python -c 'import json; print(json.load(open("external/sts-rl-agent/UPSTREAM.json"))["commit"])')"
+          test "$(git -C external/sts-rl-agent/source rev-parse HEAD)" = "$agent_head"
           test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
-          python scripts/sts1/build_probe.py
+          test -d external/sts_lightspeed/source/build-probe
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe" python -c 'import slaythespire; print("STS1_BASELINE_CACHE_RUNTIME_PASS")'
           root=.cache/sts1-armg
           mkdir -p "$root/sim/sts_lightspeed"
           ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
@@ -115,6 +137,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            pyproject.toml
+            .github/workflows/sts1-armg-ppo-v14-auto-loop.yml
 
       - name: Load v1.4 control
         run: |
@@ -130,14 +156,32 @@ jobs:
           echo "PPO_ANCHOR=$anchor_coef" >> "$GITHUB_ENV"
           echo "PPO_MCTS_SIMS=$mcts_sims" >> "$GITHUB_ENV"
 
+      - name: Restore pinned simulator cache
+        id: sts1-baseline-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            external/sts-rl-agent/source
+            external/sts_lightspeed/source
+          key: sts1-baseline-v0-${{ runner.os }}-py312-${{ hashFiles('external/sts-rl-agent/UPSTREAM.json', 'external/sts_lightspeed/UPSTREAM.json', 'scripts/sts1/hydrate_jialeiv_baseline_v0.py', 'scripts/sts1/build_probe.py') }}
+
       - name: Install and hydrate
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -e . numpy torch==2.11.0
-          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          if [ "${{ steps.sts1-baseline-cache.outputs.cache-hit }}" != "true" ]; then
+            python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+            python scripts/sts1/build_probe.py
+            echo "STS1_BASELINE_CACHE_MISS_BUILT"
+          else
+            echo "STS1_BASELINE_CACHE_HIT"
+          fi
+          agent_head="$(python -c 'import json; print(json.load(open("external/sts-rl-agent/UPSTREAM.json"))["commit"])')"
+          test "$(git -C external/sts-rl-agent/source rev-parse HEAD)" = "$agent_head"
           test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
-          python scripts/sts1/build_probe.py
+          test -d external/sts_lightspeed/source/build-probe
+          PYTHONPATH="$PWD/external/sts_lightspeed/source/build-probe" python -c 'import slaythespire; print("STS1_BASELINE_CACHE_RUNTIME_PASS")'
           root=.cache/sts1-armg
           mkdir -p "$root/sim/sts_lightspeed"
           ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
@@ -229,7 +273,7 @@ jobs:
           if [ -f "$STATE_DIR/training-critic.pt" ]; then
             extra+=(--base-critic "$STATE_DIR/training-critic.pt")
           fi
-          python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py             --shards evidence/sts1/ppo-v14-preprocessed             --replay-shards evidence/sts1/ppo-v14-replay             --elite-replay "$STATE_DIR/elite-replay.npz"             --armg-root .cache/sts1-armg             --base-weight "$CURRENT_WEIGHT"             --output evidence/sts1/ppo-v14-candidate/armg_ppo_v14_candidate.pt             --critic-output evidence/sts1/ppo-v14-candidate/training-critic.pt             --checkpoint-id "$CHECKPOINT_ID"             --epochs "$PPO_EPOCHS"             --lr "$PPO_LR"             --clip "$PPO_CLIP"             --target-kl "$PPO_TARGET_KL"             --entropy "$PPO_ENTROPY"             --anchor-coef "$PPO_ANCHOR"             --behavior-temperature "$PPO_TEMPERATURE"             --bc-coef 0.01             --bc-max-decisions 1024             --threads 4             "${extra[@]}"
+          python scripts/sts1/sts1_armg_ppo_train_v14_sharded.py             --shards evidence/sts1/ppo-v14-preprocessed             --replay-shards evidence/sts1/ppo-v14-replay             --elite-replay "$STATE_DIR/elite-replay.npz"             --armg-root .cache/sts1-armg             --base-weight "$CURRENT_WEIGHT"             --output evidence/sts1/ppo-v14-candidate/armg_ppo_v14_candidate.pt             --critic-output evidence/sts1/ppo-v14-candidate/training-critic.pt             --checkpoint-id "$CHECKPOINT_ID"             --epochs "$PPO_EPOCHS"             --lr "$PPO_LR"             --clip "$PPO_CLIP"             --target-kl "$PPO_TARGET_KL"             --entropy "$PPO_ENTROPY"             --anchor-coef "$PPO_ANCHOR"             --behavior-temperature "$PPO_TEMPERATURE"             --bc-coef 0.01             --bc-max-decisions 1024             --threads 4             --smart-early-stop             "${extra[@]}"
 
       - name: Two-level Dev and Final Gate
         run: |

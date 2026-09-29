@@ -2,6 +2,11 @@ name: STS1 ArmG PPO v1.5 Population Curriculum
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - gpt/sts1-ppo-v15-population-curriculum-20260929
+    paths:
+      - control/sts1-v15-run.trigger
 
 permissions:
   contents: write
@@ -294,7 +299,7 @@ jobs:
             --mcts-sims "$PPO_MCTS_SIMS" \
             --workers 4
 
-      - name: Update durable v1.4 state
+      - name: Update durable v1.5 state
         run: |
           python scripts/sts1/sts1_armg_ppo_v14_state.py             --state-dir "$STATE_DIR"             --candidate "$WINNER_WEIGHT"             --candidate-critic "$WINNER_CRITIC"             --gate-summary evidence/sts1/ppo-v15-gate/gate-summary.json             --run-id "$GITHUB_RUN_ID"
 
@@ -303,12 +308,12 @@ jobs:
         with:
           name: sts1-armg-ppo-v15-loop-state
           path: |
-            ${{ runner.temp }}/ppo-v14-state/state.json
-            ${{ runner.temp }}/ppo-v14-state/offline-champion.pt
-            ${{ runner.temp }}/ppo-v14-state/training-critic.pt
-            ${{ runner.temp }}/ppo-v14-state/pending-real-game.pt
-            ${{ runner.temp }}/ppo-v14-state/ppo-replay.npz
-            ${{ runner.temp }}/ppo-v14-state/elite-replay.npz
+            ${{ runner.temp }}/ppo-v15-state/state.json
+            ${{ runner.temp }}/ppo-v15-state/offline-champion.pt
+            ${{ runner.temp }}/ppo-v15-state/training-critic.pt
+            ${{ runner.temp }}/ppo-v15-state/pending-real-game.pt
+            ${{ runner.temp }}/ppo-v15-state/ppo-replay.npz
+            ${{ runner.temp }}/ppo-v15-state/elite-replay.npz
           if-no-files-found: error
           retention-days: 90
 

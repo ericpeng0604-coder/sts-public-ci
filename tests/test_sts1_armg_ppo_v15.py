@@ -187,3 +187,73 @@ def test_v15_adapt_heals_missing_teacher_parallel_control_keys():
         )
     )
     assert report["production_champion_changed"] is False
+
+
+
+EVAL_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v15_eval.py"
+EVAL_SPEC = importlib.util.spec_from_file_location("sts1_armg_ppo_v15_eval_test", EVAL_SCRIPT)
+assert EVAL_SPEC and EVAL_SPEC.loader
+eval_mod = importlib.util.module_from_spec(EVAL_SPEC)
+sys.modules[EVAL_SPEC.name] = eval_mod
+EVAL_SPEC.loader.exec_module(eval_mod)
+
+
+def _complete_eval_run(seed: int):
+    return {
+        "seed": seed,
+        "result": "PASS_SIMULATOR_COMPLETE_RUN",
+        "outcome": "defeat",
+        "final_floor": 20,
+        "illegal_action_count": 0,
+        "crash_count": 0,
+        "timeout_count": 0,
+        "remote_error_count": 0,
+    }
+
+
+def test_parent_evidence_validation_is_identity_strict():
+    seeds = list(range(1, 51))
+    payload = {
+        "schema_version": eval_mod.PARENT_SCHEMA,
+        "parent_weight_sha256": "abc",
+        "simulator_id": "sim",
+        "mcts_sims": 2000,
+        "all_dev_seeds": seeds,
+        "evaluated_seeds": seeds[:30],
+        "runs": [_complete_eval_run(seed) for seed in seeds[:30]],
+    }
+    ordered = eval_mod._validate_parent_evidence(
+        payload,
+        dev_seeds=seeds,
+        mcts_sims=2000,
+        simulator_id="sim",
+    )
+    assert [row["seed"] for row in ordered] == seeds[:30]
+
+    import pytest
+    with pytest.raises(RuntimeError, match="MCTS mismatch"):
+        eval_mod._validate_parent_evidence(
+            payload,
+            dev_seeds=seeds,
+            mcts_sims=50000,
+            simulator_id="sim",
+        )
+    with pytest.raises(RuntimeError, match="simulator mismatch"):
+        eval_mod._validate_parent_evidence(
+            payload,
+            dev_seeds=seeds,
+            mcts_sims=2000,
+            simulator_id="other",
+        )
+
+
+def test_tournament_evidence_seed_map_fails_closed():
+    import pytest
+    seeds = list(range(1, 31))
+    rows = [_complete_eval_run(seed) for seed in seeds]
+    mapped = mod._runs_by_seed(rows, seeds)
+    assert len(mapped) == 30
+
+    duplicate = rows + [dict(rows[0])]
+    with pytest.raises(RuntimeError, match="invalid/duplicate"):
+        mod._runs_by_seed(duplicate, seeds)

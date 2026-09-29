@@ -440,7 +440,7 @@ jobs:
           assert s["result"] == "PASS_STRATEGY_LOOP_COMPLETE"
           assert s["combat_training_enabled"] is False
           assert s["production_champion_replaced"] is False
-          assert s["data_efficiency_version"] == 3
+          assert s["data_efficiency_version"] == 4
           assert s["parallel_cpu_version"] == 1
           assert s["collection_workers"] == int(__import__("os").environ["STRATEGY_COLLECTION_WORKERS"])
           assert s["combat_policy"] == f"mcts_{int(__import__('os').environ['STRATEGY_MCTS_SIMS'])}"

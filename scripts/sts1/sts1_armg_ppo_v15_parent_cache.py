@@ -52,10 +52,22 @@ def _safe_complete(row: dict[str, Any]) -> bool:
     )
 
 
+def _read_seed_pin(path: Path) -> list[int]:
+    seeds = [
+        int(line.strip())
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if len(seeds) != 50 or len(set(seeds)) != 50:
+        raise RuntimeError("dev seed pin must contain exactly 50 unique seeds")
+    return seeds
+
+
 def materialize_cached_parent(
     *,
     state_path: Path,
     parent_weight: Path,
+    dev_seed_file: Path,
     output_dir: Path,
     mcts_sims: int,
     sim_head: str,
@@ -73,6 +85,9 @@ def materialize_cached_parent(
     except (TypeError, ValueError):
         return False
     if len(seeds) != 50 or len(set(seeds)) != 50:
+        return False
+    pinned_seeds = _read_seed_pin(dev_seed_file)
+    if seeds != pinned_seeds:
         return False
 
     expected_simulator = simulator_id(sim_head)
@@ -128,6 +143,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--state", type=Path, required=True)
     p.add_argument("--parent-weight", type=Path, required=True)
+    p.add_argument("--dev-seed-file", type=Path, required=True)
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--mcts-sims", type=int, default=2000)
     p.add_argument("--sim-head", required=True)
@@ -136,6 +152,7 @@ def main() -> int:
     hit = materialize_cached_parent(
         state_path=args.state,
         parent_weight=args.parent_weight,
+        dev_seed_file=args.dev_seed_file,
         output_dir=args.output_dir,
         mcts_sims=args.mcts_sims,
         sim_head=args.sim_head,

@@ -13,10 +13,30 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
-from roguelike_ai.sts1_phase3.human_expert import act_bucket, iter_run_files
-
-
 SCHEMA_VERSION = "sts1-human-path-prior-v1"
+
+
+def act_bucket(floor: int) -> int:
+    floor = int(floor)
+    if floor <= 16:
+        return 1
+    if floor <= 33:
+        return 2
+    if floor <= 50:
+        return 3
+    return 4
+
+
+def iter_run_files(data_root: Path) -> list[Path]:
+    wanted = (
+        data_root / "runs" / "panacea-ironclad-sample",
+        data_root / "runs" / "200-rotating-sample" / "IRONCLAD",
+    )
+    result: list[Path] = []
+    for directory in wanted:
+        if directory.is_dir():
+            result.extend(sorted(directory.glob("*.run")))
+    return result
 ROOMS = ("MONSTER", "ELITE", "REST", "SHOP", "EVENT", "TREASURE", "BOSS")
 ROOM_ALIASES = {
     "M": "MONSTER",

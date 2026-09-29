@@ -79,27 +79,32 @@ def _fresh_seeds(
     return tuple(result)
 
 
-def _candidate_strengths(current: float) -> tuple[float, ...]:
+def _candidate_strengths(
+    current: float,
+    *,
+    tried: Sequence[float] = (),
+) -> tuple[float, ...]:
+    """Return up to three untried strengths; never repeat a failed sweep."""
     current = float(current)
     if current < 0:
         raise RuntimeError("expert strength cannot be negative")
-    if current == 0.0:
+    tried_set = {round(float(value), 6) for value in tried}
+    grid = [0.05, 0.10, 0.20, 0.25, 0.35, 0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00]
+    if current == 0.0 and not tried_set:
         return (0.25, 0.50, 0.75)
-    raw = (
-        max(0.05, current * 0.70),
-        min(2.0, current * 1.25),
-        min(2.0, current * 1.60),
+    around = (
+        max(0.05, current * 0.70) if current else 0.10,
+        min(2.0, current * 1.25) if current else 1.00,
+        min(2.0, current * 1.60) if current else 1.25,
     )
+    pool = [round(float(value), 6) for value in (*around, *grid)]
     unique: list[float] = []
-    for value in raw:
-        rounded = round(float(value), 6)
-        if abs(rounded - current) < 1e-9:
+    for value in pool:
+        if abs(value - current) < 1e-9 or value in tried_set or value in unique:
             continue
-        if rounded not in unique:
-            unique.append(rounded)
-    if not unique:
-        unique.append(min(2.0, current + 0.10))
-    return tuple(unique)
+        unique.append(value)
+    unique.sort(key=lambda value: (abs(value - current), value))
+    return tuple(unique[:3])
 
 
 def _load_or_init_state(state_dir: Path) -> dict[str, Any]:
@@ -117,6 +122,8 @@ def _load_or_init_state(state_dir: Path) -> dict[str, Any]:
         "rejected_rounds": 0,
         "current_strength": 0.0,
         "used_evaluation_seeds": [],
+        "tried_strengths": [],
+        "search_exhausted": False,
         "last_decision": None,
     }
     _write_json(path, payload)
@@ -326,8 +333,47 @@ def main() -> int:
         )
         _write_json(round_dir / "eval-current-dev30.json", current_dev)
 
+        strengths = _candidate_strengths(
+            current_strength,
+            tried=state.get("tried_strengths", []),
+        )
+        if not strengths:
+            state["search_exhausted"] = True
+            state["last_decision"] = {
+                "round": round_no,
+                "decision": "PAUSE_SEARCH_EXHAUSTED",
+                "candidate_strength": None,
+                "dev": "SKIPPED",
+                "hidden": "SKIPPED",
+                "fresh": "SKIPPED",
+            }
+            _write_json(args.state_dir / "human-expert-state.json", state)
+            report = {
+                "schema_version": REPORT_SCHEMA_VERSION,
+                "round": round_no,
+                "generation_before": int(state.get("generation", 0)),
+                "generation_after": int(state.get("generation", 0)),
+                "dataset": dataset_report,
+                "current_strength_before": current_strength,
+                "candidate_strengths": [],
+                "selected_strength": None,
+                "dev_gate": {"status": "SKIPPED", "reasons": ["strength_search_exhausted"]},
+                "hidden_gate": {"status": "SKIPPED", "reasons": ["strength_search_exhausted"]},
+                "fresh_gate": {"status": "SKIPPED", "reasons": ["strength_search_exhausted"]},
+                "promotion": {"decision": "PAUSE_SEARCH_EXHAUSTED"},
+                "production_champion_replaced": False,
+                "combat_training_enabled": False,
+                "combat_policy": f"mcts_{args.combat_mcts_sims}",
+                "hidden_seed_count": 0,
+                "fresh_seed_count": 0,
+            }
+            _write_json(round_dir / "human-expert-report.json", report)
+            _write_json(args.output_dir / "latest-report.json", report)
+            reports.append(report)
+            break
+
         candidates: list[dict[str, Any]] = []
-        for strength in _candidate_strengths(current_strength):
+        for strength in strengths:
             candidate_eval = _evaluate_policy(
                 seeds=dev30,
                 module_dir=args.module_dir,
@@ -426,14 +472,25 @@ def main() -> int:
                 + list(fresh_seeds)
             )
         )
+        tried = list(state.get("tried_strengths", []))
+        tried.extend(float(row["strength"]) for row in candidates)
         if promoted:
             shutil.copy2(candidate_prior, args.state_dir / "current-expert-prior.json")
             state["generation"] = int(state.get("generation", 0)) + 1
             state["accepted_rounds"] = int(state.get("accepted_rounds", 0)) + 1
             state["current_strength"] = candidate_strength
             state["current_corpus_sha256"] = dataset_report["corpus_sha256"]
+            state["tried_strengths"] = []
+            state["search_exhausted"] = False
         else:
             state["rejected_rounds"] = int(state.get("rejected_rounds", 0)) + 1
+            state["tried_strengths"] = list(dict.fromkeys(round(v, 6) for v in tried))
+            state["search_exhausted"] = not bool(
+                _candidate_strengths(
+                    current_strength,
+                    tried=state["tried_strengths"],
+                )
+            )
 
         state["last_decision"] = {
             "round": round_no,

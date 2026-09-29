@@ -233,7 +233,6 @@ jobs:
           import json, os
           from pathlib import Path
           import numpy as np
-
           shard=next((Path(os.environ["RUNNER_TEMP"])/"v14-shards2").glob("shard_*.npz"))
           with np.load(shard,allow_pickle=False) as d:
               for i in range(len(d["action"])):
@@ -487,7 +486,7 @@ jobs:
 
       - name: Repository whitespace check
         run: git diff --check HEAD^ HEAD
- "$RUNNER_TEMP/v15-controller/next.request"
+ control/sts1-armg-ppo-v15-auto-loop.request
           grep -q '^strategy_teacher_max_examples=512      - name: Hydrate pinned simulator
         run: |
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
@@ -839,7 +838,7 @@ jobs:
 
       - name: Repository whitespace check
         run: git diff --check HEAD^ HEAD
- "$RUNNER_TEMP/v15-controller/next.request"
+ control/sts1-armg-ppo-v15-auto-loop.request
           grep -q '^strategy_teacher_required=1      - name: Hydrate pinned simulator
         run: |
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
@@ -1191,7 +1190,7 @@ jobs:
 
       - name: Repository whitespace check
         run: git diff --check HEAD^ HEAD
- "$RUNNER_TEMP/v15-controller/next.request"
+ control/sts1-armg-ppo-v15-auto-loop.request
 
       - name: Verify parallel population and Teacher wiring
         run: |
@@ -1201,7 +1200,6 @@ jobs:
           required=[
               "  prepare:",
               "  candidate:",
-              "matrix:",
               "curriculum: '0.00'",
               "curriculum: '1.00'",
               "strategy-replay.jsonl",

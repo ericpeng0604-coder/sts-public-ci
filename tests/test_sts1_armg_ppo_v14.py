@@ -13,6 +13,7 @@ ROOT = Path(__file__).parents[1]
 GATE_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v14_gate.py"
 STATE_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v14_state.py"
 TRAIN_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_train_v14_sharded.py"
+ROLLOUT_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_rollout_v14.py"
 
 SPEC = importlib.util.spec_from_file_location("sts1_armg_ppo_v14_gate", GATE_SCRIPT)
 assert SPEC and SPEC.loader
@@ -29,6 +30,17 @@ assert TRAIN_SPEC and TRAIN_SPEC.loader
 train = importlib.util.module_from_spec(TRAIN_SPEC)
 sys.modules[TRAIN_SPEC.name] = train
 TRAIN_SPEC.loader.exec_module(train)
+
+
+
+ROLLOUT_SPEC = importlib.util.spec_from_file_location(
+    "sts1_armg_ppo_rollout_v14_test",
+    ROLLOUT_SCRIPT,
+)
+assert ROLLOUT_SPEC and ROLLOUT_SPEC.loader
+rollout = importlib.util.module_from_spec(ROLLOUT_SPEC)
+sys.modules[ROLLOUT_SPEC.name] = rollout
+ROLLOUT_SPEC.loader.exec_module(rollout)
 
 
 def test_gae_targets_are_deterministic_and_episode_bounded():
@@ -420,3 +432,81 @@ def test_parent_hold_preserves_both_replay_archives(tmp_path: Path):
 
     assert (state_dir / "ppo-replay.npz").read_bytes() == b"same-parent-replay"
     assert (state_dir / "elite-replay.npz").read_bytes() == b"elite"
+
+
+
+def test_training_seed_refill_replaces_blocked_episode_without_reducing_games():
+    seeds = iter([101, 102, 103, 104])
+
+    def draw_seed():
+        return next(seeds)
+
+    calls = []
+
+    def run_batch(batch_seeds, attempt_index):
+        calls.append((list(batch_seeds), attempt_index))
+        out = []
+        for seed in batch_seeds:
+            if seed == 101:
+                out.append(
+                    {
+                        "accepted": False,
+                        "seed": seed,
+                        "rejection": {
+                            "result": "BLOCKED_SIMULATOR",
+                            "error": "battle step bound reached: 800",
+                            "timeout_count": 1,
+                            "crash_count": 1,
+                        },
+                    }
+                )
+            else:
+                out.append(
+                    {
+                        "accepted": True,
+                        "seed": seed,
+                        "rows": [{"dummy": True}],
+                    }
+                )
+        return out
+
+    games, rejected = rollout._fill_training_games(
+        target_games=3,
+        max_rejections=2,
+        draw_seed=draw_seed,
+        run_batch=run_batch,
+    )
+
+    assert [game["seed"] for game in games] == [102, 103, 104]
+    assert [row["seed"] for row in rejected] == [101]
+    assert calls == [([101, 102, 103], 0), ([104], 3)]
+
+
+def test_training_seed_refill_fails_when_rejection_budget_is_exceeded():
+    import pytest
+
+    seeds = iter([201, 202])
+
+    def draw_seed():
+        return next(seeds)
+
+    def run_batch(batch_seeds, attempt_index):
+        return [
+            {
+                "accepted": False,
+                "seed": seed,
+                "rejection": {
+                    "result": "BLOCKED_SIMULATOR",
+                    "error": "blocked",
+                },
+            }
+            for seed in batch_seeds
+        ]
+
+    with pytest.raises(RuntimeError, match="rejection budget exceeded"):
+        rollout._fill_training_games(
+            target_games=1,
+            max_rejections=0,
+            draw_seed=draw_seed,
+            run_batch=run_batch,
+        )

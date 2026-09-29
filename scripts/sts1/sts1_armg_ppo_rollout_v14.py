@@ -81,7 +81,22 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
         training_seeds=[seed],
     )
     if result.get("result") != "PASS_SIMULATOR_COMPLETE_RUN":
-        raise RuntimeError(f"rollout seed {seed} incomplete: {result}")
+        return {
+            "accepted": False,
+            "seed": seed,
+            "checkpoint_id": checkpoint_id,
+            "reward_mode": reward_mode,
+            "behavior_temperature": float(temperature),
+            "rejection": {
+                "result": result.get("result"),
+                "error": result.get("error"),
+                "final_floor": result.get("final_floor"),
+                "illegal_action_count": int(result.get("illegal_action_count", 0) or 0),
+                "timeout_count": int(result.get("timeout_count", 0) or 0),
+                "crash_count": int(result.get("crash_count", 0) or 0),
+                "remote_error_count": int(result.get("remote_error_count", 0) or 0),
+            },
+        }
 
     events = [json.loads(line) for line in evidence.read_text().splitlines() if line.strip()]
     decisions = [
@@ -160,6 +175,7 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
         or 0
     )
     return {
+        "accepted": True,
         "seed": seed,
         "victory": victory,
         "final_floor": final_floor,
@@ -168,6 +184,15 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
         "reward_mode": reward_mode,
         "behavior_temperature": float(temperature),
     }
+
+
+def _next_training_seed(rng: random.Random, seen: set[int]) -> int:
+    """Draw one deterministic training-only seed not used by any held-out set."""
+    while True:
+        seed = rng.randrange(1, 2**31 - 1)
+        if seed not in seen:
+            seen.add(seed)
+            return seed
 
 
 def main() -> None:
@@ -180,12 +205,15 @@ def main() -> None:
     parser.add_argument("--checkpoint-id", required=True)
     parser.add_argument("--worker", type=int, default=0)
     parser.add_argument("--parallel-games", type=int, default=2)
+    parser.add_argument("--max-training-seed-rejections", type=int, default=8)
     parser.add_argument("--reward-mode", choices=("legacy", "v14_dense"), default="v14_dense")
     parser.add_argument("--final-seed-file", type=Path)
     args = parser.parse_args()
 
     if args.parallel_games < 1 or args.parallel_games > 4:
         raise RuntimeError("parallel-games must be within 1..4")
+    if args.max_training_seed_rejections < 0 or args.max_training_seed_rejections > 32:
+        raise RuntimeError("max-training-seed-rejections must be within 0..32")
 
     formal = {
         int(x)
@@ -202,31 +230,61 @@ def main() -> None:
     if formal & final:
         raise RuntimeError("dev/final seed sets must be disjoint")
     rng = random.Random(args.seed_start)
-    seeds: list[int] = []
     seen = set(formal) | set(final)
-    while len(seeds) < args.games:
-        seed = rng.randrange(1, 2**31 - 1)
-        if seed not in seen:
-            seen.add(seed)
-            seeds.append(seed)
+    games: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    attempt_index = 0
 
-    tasks = [
-        (
-            str(args.module_dir),
-            str(args.armg_root),
-            str(args.weight),
-            seed,
-            float(args.temperature),
-            args.checkpoint_id,
-            int(args.worker),
-            int(args.seed_start + args.worker * 1000003 + index),
-            args.reward_mode,
+    with ProcessPoolExecutor(max_workers=min(args.parallel_games, args.games)) as pool:
+        while len(games) < args.games:
+            needed = args.games - len(games)
+            seeds = [_next_training_seed(rng, seen) for _ in range(needed)]
+            tasks = [
+                (
+                    str(args.module_dir),
+                    str(args.armg_root),
+                    str(args.weight),
+                    seed,
+                    float(args.temperature),
+                    args.checkpoint_id,
+                    int(args.worker),
+                    int(
+                        args.seed_start
+                        + args.worker * 1000003
+                        + attempt_index
+                        + index
+                    ),
+                    args.reward_mode,
+                )
+                for index, seed in enumerate(seeds)
+            ]
+            attempt_index += len(tasks)
+            batch = list(pool.map(_collect_one, tasks))
+            for game in batch:
+                if bool(game.get("accepted", False)):
+                    games.append(game)
+                    continue
+                rejection = {
+                    "seed": int(game["seed"]),
+                    **dict(game.get("rejection") or {}),
+                }
+                rejected.append(rejection)
+                print(
+                    "PPO_V15_TRAINING_SEED_REJECT",
+                    json.dumps(rejection, sort_keys=True),
+                    flush=True,
+                )
+            if len(rejected) > args.max_training_seed_rejections:
+                raise RuntimeError(
+                    "training seed rejection budget exceeded: "
+                    f"{len(rejected)} > {args.max_training_seed_rejections}; "
+                    f"rejections={rejected}"
+                )
+
+    if len(games) != args.games:
+        raise RuntimeError(
+            f"training rollout completeness mismatch: {len(games)} != {args.games}"
         )
-        for index, seed in enumerate(seeds)
-    ]
-
-    with ProcessPoolExecutor(max_workers=min(args.parallel_games, len(tasks))) as pool:
-        games = list(pool.map(_collect_one, tasks))
 
     args.out.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -269,7 +327,9 @@ def main() -> None:
         "ARMG_PPO_V11_ROLLOUT",
         json.dumps(
             {
-                "games": len(seeds),
+                "games": len(games),
+                "rejected_training_seeds": len(rejected),
+                "rejected_seed_ids": [row["seed"] for row in rejected],
                 "wins": wins,
                 "decisions": len(rows),
                 "checkpoint_id": args.checkpoint_id,

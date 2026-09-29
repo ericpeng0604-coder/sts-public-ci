@@ -17,4 +17,4 @@ report_issue=15
 strategy_profile=stable
 stagnation_seen=0
 ppo_version=1.5
-reason=v15_population_curriculum_auto_loop
+reason=v15_population_curriculum_auto_loop_ready

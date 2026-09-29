@@ -13,6 +13,7 @@ on:
       - scripts/sts1/sts1_armg_ppo_v14_gate.py
       - scripts/sts1/sts1_armg_ppo_v15_tournament.py
       - scripts/sts1/sts1_armg_ppo_v15_eval.py
+      - scripts/sts1/sts1_armg_ppo_v15_parent_cache.py
       - scripts/sts1/sts1_armg_ppo_v14_state.py
       - scripts/sts1/sts1_armg_ppo_v15_adapt.py
       - control/sts1-armg-ppo-v15-auto-loop.request
@@ -59,6 +60,7 @@ jobs:
             scripts/sts1/sts1_armg_ppo_v14_gate.py \
             scripts/sts1/sts1_armg_ppo_v15_tournament.py \
             scripts/sts1/sts1_armg_ppo_v15_eval.py \
+            scripts/sts1/sts1_armg_ppo_v15_parent_cache.py \
             scripts/sts1/sts1_armg_ppo_v14_state.py \
             scripts/sts1/sts1_armg_ppo_v15_adapt.py
           pytest -q \

@@ -51,6 +51,14 @@ def main() -> int:
     if not args.candidate.is_file() or not args.candidate_critic.is_file():
         raise RuntimeError("candidate actor/critic missing")
 
+    candidate_sha = sha256(args.candidate)
+    gate_candidate_sha = gate.get("candidate_weight_sha256")
+    if gate_candidate_sha is not None and gate_candidate_sha != candidate_sha:
+        raise RuntimeError(
+            "selected Candidate SHA mismatch: "
+            f"gate={gate_candidate_sha} state_input={candidate_sha}"
+        )
+
     adopt_parent = gate["decision"] == "ADOPT_PARENT"
     ready_real = gate["final_readiness"] == "READY_FOR_REAL_GAME"
 
@@ -94,7 +102,7 @@ def main() -> int:
             # Keep this legacy key aligned for old integrity checks.
             "offline_champion_sha256": sha256(parent_path),
             "training_critic_sha256": sha256(critic_path),
-            "last_candidate_sha256": sha256(args.candidate),
+            "last_candidate_sha256": candidate_sha,
             "last_decision": gate["decision"],
             "last_dev_gate": gate["dev_gate"],
             "last_final_gate_30": gate["final_gate_30"],

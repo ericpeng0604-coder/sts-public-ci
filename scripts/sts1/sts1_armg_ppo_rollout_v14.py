@@ -195,6 +195,51 @@ def _next_training_seed(rng: random.Random, seen: set[int]) -> int:
             return seed
 
 
+def _fill_training_games(
+    *,
+    target_games: int,
+    max_rejections: int,
+    draw_seed: Any,
+    run_batch: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Collect exactly target_games complete training episodes with bounded refill."""
+    games: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    attempt_index = 0
+    while len(games) < target_games:
+        needed = target_games - len(games)
+        seeds = [int(draw_seed()) for _ in range(needed)]
+        batch = list(run_batch(seeds, attempt_index))
+        if len(batch) != len(seeds):
+            raise RuntimeError("training batch result cardinality mismatch")
+        attempt_index += len(seeds)
+        for game in batch:
+            if bool(game.get("accepted", False)):
+                games.append(game)
+                continue
+            rejection = {
+                "seed": int(game["seed"]),
+                **dict(game.get("rejection") or {}),
+            }
+            rejected.append(rejection)
+            print(
+                "PPO_V15_TRAINING_SEED_REJECT",
+                json.dumps(rejection, sort_keys=True),
+                flush=True,
+            )
+        if len(rejected) > max_rejections:
+            raise RuntimeError(
+                "training seed rejection budget exceeded: "
+                f"{len(rejected)} > {max_rejections}; "
+                f"rejections={rejected}"
+            )
+    if len(games) != target_games:
+        raise RuntimeError(
+            f"training rollout completeness mismatch: {len(games)} != {target_games}"
+        )
+    return games, rejected
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     for name in ("module-dir", "armg-root", "weight", "out", "formal-seed-file"):
@@ -231,14 +276,11 @@ def main() -> None:
         raise RuntimeError("dev/final seed sets must be disjoint")
     rng = random.Random(args.seed_start)
     seen = set(formal) | set(final)
-    games: list[dict[str, Any]] = []
-    rejected: list[dict[str, Any]] = []
-    attempt_index = 0
-
     with ProcessPoolExecutor(max_workers=min(args.parallel_games, args.games)) as pool:
-        while len(games) < args.games:
-            needed = args.games - len(games)
-            seeds = [_next_training_seed(rng, seen) for _ in range(needed)]
+        def draw_seed() -> int:
+            return _next_training_seed(rng, seen)
+
+        def run_batch(seeds: list[int], attempt_index: int) -> list[dict[str, Any]]:
             tasks = [
                 (
                     str(args.module_dir),
@@ -258,32 +300,13 @@ def main() -> None:
                 )
                 for index, seed in enumerate(seeds)
             ]
-            attempt_index += len(tasks)
-            batch = list(pool.map(_collect_one, tasks))
-            for game in batch:
-                if bool(game.get("accepted", False)):
-                    games.append(game)
-                    continue
-                rejection = {
-                    "seed": int(game["seed"]),
-                    **dict(game.get("rejection") or {}),
-                }
-                rejected.append(rejection)
-                print(
-                    "PPO_V15_TRAINING_SEED_REJECT",
-                    json.dumps(rejection, sort_keys=True),
-                    flush=True,
-                )
-            if len(rejected) > args.max_training_seed_rejections:
-                raise RuntimeError(
-                    "training seed rejection budget exceeded: "
-                    f"{len(rejected)} > {args.max_training_seed_rejections}; "
-                    f"rejections={rejected}"
-                )
+            return list(pool.map(_collect_one, tasks))
 
-    if len(games) != args.games:
-        raise RuntimeError(
-            f"training rollout completeness mismatch: {len(games)} != {args.games}"
+        games, rejected = _fill_training_games(
+            target_games=args.games,
+            max_rejections=args.max_training_seed_rejections,
+            draw_seed=draw_seed,
+            run_batch=run_batch,
         )
 
     args.out.mkdir(parents=True, exist_ok=True)

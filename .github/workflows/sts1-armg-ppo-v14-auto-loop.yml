@@ -41,6 +41,7 @@ jobs:
       - name: Compile PPO v1.4 loop
         run: |
           python -m py_compile \
+            scripts/sts1/sts1_armg_ppo_v13_auto_gate.py \
             scripts/sts1/sts1_armg_ppo_v14_gate.py \
             scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
             scripts/sts1/sts1_armg_ppo_v14_state.py \
@@ -236,7 +237,7 @@ jobs:
   train-and-gate:
     needs: rollout
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -456,7 +457,20 @@ jobs:
 
       - name: Two-level Dev and Final Gate
         run: |
-          python scripts/sts1/sts1_armg_ppo_v14_gate.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --parent-weight "$CURRENT_WEIGHT"             --baseline-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt             --candidate-weight evidence/sts1/ppo-v14-candidate/armg_ppo_v14_candidate.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt             --state "$STATE_DIR/state.json"             --output-dir evidence/sts1/ppo-v14-gate             --mcts-sims "$PPO_MCTS_SIMS"             --workers 4
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=30s 45m \
+            python scripts/sts1/sts1_armg_ppo_v14_gate.py \
+              --module-dir external/sts_lightspeed/source/build-probe \
+              --armg-root .cache/sts1-armg \
+              --parent-weight "$CURRENT_WEIGHT" \
+              --baseline-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+              --candidate-weight evidence/sts1/ppo-v14-candidate/armg_ppo_v14_candidate.pt \
+              --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+              --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+              --state "$STATE_DIR/state.json" \
+              --output-dir evidence/sts1/ppo-v14-gate \
+              --mcts-sims "$PPO_MCTS_SIMS" \
+              --workers 4
 
       - name: Update durable v1.4 state
         run: |

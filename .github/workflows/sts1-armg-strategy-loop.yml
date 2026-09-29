@@ -444,6 +444,18 @@ jobs:
           assert s["parallel_cpu_version"] == 1
           assert s["collection_workers"] == int(__import__("os").environ["STRATEGY_COLLECTION_WORKERS"])
           assert s["combat_policy"] == f"mcts_{int(__import__('os').environ['STRATEGY_MCTS_SIMS'])}"
+          reports=s.get("reports") or []
+          assert reports, "Strategy v4 must emit at least one round report"
+          latest=reports[-1]
+          pool=latest.get("candidate_pool") or []
+          assert len(pool) == 3, pool
+          assert sum(bool(row.get("selected")) for row in pool) == 1, pool
+          selected=next(row for row in pool if row.get("selected"))
+          assert float(selected["step_scale"]) in {0.25, 0.5, 1.0}
+          assert selected["candidate_strategy_sha256"] == latest["candidate_strategy_sha256"]
+          replay=latest.get("replay") or {}
+          assert 0.0 < float(replay.get("shop_max_fraction", 0.0)) <= 0.25
+          assert float(replay.get("mean_confidence_weight", 0.0)) > 0.0
           assert Path(__import__('os').environ["STRATEGY_STATE_DIR"], "current-strategy.pt").is_file()
           assert Path(__import__('os').environ["STRATEGY_STATE_DIR"], "strategy-state.json").is_file()
           print("PASS_STRATEGY_ONLY_INVARIANTS", s["combat_policy"], s["generation"])
@@ -560,6 +572,10 @@ jobs:
               "COLLECTION_FALLBACK": str(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("fallback_reason") or "none"),
               "COLLECTION_PARALLELISM": round(float(((report.get("dataset") or {}).get("parallel_teacher") or {}).get("observed_parallelism",1.0)),2),
               "COLLECTION_PARITY": ((report.get("dataset") or {}).get("parallel_teacher") or {}).get("parity_status","unknown"),
+              "SELECTED_STEP": (report.get("training") or {}).get("selected_step_scale","unknown"),
+              "SHOP_DROPPED": (report.get("replay") or {}).get("dropped_shop_examples",0),
+              "SHOP_MAX_FRACTION": (report.get("replay") or {}).get("shop_max_fraction","unknown"),
+              "MEAN_CONFIDENCE": round(float((report.get("replay") or {}).get("mean_confidence_weight",0.0) or 0.0),3),
           }
           for k,v in values.items():
               print(f"{k}={shlex.quote(str(v))}")
@@ -577,7 +593,7 @@ jobs:
               fi
             fi
 
-            printf -v body '@ericpeng0604-coder\n\n## Strategy-only Loop — Round %s\n\n- Run：%s\n- Combat：**%s（固定 pure MCTS）**\n- Gate：Dev **%s** → Hidden **%s** → Fresh **%s**\n- Promotion：**%s**\n- 候選池：%s → Teacher labels：%s（mistakes：%s，高不確定：%s）\n- Unique state buckets：%s\n- Decision kinds：%s\n- Elite eligible：%s｜Elite pool：%s｜本輪驗證回灌：%s\n- Teacher CPU：%s workers｜%s｜%ss｜parallelism=%sx｜parity=%s｜fallback=%s\n- Strategy generation：%s\n- Accepted / Rejected：%s / %s\n- Stagnation：%s / %s\n- Replay examples：%s\n- Strategy SHA：`%s`\n- 正式 Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$COMBAT" "$DEV_GATE" "$HIDDEN_GATE" "$FRESH_GATE" "$PROMOTION" "$POOL" "$EXAMPLES" "$MISTAKES" "$HIGH_UNCERTAINTY" "$BUCKETS" "$KINDS" "$ELITE_ELIGIBLE" "$ELITE_POOL" "$ELITE_MINED" "$COLLECTION_WORKERS" "$COLLECTION_MODE" "$COLLECTION_SECONDS" "$COLLECTION_PARALLELISM" "$COLLECTION_PARITY" "$COLLECTION_FALLBACK" "$GEN" "$ACCEPTED" "$REJECTED" "$STAG" "$max_stagnation" "$REPLAY" "$SHA"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
+            printf -v body '@ericpeng0604-coder\n\n## Strategy-only Loop — Round %s\n\n- Run：%s\n- Combat：**%s（固定 pure MCTS）**\n- Gate：Dev **%s** → Hidden **%s** → Fresh **%s**\n- Promotion：**%s**\n- 候選池：%s → Teacher labels：%s（mistakes：%s，高不確定：%s）\n- Unique state buckets：%s\n- Decision kinds：%s\n- Elite eligible：%s｜Elite pool：%s｜本輪驗證回灌：%s\n- Teacher CPU：%s workers｜%s｜%ss｜parallelism=%sx｜parity=%s｜fallback=%s\n- Strategy generation：%s\n- Accepted / Rejected：%s / %s\n- Stagnation：%s / %s\n- Replay examples：%s\n- v4 Candidate step：**%s**｜Shop dropped：%s｜Shop cap：%s｜Mean confidence：%s\n- Strategy SHA：`%s`\n- 正式 Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$COMBAT" "$DEV_GATE" "$HIDDEN_GATE" "$FRESH_GATE" "$PROMOTION" "$POOL" "$EXAMPLES" "$MISTAKES" "$HIGH_UNCERTAINTY" "$BUCKETS" "$KINDS" "$ELITE_ELIGIBLE" "$ELITE_POOL" "$ELITE_MINED" "$COLLECTION_WORKERS" "$COLLECTION_MODE" "$COLLECTION_SECONDS" "$COLLECTION_PARALLELISM" "$COLLECTION_PARITY" "$COLLECTION_FALLBACK" "$GEN" "$ACCEPTED" "$REJECTED" "$STAG" "$max_stagnation" "$REPLAY" "$SELECTED_STEP" "$SHOP_DROPPED" "$SHOP_MAX_FRACTION" "$MEAN_CONFIDENCE" "$SHA"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body" >/dev/null
           else
             next_retry="$((retry_count + 1))"

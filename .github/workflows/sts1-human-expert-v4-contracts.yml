@@ -1,0 +1,85 @@
+name: STS1 Human Expert v4 Contracts
+
+on:
+  push:
+    branches:
+      - gpt/sts1-human-expert-loop-v4-20260929
+    paths:
+      - '.github/workflows/sts1-human-expert-v4-contracts.yml'
+      - 'src/roguelike_ai/sts1_phase3/human_expert.py'
+      - 'src/roguelike_ai/sts1_phase3/human_strategy_dataset.py'
+      - 'src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py'
+      - 'scripts/sts1/sts1_human_expert_loop.py'
+      - 'tests/test_sts1_human_expert.py'
+      - 'tests/test_sts1_human_strategy_dataset.py'
+      - 'control/sts1-human-expert-v1-frozen-baseline.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXPERT_DATA_REPO: 'https://github.com/MaT1g3R/Slay-the-Spire-data.git'
+  EXPERT_DATA_SHA: '097aaf3564c2247835162d267cbc7c55d2c9039e'
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+      - name: Compile
+        run: |
+          python -m py_compile             src/roguelike_ai/sts1_phase3/human_expert.py             src/roguelike_ai/sts1_phase3/human_strategy_dataset.py             src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py             scripts/sts1/sts1_human_expert_loop.py
+      - name: Unit contracts
+        run: |
+          pytest -q             tests/test_sts1_human_expert.py             tests/test_sts1_human_strategy_dataset.py             tests/test_sts1_armg_strategy_evolve.py
+      - name: Verify frozen baseline
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open("control/sts1-human-expert-v1-frozen-baseline.json", encoding="utf-8"))
+          assert p["status"]=="FROZEN_RESEARCH_BASELINE"
+          assert p["candidate_strength"]==2.0
+          e=p["evaluation"]
+          assert e["seed_count"]==500
+          assert e["parent_wins"]==35
+          assert e["candidate_wins"]==55
+          assert e["gate"]=="PASS"
+          assert e["safety_errors"]==0
+          assert p["production_champion_replaced"] is False
+          print("PASS_FROZEN_BASELINE")
+          PY
+      - name: Build real Human Strategy dataset
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/expert-data"
+          git clone --filter=blob:none "$EXPERT_DATA_REPO" "$data"
+          git -C "$data" checkout "$EXPERT_DATA_SHA"
+          python - "$data" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.human_strategy_dataset import build_human_strategy_dataset
+          root=Path(sys.argv[1])
+          out=Path("evidence/sts1/human-strategy-v1/dataset.json")
+          r=build_human_strategy_dataset(root,out,min_ascension=15)
+          required={"card_reward","boss_relic","campfire","event","shop_purchase","path"}
+          assert required <= set(r["by_kind"])
+          assert r["by_label_mode"]["exact_policy"] > 0
+          assert r["by_label_mode"]["preference_only"] > 0
+          print("HUMAN_STRATEGY_DATASET_STATS", json.dumps({
+              "accepted_runs":r["accepted_runs"],
+              "example_count":r["example_count"],
+              "by_kind":r["by_kind"],
+              "by_label_mode":r["by_label_mode"],
+          }, sort_keys=True))
+          PY

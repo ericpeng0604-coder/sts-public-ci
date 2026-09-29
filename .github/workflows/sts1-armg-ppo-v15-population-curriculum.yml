@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        worker: [0, 1, 2, 3, 4, 5, 6, 7]
+        worker: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -44,7 +44,8 @@ jobs:
           set -a
           source control/sts1-armg-ppo-v15-auto-loop.request
           set +a
-          echo "PPO_GAMES_PER_WORKER=$games_per_worker" >> "$GITHUB_ENV"
+          echo "PPO_TOTAL_GAMES=$((games_per_worker * 8))" >> "$GITHUB_ENV"
+          echo "PPO_ROLLOUT_WORKERS=16" >> "$GITHUB_ENV"
           echo "PPO_RNG_SEED=$rng_seed" >> "$GITHUB_ENV"
           echo "PPO_TEMPERATURE=$temperature" >> "$GITHUB_ENV"
           echo "PPO_REWARD_MODE=$reward_mode" >> "$GITHUB_ENV"
@@ -102,8 +103,29 @@ jobs:
       - name: Collect fresh v1.5 rollout shard
         run: |
           worker=${{ matrix.worker }}
+          base_games="$((PPO_TOTAL_GAMES / PPO_ROLLOUT_WORKERS))"
+          extra_games="$((PPO_TOTAL_GAMES % PPO_ROLLOUT_WORKERS))"
+          games="$base_games"
+          if [ "$worker" -lt "$extra_games" ]; then
+            games="$((games + 1))"
+          fi
+          test "$games" -gt 0
           seed_start="$((PPO_RNG_SEED + GITHUB_RUN_NUMBER * 1000003 + worker * 100003))"
-          python scripts/sts1/sts1_armg_ppo_rollout_v14.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --weight "$CURRENT_WEIGHT"             --out "evidence/sts1/ppo-v14-auto/worker-$worker"             --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt             --seed-start "$seed_start"             --games "$PPO_GAMES_PER_WORKER"             --temperature "$PPO_TEMPERATURE"             --reward-mode "$PPO_REWARD_MODE"             --checkpoint-id "$CHECKPOINT_ID"             --worker "$worker"             --parallel-games 2
+          echo "PPO_V15_ROLLOUT_SLICE worker=$worker games=$games total=$PPO_TOTAL_GAMES"
+          python scripts/sts1/sts1_armg_ppo_rollout_v14.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-armg \
+            --weight "$CURRENT_WEIGHT" \
+            --out "evidence/sts1/ppo-v14-auto/worker-$worker" \
+            --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+            --seed-start "$seed_start" \
+            --games "$games" \
+            --temperature "$PPO_TEMPERATURE" \
+            --reward-mode "$PPO_REWARD_MODE" \
+            --checkpoint-id "$CHECKPOINT_ID" \
+            --worker "$worker" \
+            --parallel-games 2
 
       - uses: actions/upload-artifact@v4
         with:
@@ -258,7 +280,7 @@ jobs:
           from pathlib import Path
           import numpy as np
           files=sorted(Path("evidence/sts1/ppo-v14-preprocessed").glob("shard_*.npz"))
-          assert len(files)==8, len(files)
+          assert len(files)==16, len(files)
           expected=os.environ["CHECKPOINT_ID"]
           total=0
           for f in files:
@@ -291,20 +313,82 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  candidate:
+  eval-parent:
     needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Load v1.5 evaluation control
+        run: |
+          set -a
+          source control/sts1-armg-ppo-v15-auto-loop.request
+          set +a
+          echo "PPO_MCTS_SIMS=$mcts_sims" >> "$GITHUB_ENV"
+
+      - name: Install parent evaluation runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-armg-ppo-v15-training-inputs-${{ github.run_id }}
+          path: evidence/sts1/ppo-v15-inputs
+
+      - name: Evaluate or reuse Parent 30 seeds
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_armg_ppo_v15_eval.py parent \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-armg \
+            --parent-weight evidence/sts1/ppo-v15-inputs/state/offline-champion.pt \
+            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --state evidence/sts1/ppo-v15-inputs/state/state.json \
+            --output-dir evidence/sts1/ppo-v15-parent-eval \
+            --mcts-sims "$PPO_MCTS_SIMS" \
+            --workers 4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-armg-ppo-v15-parent-eval-${{ github.run_id }}
+          path: evidence/sts1/ppo-v15-parent-eval/
+          if-no-files-found: error
+          retention-days: 30
+
+  candidate:
+    needs: [prepare, eval-parent]
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: A
             curriculum: '0.00'
+            index: 0
           - name: B
             curriculum: '0.35'
+            index: 1
           - name: C
             curriculum: '0.70'
+            index: 2
           - name: D
             curriculum: '1.00'
+            index: 3
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
@@ -352,6 +436,11 @@ jobs:
         with:
           name: sts1-armg-ppo-v15-training-inputs-${{ github.run_id }}
           path: evidence/sts1/ppo-v15-inputs
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-armg-ppo-v15-parent-eval-${{ github.run_id }}
+          path: evidence/sts1/ppo-v15-parent-eval
 
       - name: Train Candidate ${{ matrix.name }} in parallel
         run: |
@@ -408,6 +497,21 @@ jobs:
           print("PPO_V15_PARALLEL_CANDIDATE_PASS", expected, r["strategy_bc_total_examples"])
           PY
 
+      - name: Evaluate Candidate ${{ matrix.name }} on same 30 seeds
+        run: |
+          set -euo pipefail
+          out="evidence/sts1/ppo-v15-population/${{ matrix.name }}"
+          python scripts/sts1/sts1_armg_ppo_v15_eval.py candidate \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-armg \
+            --candidate "${{ matrix.name }}=$out/actor.pt" \
+            --index "${{ matrix.index }}" \
+            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --parent-evidence evidence/sts1/ppo-v15-parent-eval/parent-eval.json \
+            --output-dir "$out/eval" \
+            --mcts-sims 2000 \
+            --workers 4
+
       - uses: actions/upload-artifact@v4
         with:
           name: sts1-armg-ppo-v15-candidate-${{ github.run_id }}-${{ matrix.name }}
@@ -416,7 +520,7 @@ jobs:
           retention-days: 30
 
   train-and-gate:
-    needs: [prepare, candidate]
+    needs: [prepare, eval-parent, candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -456,6 +560,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: sts1-armg-ppo-v15-parent-eval-${{ github.run_id }}
+          path: evidence/sts1/ppo-v15-parent-eval
+
+      - uses: actions/download-artifact@v4
+        with:
           pattern: sts1-armg-ppo-v15-candidate-${{ github.run_id }}-*
           path: evidence/sts1/ppo-v15-population
           merge-multiple: true
@@ -466,6 +575,7 @@ jobs:
           state="$RUNNER_TEMP/ppo-v15-state"
           rm -rf "$state"; mkdir -p "$state"
           cp -a evidence/sts1/ppo-v15-inputs/state/. "$state/"
+          cp evidence/sts1/ppo-v15-parent-eval/state.json "$state/state.json"
           sha="$(sha256sum "$state/offline-champion.pt" | awk '{print $1}')"
           echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
           echo "STATE_DIR=$state" >> "$GITHUB_ENV"
@@ -476,21 +586,22 @@ jobs:
           done
           echo "PPO_V15_PARALLEL_POPULATION_READY"
 
-      - name: Same-seed 4-Candidate tournament
+      - name: Assemble parallel 4-Candidate tournament
         run: |
           python scripts/sts1/sts1_armg_ppo_v15_tournament.py \
             --module-dir external/sts_lightspeed/source/build-probe \
             --armg-root .cache/sts1-armg \
             --parent-weight "$CURRENT_WEIGHT" \
-            --candidate A=evidence/sts1/ppo-v15-population/A/actor.pt \
-            --candidate B=evidence/sts1/ppo-v15-population/B/actor.pt \
-            --candidate C=evidence/sts1/ppo-v15-population/C/actor.pt \
-            --candidate D=evidence/sts1/ppo-v15-population/D/actor.pt \
             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
             --state "$STATE_DIR/state.json" \
             --output-dir evidence/sts1/ppo-v15-tournament \
             --mcts-sims "$PPO_MCTS_SIMS" \
-            --workers 4
+            --workers 4 \
+            --parent-evidence evidence/sts1/ppo-v15-parent-eval/parent-eval.json \
+            --candidate-evidence evidence/sts1/ppo-v15-population/A/eval/candidate-eval.json \
+            --candidate-evidence evidence/sts1/ppo-v15-population/B/eval/candidate-eval.json \
+            --candidate-evidence evidence/sts1/ppo-v15-population/C/eval/candidate-eval.json \
+            --candidate-evidence evidence/sts1/ppo-v15-population/D/eval/candidate-eval.json
           source evidence/sts1/ppo-v15-tournament/winner.env
           echo "WINNER_NAME=$WINNER_NAME" >> "$GITHUB_ENV"
           echo "WINNER_WEIGHT=$WINNER_WEIGHT" >> "$GITHUB_ENV"
@@ -543,6 +654,7 @@ jobs:
             evidence/sts1/ppo-v15-inputs/preprocessed/manifest.json
             evidence/sts1/ppo-v15-inputs/replay/replay-manifest.json
             evidence/sts1/ppo-v15-inputs/strategy/**
+            evidence/sts1/ppo-v15-parent-eval/**
             evidence/sts1/ppo-v15-population/**
             evidence/sts1/ppo-v15-tournament/**
             evidence/sts1/ppo-v15-gate/**

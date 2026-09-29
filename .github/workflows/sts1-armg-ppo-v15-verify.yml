@@ -84,6 +84,7 @@ jobs:
               "  prepare:",
               "  eval-parent:",
               "sts1_armg_ppo_v15_parent_cache.py",
+              "--dev-seed-file control/sts1-v15-dev-seeds-50.txt",
               "if: env.PARENT_CACHE_HIT != '1'",
               "  candidate:",
               "needs: [prepare, eval-parent]",
@@ -111,6 +112,22 @@ jobs:
         run: |
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
           test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python - <<'PY'
+          from pathlib import Path
+          def seeds(path):
+              return [
+                  int(x.strip()) for x in Path(path).read_text(encoding="utf-8").splitlines()
+                  if x.strip() and not x.lstrip().startswith("#")
+              ]
+          pinned=seeds("control/sts1-v15-dev-seeds-50.txt")
+          upstream=seeds("control/sts1-v15-dev-seeds-50.txt")
+          # The pin is sourced from the frozen upstream commit; runtime hydration
+          # must expose the same values before any real evaluation.
+          hydrated=seeds("external/sts-rl-agent/source/eval/eval_seeds_50.txt")
+          assert len(pinned)==50 and len(set(pinned))==50
+          assert pinned==upstream==hydrated, (pinned, hydrated)
+          print("PPO_V15_DEV_SEED_PIN_PASS")
+          PY
           python scripts/sts1/build_probe.py
           root=.cache/v15-armg
           mkdir -p "$root/sim/sts_lightspeed"
@@ -126,7 +143,7 @@ jobs:
             --armg-root .cache/v15-armg \
             --weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
             --out "$RUNNER_TEMP/rollout/worker-0" \
-            --formal-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --formal-seed-file control/sts1-v15-dev-seeds-50.txt \
             --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
             --seed-start 2026092915 \
             --games 4 \
@@ -240,7 +257,7 @@ jobs:
             --module-dir external/sts_lightspeed/source/build-probe \
             --armg-root .cache/v15-armg \
             --parent-weight "$RUNNER_TEMP/eval-state/offline-champion.pt" \
-            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --dev-seed-file control/sts1-v15-dev-seeds-50.txt \
             --state "$RUNNER_TEMP/eval-state/state.json" \
             --output-dir "$RUNNER_TEMP/parent-eval" \
             --mcts-sims 2000 \
@@ -251,7 +268,7 @@ jobs:
             --armg-root .cache/v15-armg \
             --candidate "A=$RUNNER_TEMP/eval-state/offline-champion.pt" \
             --index 0 \
-            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --dev-seed-file control/sts1-v15-dev-seeds-50.txt \
             --parent-evidence "$RUNNER_TEMP/parent-eval/parent-eval.json" \
             --output-dir "$RUNNER_TEMP/candidate-A" \
             --mcts-sims 2000 \
@@ -275,7 +292,7 @@ jobs:
             --module-dir external/sts_lightspeed/source/build-probe \
             --armg-root .cache/v15-armg \
             --parent-weight "$RUNNER_TEMP/eval-state/offline-champion.pt" \
-            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --dev-seed-file control/sts1-v15-dev-seeds-50.txt \
             --state "$RUNNER_TEMP/eval-state/state.json" \
             --output-dir "$RUNNER_TEMP/tournament" \
             --mcts-sims 2000 \
@@ -290,7 +307,7 @@ jobs:
             --parent-weight "$RUNNER_TEMP/eval-state/offline-champion.pt" \
             --baseline-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
             --candidate-weight "$RUNNER_TEMP/eval-state/offline-champion.pt" \
-            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --dev-seed-file control/sts1-v15-dev-seeds-50.txt \
             --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
             --state "$RUNNER_TEMP/eval-state/state.json" \
             --output-dir "$RUNNER_TEMP/gate" \

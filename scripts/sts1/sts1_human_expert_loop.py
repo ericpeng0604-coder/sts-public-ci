@@ -32,8 +32,8 @@ from roguelike_ai.sts1_phase3.human_expert import (
 from roguelike_ai.sts1_phase3.simulator import _load_sts, run_simulator_game
 
 
-STATE_SCHEMA_VERSION = "sts1-human-expert-loop-state-v1"
-REPORT_SCHEMA_VERSION = "sts1-human-expert-round-v1"
+STATE_SCHEMA_VERSION = "sts1-human-expert-loop-state-v2"
+REPORT_SCHEMA_VERSION = "sts1-human-expert-round-v2"
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:

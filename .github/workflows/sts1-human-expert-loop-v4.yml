@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: sts1-human-expert-v4-auto-loop
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: '1'

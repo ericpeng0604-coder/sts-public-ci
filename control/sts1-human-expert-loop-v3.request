@@ -1,0 +1,11 @@
+enabled=1
+attempt=1
+retry_count=0
+max_retries=3
+max_rounds=0
+mcts_sims=2000
+eval_workers=4
+rng_seed=2026092903
+min_ascension=15
+alpha=2.0
+report_issue=15

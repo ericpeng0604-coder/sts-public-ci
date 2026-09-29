@@ -194,7 +194,7 @@ jobs:
           state=json.load(open(sys.argv[1], encoding="utf-8"))
           report=json.load(open(sys.argv[2], encoding="utf-8"))
           assert state["schema_version"] == "sts1-human-expert-loop-state-v2"
-          assert report["schema_version"] == "sts1-human-expert-round-v1"
+          assert report["schema_version"] == "sts1-human-expert-round-v2"
           assert report["production_champion_replaced"] is False
           assert report["combat_training_enabled"] is False
           assert report["combat_policy"] == "mcts_2000"

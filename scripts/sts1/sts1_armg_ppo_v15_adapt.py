@@ -138,6 +138,17 @@ def adapt(
     validate_profile(profile)
 
     updated = dict(control)
+    safety_defaults = {
+        "strategy_teacher_coef": "0.01",
+        "strategy_teacher_max_examples": "512",
+        "strategy_teacher_required": "1",
+        "candidate_threads": "4",
+    }
+    for key, value in safety_defaults.items():
+        updated.setdefault(key, value)
+        if key not in control_order:
+            control_order.append(key)
+
     updated.update({
         "games_per_worker": str(profile.games_per_worker),
         "temperature": f"{profile.temperature:g}",
@@ -173,6 +184,12 @@ def adapt(
         "gate_policy_changed": True,
         "gate_policy_note": "Dev Parent accumulates; strict Final 30/50 remains unchanged",
         "production_champion_changed": False,
+        "strategy_teacher": {
+            "coef": updated["strategy_teacher_coef"],
+            "max_examples": updated["strategy_teacher_max_examples"],
+            "required": updated["strategy_teacher_required"],
+            "candidate_threads": updated["candidate_threads"],
+        },
     }
     return updated, report
 

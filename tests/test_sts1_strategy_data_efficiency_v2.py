@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+
+import torch
 
 
 SCRIPT = (
@@ -111,3 +114,97 @@ def test_state_bucket_separates_act_floor_hp_and_choice_complexity() -> None:
     base = {"kind": "event", "act": 1, "floor": 9, "hp": 60, "max_hp": 80}
     late = {"kind": "event", "act": 3, "floor": 39, "hp": 12, "max_hp": 80}
     assert m._state_bucket(base, choices=2) != m._state_bucket(late, choices=4)
+
+
+def _replay_row(kind: str, index: int, *, margin: float = 5.0) -> dict:
+    return {
+        "schema_version": m.STRATEGY_DATASET_SCHEMA_VERSION,
+        "combat_policy": "mcts_2000",
+        "kind": kind,
+        "obs": [float(index)],
+        "descs": [[0.0], [1.0]],
+        "priority": 2.0,
+        "teacher_margin": margin,
+        "current_armg_index": 0,
+        "teacher_best_index": 1,
+        "target_probs": [0.1, 0.9],
+    }
+
+
+def test_teacher_confidence_downweights_ambiguous_labels() -> None:
+    assert m._teacher_confidence_weight(0.0) == 0.10
+    assert m._teacher_confidence_weight(0.5) == 0.25
+    assert m._teacher_confidence_weight(2.0) == 0.50
+    assert m._teacher_confidence_weight(5.0) == 0.75
+    assert m._teacher_confidence_weight(20.0) == 1.00
+
+
+def test_replay_caps_shop_fraction_and_keeps_high_confidence(tmp_path: Path) -> None:
+    replay = tmp_path / "replay.jsonl"
+    new_data = tmp_path / "new.jsonl"
+    rows = [
+        *[_replay_row("shop", i, margin=0.0 if i < 15 else 10.0) for i in range(30)],
+        *[_replay_row("map", 100 + i, margin=10.0) for i in range(30)],
+    ]
+    new_data.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    report = m._merge_replay(
+        replay,
+        new_data,
+        max_examples=100,
+        shop_max_fraction=0.25,
+    )
+    kept = m._read_examples(replay)
+    shops = [row for row in kept if row["kind"] == "shop"]
+    assert report["dropped_shop_examples"] == 20
+    assert len(shops) == 10
+    assert len(shops) / len(kept) <= 0.25
+    assert all(float(row["confidence_weight"]) >= 0.75 for row in shops)
+
+
+def test_parent_protected_checkpoint_scales_the_update(tmp_path: Path) -> None:
+    parent = tmp_path / "parent.pt"
+    trained = tmp_path / "trained.pt"
+    candidate = tmp_path / "candidate.pt"
+    torch.save({"weight": torch.tensor([0.0, 2.0])}, parent)
+    torch.save({"weight": torch.tensor([4.0, 6.0])}, trained)
+    m._interpolate_checkpoint(
+        source_weight=parent,
+        trained_weight=trained,
+        output_weight=candidate,
+        alpha=0.25,
+    )
+    payload = torch.load(candidate, weights_only=True, map_location="cpu")
+    assert torch.allclose(payload["weight"], torch.tensor([1.0, 3.0]))
+
+
+def test_candidate_pool_prefers_a_gate_pass() -> None:
+    rollback = {
+        "name": "full",
+        "dev_gate": {
+            "status": "ROLLBACK",
+            "win_delta": 3,
+            "floor_delta": 3.0,
+            "paired": {
+                "candidate_better": 20,
+                "candidate_worse": 10,
+                "one_sided_sign_p": 0.01,
+            },
+        },
+    }
+    passed = {
+        "name": "half",
+        "dev_gate": {
+            "status": "PASS",
+            "win_delta": 0,
+            "floor_delta": 0.5,
+            "paired": {
+                "candidate_better": 12,
+                "candidate_worse": 10,
+                "one_sided_sign_p": 0.25,
+            },
+        },
+    }
+    assert m._select_dev_candidate([rollback, passed])["name"] == "half"

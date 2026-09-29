@@ -152,8 +152,6 @@ def _evaluate_parallel(
         try:
             rows = async_result.get(timeout=batch_timeout_seconds)
         except mp.TimeoutError as exc:
-            pool.terminate()
-            pool.join()
             raise RuntimeError(
                 f"PPO gate batch timed out after {batch_timeout_seconds}s "
                 f"for {len(tasks)} evaluations"

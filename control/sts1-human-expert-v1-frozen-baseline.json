@@ -1,0 +1,34 @@
+{
+  "schema_version": "sts1-human-expert-frozen-baseline-v1",
+  "status": "FROZEN_RESEARCH_BASELINE",
+  "model_family": "Human Expert v1",
+  "candidate_strength": 2,
+  "character": "IRONCLAD",
+  "ascension_eval": 0,
+  "combat_policy": "mcts_2000",
+  "evaluation": {
+    "seed_count": 500,
+    "parent_wins": 35,
+    "candidate_wins": 55,
+    "parent_win_rate": 0.07,
+    "candidate_win_rate": 0.11,
+    "win_delta": 20,
+    "paired_wins": {
+      "candidate_better": 30,
+      "candidate_worse": 10
+    },
+    "one_sided_sign_p": 0.0011107168866146822,
+    "safety_errors": 0,
+    "gate": "PASS"
+  },
+  "expert_corpus": {
+    "accepted_runs": 101,
+    "card_choice_examples": 2569
+  },
+  "evidence": {
+    "github_run_id": 36580799114,
+    "issue": 15
+  },
+  "production_champion_replaced": false,
+  "note": "Research baseline only. Production promotion still requires the normal real-game gate."
+}

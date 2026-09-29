@@ -584,6 +584,7 @@ jobs:
           from pathlib import Path
           p=Path(sys.argv[1]); attempt=sys.argv[2]
           rows=[]
+          seen=set()
           for line in p.read_text().splitlines():
               if not line.strip():
                   continue
@@ -595,6 +596,16 @@ jobs:
               if k=="ppo_version":
                   v="1.5"
               rows.append((k,v))
+              seen.add(k)
+          defaults={
+              "strategy_teacher_coef":"0.01",
+              "strategy_teacher_max_examples":"512",
+              "strategy_teacher_required":"1",
+              "candidate_threads":"4",
+          }
+          for k,v in defaults.items():
+              if k not in seen:
+                  rows.append((k,v))
           p.write_text("".join(f"{k}={v}\n" for k,v in rows))
           PY
 
@@ -636,7 +647,7 @@ jobs:
             python - "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" <<'PY'
           import sys
           from pathlib import Path
-          p=Path(sys.argv[1]); attempt,retry=sys.argv[2:4]; rows=[]
+          p=Path(sys.argv[1]); attempt,retry=sys.argv[2:4]; rows=[]; seen=set()
           for line in p.read_text().splitlines():
               if not line.strip():
                   continue
@@ -650,6 +661,16 @@ jobs:
               elif k=="ppo_version":
                   v="1.5"
               rows.append((k,v))
+              seen.add(k)
+          defaults={
+              "strategy_teacher_coef":"0.01",
+              "strategy_teacher_max_examples":"512",
+              "strategy_teacher_required":"1",
+              "candidate_threads":"4",
+          }
+          for k,v in defaults.items():
+              if k not in seen:
+                  rows.append((k,v))
           p.write_text("".join(f"{k}={v}\n" for k,v in rows))
           PY
             if [ "$next_retry" -gt "$max_retries" ]; then

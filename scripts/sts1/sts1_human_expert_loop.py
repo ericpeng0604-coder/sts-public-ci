@@ -19,6 +19,7 @@ import shutil
 from typing import Any, Mapping, Sequence
 
 from roguelike_ai.sts1_phase3.armg_strategy_evolve import (
+    CONFIRM_500_STRATEGY_GATE,
     DEV_STRATEGY_GATE,
     FRESH_STRATEGY_GATE,
     HIDDEN_STRATEGY_GATE,
@@ -32,8 +33,8 @@ from roguelike_ai.sts1_phase3.human_expert import (
 from roguelike_ai.sts1_phase3.simulator import _load_sts, run_simulator_game
 
 
-STATE_SCHEMA_VERSION = "sts1-human-expert-loop-state-v3"
-REPORT_SCHEMA_VERSION = "sts1-human-expert-round-v3"
+STATE_SCHEMA_VERSION = "sts1-human-expert-loop-state-v4"
+REPORT_SCHEMA_VERSION = "sts1-human-expert-round-v4"
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -225,6 +226,49 @@ def _gate_rank(gate: Mapping[str, Any]) -> tuple[float, ...]:
     )
 
 
+def _should_escalate_to_500(fresh_gate: Mapping[str, Any]) -> bool:
+    """Escalate only a positive Fresh-100 that failed statistical strength."""
+    if fresh_gate.get("status") != "ROLLBACK":
+        return False
+    reasons = set(str(value) for value in fresh_gate.get("reasons", []))
+    if reasons != {"paired_superiority_not_strong_enough"}:
+        return False
+    if int(fresh_gate.get("win_delta", 0) or 0) < 1:
+        return False
+    paired = fresh_gate.get("paired_wins") or {}
+    return int(paired.get("candidate_better", 0) or 0) > int(
+        paired.get("candidate_worse", 0) or 0
+    )
+
+
+def _promotion_with_confirmation(
+    dev_gate: Mapping[str, Any],
+    hidden_gate: Mapping[str, Any],
+    fresh_gate: Mapping[str, Any],
+    confirm500_gate: Mapping[str, Any],
+) -> dict[str, Any]:
+    base_pass = (
+        dev_gate.get("status") == "PASS"
+        and hidden_gate.get("status") == "PASS"
+    )
+    fresh_pass = fresh_gate.get("status") == "PASS"
+    confirm_pass = confirm500_gate.get("status") == "PASS"
+    passed = base_pass and (fresh_pass or confirm_pass)
+    return {
+        "schema_version": "sts1-human-expert-promotion-v4",
+        "decision": "PROMOTE_HUMAN_EXPERT" if passed else "ROLLBACK_STRATEGY",
+        "all_gates_passed": passed,
+        "production_champion_replaced": False,
+        "escalated_to_500": confirm500_gate.get("status") != "SKIPPED",
+        "gates": {
+            "dev_30": dict(dev_gate),
+            "hidden_50": dict(hidden_gate),
+            "fresh_100": dict(fresh_gate),
+            "confirm_500": dict(confirm500_gate),
+        },
+    }
+
+
 def _eval_and_gate(
     *,
     current_prior: Path,
@@ -283,12 +327,15 @@ def main() -> int:
     parser.add_argument("--rng-seed", type=int, default=2026092901)
     parser.add_argument("--min-ascension", type=int, default=15)
     parser.add_argument("--alpha", type=float, default=2.0)
+    parser.add_argument("--confirm-seed-count", type=int, default=500)
     args = parser.parse_args()
 
     if args.rounds < 1:
         raise RuntimeError("rounds must be positive")
     if args.combat_mcts_sims < 1 or args.eval_workers < 1:
         raise RuntimeError("MCTS and worker counts must be positive")
+    if args.confirm_seed_count != 500:
+        raise RuntimeError("Human Expert v4 confirmation gate requires exactly 500 seeds")
     if not args.armg_base_weight.is_file():
         raise RuntimeError(f"ArmG base weight missing: {args.armg_base_weight}")
 
@@ -360,12 +407,15 @@ def main() -> int:
                 "dev_gate": {"status": "SKIPPED", "reasons": ["strength_search_exhausted"]},
                 "hidden_gate": {"status": "SKIPPED", "reasons": ["strength_search_exhausted"]},
                 "fresh_gate": {"status": "SKIPPED", "reasons": ["strength_search_exhausted"]},
+                "confirm500_gate": {"status": "SKIPPED", "reasons": ["strength_search_exhausted"]},
                 "promotion": {"decision": "PAUSE_SEARCH_EXHAUSTED"},
                 "production_champion_replaced": False,
                 "combat_training_enabled": False,
                 "combat_policy": f"mcts_{args.combat_mcts_sims}",
                 "hidden_seed_count": 0,
                 "fresh_seed_count": 0,
+                "confirm500_seed_count": 0,
+                "escalated_to_500": False,
             }
             _write_json(round_dir / "human-expert-report.json", report)
             _write_json(args.output_dir / "latest-report.json", report)
@@ -408,6 +458,7 @@ def main() -> int:
         forbidden = set(dev_all) | historical
         hidden_seeds: tuple[int, ...] = ()
         fresh_seeds: tuple[int, ...] = ()
+        confirm500_seeds: tuple[int, ...] = ()
         hidden_gate: dict[str, Any] = {
             "status": "SKIPPED",
             "reasons": ["dev_30_gate_did_not_pass"],
@@ -415,6 +466,10 @@ def main() -> int:
         fresh_gate: dict[str, Any] = {
             "status": "SKIPPED",
             "reasons": ["hidden_50_gate_not_passed"],
+        }
+        confirm500_gate: dict[str, Any] = {
+            "status": "SKIPPED",
+            "reasons": ["fresh_100_did_not_require_confirmation"],
         }
 
         if dev_gate.get("status") == "PASS":
@@ -463,13 +518,42 @@ def main() -> int:
             _write_json(round_dir / "eval-current-fresh100.json", current_fresh)
             _write_json(round_dir / "eval-candidate-fresh100.json", candidate_fresh)
 
-        promotion = strategy_promotion_decision(dev_gate, hidden_gate, fresh_gate)
-        promoted = promotion.get("decision") == "PROMOTE_STRATEGY"
+        if _should_escalate_to_500(fresh_gate):
+            confirm500_seeds = _fresh_seeds(
+                count=args.confirm_seed_count,
+                rng_seed=args.rng_seed + round_no * 1009 + 3,
+                forbidden=forbidden,
+            )
+            forbidden.update(confirm500_seeds)
+            current_500, candidate_500, confirm500_gate = _eval_and_gate(
+                current_prior=current_prior,
+                candidate_prior=candidate_prior,
+                current_strength=current_strength,
+                candidate_strength=candidate_strength,
+                seeds=confirm500_seeds,
+                module_dir=args.module_dir,
+                armg_root=args.armg_root,
+                base_weight=args.armg_base_weight,
+                mcts_sims=args.combat_mcts_sims,
+                workers=args.eval_workers,
+                policy=CONFIRM_500_STRATEGY_GATE,
+            )
+            _write_json(round_dir / "eval-current-confirm500.json", current_500)
+            _write_json(round_dir / "eval-candidate-confirm500.json", candidate_500)
+
+        promotion = _promotion_with_confirmation(
+            dev_gate,
+            hidden_gate,
+            fresh_gate,
+            confirm500_gate,
+        )
+        promoted = promotion.get("decision") == "PROMOTE_HUMAN_EXPERT"
         state["used_evaluation_seeds"] = list(
             dict.fromkeys(
                 list(state.get("used_evaluation_seeds", []))
                 + list(hidden_seeds)
                 + list(fresh_seeds)
+                + list(confirm500_seeds)
             )
         )
         tried = list(state.get("tried_strengths", []))
@@ -521,12 +605,15 @@ def main() -> int:
             "dev_gate": dev_gate,
             "hidden_gate": hidden_gate,
             "fresh_gate": fresh_gate,
+            "confirm500_gate": confirm500_gate,
             "promotion": promotion,
             "production_champion_replaced": False,
             "combat_training_enabled": False,
             "combat_policy": f"mcts_{args.combat_mcts_sims}",
             "hidden_seed_count": len(hidden_seeds),
             "fresh_seed_count": len(fresh_seeds),
+            "confirm500_seed_count": len(confirm500_seeds),
+            "escalated_to_500": bool(confirm500_seeds),
         }
         _write_json(round_dir / "human-expert-report.json", report)
         _write_json(args.output_dir / "latest-report.json", report)

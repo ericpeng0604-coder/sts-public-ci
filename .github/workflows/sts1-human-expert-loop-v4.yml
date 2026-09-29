@@ -1,0 +1,396 @@
+name: STS1 Human Expert v4 Auto Loop
+
+on:
+  push:
+    branches:
+      - gpt/sts1-human-expert-loop-v4-20260929
+    paths:
+      - '.github/workflows/sts1-human-expert-loop-v4.yml'
+      - 'src/roguelike_ai/sts1_phase3/human_expert.py'
+      - 'scripts/sts1/sts1_human_expert_loop.py'
+      - 'tests/test_sts1_human_expert.py'
+      - 'tests/test_sts1_human_strategy_dataset.py'
+      - 'src/roguelike_ai/sts1_phase3/human_strategy_dataset.py'
+      - 'control/sts1-human-expert-v1-frozen-baseline.json'
+      - 'control/sts1-human-expert-loop-v4.request'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: sts1-human-expert-v4-auto-loop
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+  GH_TOKEN: ${{ github.token }}
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  EXPERT_DATA_REPO: 'https://github.com/MaT1g3R/Slay-the-Spire-data.git'
+  EXPERT_DATA_SHA: '097aaf3564c2247835162d267cbc7c55d2c9039e'
+  STATE_ARTIFACT: 'sts1-human-expert-loop-state-v4'
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+
+      - name: Compile Human Expert loop
+        run: |
+          python -m py_compile             src/roguelike_ai/sts1_phase3/human_expert.py             scripts/sts1/sts1_human_expert_loop.py
+
+      - name: Verify Human Expert contracts
+        run: |
+          pytest -q             tests/test_sts1_human_expert.py             tests/test_sts1_armg_strategy_evolve.py             tests/test_sts1_strategy_parallel_cpu_v4.py
+
+  human-expert-round:
+    needs: contract-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    outputs:
+      enabled: ${{ steps.control.outputs.enabled }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load Human Expert control
+        id: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source control/sts1-human-expert-loop-v4.request
+          set +a
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "HUMAN_ENABLED=$enabled" >> "$GITHUB_ENV"
+          echo "HUMAN_ATTEMPT=$attempt" >> "$GITHUB_ENV"
+          echo "HUMAN_RETRY_COUNT=$retry_count" >> "$GITHUB_ENV"
+          echo "HUMAN_MAX_RETRIES=$max_retries" >> "$GITHUB_ENV"
+          echo "HUMAN_MAX_ROUNDS=$max_rounds" >> "$GITHUB_ENV"
+          echo "HUMAN_MCTS_SIMS=$mcts_sims" >> "$GITHUB_ENV"
+          echo "HUMAN_EVAL_WORKERS=$eval_workers" >> "$GITHUB_ENV"
+          echo "HUMAN_RNG_SEED=$rng_seed" >> "$GITHUB_ENV"
+          echo "HUMAN_MIN_ASCENSION=$min_ascension" >> "$GITHUB_ENV"
+          echo "HUMAN_ALPHA=$alpha" >> "$GITHUB_ENV"
+          echo "HUMAN_CONFIRM_SEED_COUNT=$confirm_seed_count" >> "$GITHUB_ENV"
+          echo "HUMAN_REPORT_ISSUE=$report_issue" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        if: env.HUMAN_ENABLED == '1'
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install and hydrate pinned simulator
+        if: env.HUMAN_ENABLED == '1'
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          git -C external/sts_lightspeed/source apply --check "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          git -C external/sts_lightspeed/source apply "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          python scripts/sts1/build_probe.py
+
+          root=".cache/sts1-human-expert"
+          rm -rf "$root"
+          mkdir -p "$root"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Fetch pinned permitted expert data
+        if: env.HUMAN_ENABLED == '1'
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/expert-data"
+          git clone --filter=blob:none "$EXPERT_DATA_REPO" "$data"
+          git -C "$data" checkout "$EXPERT_DATA_SHA"
+          test "$(git -C "$data" rev-parse HEAD)" = "$EXPERT_DATA_SHA"
+          test -d "$data/runs/panacea-ironclad-sample"
+          test -d "$data/runs/200-rotating-sample/IRONCLAD"
+          echo "HUMAN_DATA_ROOT=$data" >> "$GITHUB_ENV"
+
+      - name: Restore newest Human Expert state
+        if: env.HUMAN_ENABLED == '1'
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/human-expert-state"
+          rm -rf "$state"
+          mkdir -p "$state"
+
+          mapfile -t artifact_ids < <(
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT&per_page=100"               --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[].id'
+          )
+
+          restored=0
+          for artifact_id in "${artifact_ids[@]}"; do
+            rm -rf "$RUNNER_TEMP/human-state-candidate"
+            mkdir -p "$RUNNER_TEMP/human-state-candidate"
+            if ! curl --fail --location               -H "Authorization: Bearer $GH_TOKEN"               -H "Accept: application/vnd.github+json"               -o "$RUNNER_TEMP/human-state.zip"               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"; then
+              continue
+            fi
+            if ! unzip -q "$RUNNER_TEMP/human-state.zip" -d "$RUNNER_TEMP/human-state-candidate"; then
+              continue
+            fi
+            found="$(find "$RUNNER_TEMP/human-state-candidate" -name human-expert-state.json -print -quit)"
+            prior="$(find "$RUNNER_TEMP/human-state-candidate" -name current-expert-prior.json -print -quit)"
+            if [ -z "$found" ]; then
+              continue
+            fi
+            cp "$found" "$state/human-expert-state.json"
+            [ -z "$prior" ] || cp "$prior" "$state/current-expert-prior.json"
+            if python - "$state/human-expert-state.json" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          assert p["schema_version"] == "sts1-human-expert-loop-state-v4"
+          assert float(p.get("current_strength",0.0)) >= 0.0
+          print("PASS_HUMAN_STATE")
+          PY
+            then
+              restored=1
+              echo "HUMAN_STATE_RESTORED artifact=$artifact_id"
+              break
+            fi
+          done
+
+          if [ "$restored" -eq 0 ]; then
+            rm -f "$state/human-expert-state.json" "$state/current-expert-prior.json"
+            echo "NO_HUMAN_STATE_START_FROM_ARMG"
+          fi
+          echo "HUMAN_STATE_DIR=$state" >> "$GITHUB_ENV"
+
+      - name: Run one Human Expert round
+        if: env.HUMAN_ENABLED == '1'
+        run: |
+          set -euo pipefail
+          rm -rf evidence/sts1/human-expert-loop
+          mkdir -p evidence/sts1/human-expert-loop
+          python scripts/sts1/sts1_human_expert_loop.py             --data-root "$HUMAN_DATA_ROOT"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-human-expert             --armg-base-weight .cache/sts1-human-expert/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --state-dir "$HUMAN_STATE_DIR"             --output-dir evidence/sts1/human-expert-loop             --rounds 1             --combat-mcts-sims "$HUMAN_MCTS_SIMS"             --eval-workers "$HUMAN_EVAL_WORKERS"             --rng-seed "$HUMAN_RNG_SEED"             --min-ascension "$HUMAN_MIN_ASCENSION"             --alpha "$HUMAN_ALPHA"             --confirm-seed-count "$HUMAN_CONFIRM_SEED_COUNT"
+
+      - name: Verify Human Expert round invariants
+        if: env.HUMAN_ENABLED == '1'
+        run: |
+          set -euo pipefail
+          python - "$HUMAN_STATE_DIR/human-expert-state.json" "evidence/sts1/human-expert-loop/latest-report.json" <<'PY'
+          import json, sys
+          state=json.load(open(sys.argv[1], encoding="utf-8"))
+          report=json.load(open(sys.argv[2], encoding="utf-8"))
+          assert state["schema_version"] == "sts1-human-expert-loop-state-v4"
+          assert report["schema_version"] == "sts1-human-expert-round-v4"
+          assert report["production_champion_replaced"] is False
+          assert report["combat_training_enabled"] is False
+          assert report["combat_policy"] == "mcts_2000"
+          data=report["dataset"]
+          assert data["character"] == "IRONCLAD"
+          assert data["accepted_runs"] > 0
+          assert data["card_choice_examples"] > 0
+          assert data["train_examples"] > 0
+          assert data["holdout_examples"] > 0
+          assert 0.0 <= float(data["holdout_top1"]) <= 1.0
+          assert data["sources"].get("panacea",0) > 0
+          assert data["sources"].get("rotating",0) > 0
+          for key in ("dev_gate","hidden_gate","fresh_gate","confirm500_gate"):
+              assert report[key]["status"] in {"PASS","ROLLBACK","SKIPPED"}
+          assert int(report.get("confirm500_seed_count",0)) in {0,500}
+          assert bool(report.get("escalated_to_500")) == (int(report.get("confirm500_seed_count",0)) == 500)
+          assert float(state.get("current_strength",0.0)) >= 0.0
+          print(
+              "PASS_HUMAN_EXPERT_INVARIANTS",
+              "generation=", state.get("generation"),
+              "strength=", state.get("current_strength"),
+              "holdout_top1=", data.get("holdout_top1"),
+          )
+          PY
+
+      - name: Upload durable Human Expert state
+        if: env.HUMAN_ENABLED == '1' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-human-expert-loop-state-v4
+          path: |
+            ${{ runner.temp }}/human-expert-state/human-expert-state.json
+            ${{ runner.temp }}/human-expert-state/current-expert-prior.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload Human Expert evidence
+        if: env.HUMAN_ENABLED == '1' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-human-expert-v4-loop-report-${{ github.run_id }}
+          path: evidence/sts1/human-expert-loop/
+          if-no-files-found: warn
+          retention-days: 90
+
+  supervisor:
+    if: always() && needs.human-expert-round.outputs.enabled == '1'
+    needs: [contract-tests, human-expert-round]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report and continue Human Expert loop
+        env:
+          CONTRACT_RESULT: ${{ needs.contract-tests.result }}
+          ROUND_RESULT: ${{ needs.human-expert-round.result }}
+        run: |
+          set -euo pipefail
+          set -a
+          source control/sts1-human-expert-loop-v4.request
+          set +a
+
+          run_url="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          next_attempt="$((attempt + 1))"
+          next_retry="$retry_count"
+          continue_loop=0
+          search_exhausted=false
+
+          if [ "$CONTRACT_RESULT" = "success" ] && [ "$ROUND_RESULT" = "success" ]; then
+            state_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100"               --jq '.artifacts[] | select(.name=="sts1-human-expert-loop-state-v4") | .id' | head -n1)"
+            report_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100"               --jq '.artifacts[] | select(.name | startswith("sts1-human-expert-v4-loop-report-")) | .id' | head -n1)"
+            test -n "$state_id"
+            test -n "$report_id"
+
+            curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"               -o "$RUNNER_TEMP/state.zip"               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$state_id/zip"
+            mkdir -p "$RUNNER_TEMP/state"
+            unzip -q "$RUNNER_TEMP/state.zip" -d "$RUNNER_TEMP/state"
+            state_file="$(find "$RUNNER_TEMP/state" -name human-expert-state.json -print -quit)"
+
+            curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"               -o "$RUNNER_TEMP/report.zip"               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$report_id/zip"
+            mkdir -p "$RUNNER_TEMP/report"
+            unzip -q "$RUNNER_TEMP/report.zip" -d "$RUNNER_TEMP/report"
+            report_file="$(find "$RUNNER_TEMP/report" -name latest-report.json -print -quit)"
+            test -n "$state_file"
+            test -n "$report_file"
+
+            eval "$(python - "$state_file" "$report_file" <<'PY'
+          import json, shlex, sys
+          state=json.load(open(sys.argv[1], encoding="utf-8"))
+          report=json.load(open(sys.argv[2], encoding="utf-8"))
+          data=report.get("dataset") or {}
+          values={
+              "ROUND": int(state.get("accepted_rounds",0))+int(state.get("rejected_rounds",0)),
+              "GEN": int(state.get("generation",0)),
+              "ACCEPTED": int(state.get("accepted_rounds",0)),
+              "REJECTED": int(state.get("rejected_rounds",0)),
+              "STRENGTH": float(state.get("current_strength",0.0)),
+              "EXHAUSTED": str(bool(state.get("search_exhausted",False))).lower(),
+              "RUNS": int(data.get("accepted_runs",0)),
+              "CHOICES": int(data.get("card_choice_examples",0)),
+              "HOLDOUT": round(float(data.get("holdout_top1",0.0)),4),
+              "DEV": (report.get("dev_gate") or {}).get("status","unknown"),
+              "HIDDEN": (report.get("hidden_gate") or {}).get("status","unknown"),
+              "FRESH": (report.get("fresh_gate") or {}).get("status","unknown"),
+              "CONFIRM500": (report.get("confirm500_gate") or {}).get("status","unknown"),
+              "ESCALATED": str(bool(report.get("escalated_to_500",False))).lower(),
+              "PROMOTION": (report.get("promotion") or {}).get("decision","unknown"),
+              "SELECTED": report.get("selected_strength"),
+          }
+          for key,value in values.items():
+              print(f"{key}={shlex.quote(str(value))}")
+          PY
+          )"
+
+            next_retry=0
+            search_exhausted="$EXHAUSTED"
+            if [ "$search_exhausted" != "true" ]; then
+              if [ "$max_rounds" -eq 0 ] || [ "$ROUND" -lt "$max_rounds" ]; then
+                continue_loop=1
+              fi
+            fi
+
+            printf -v body '@ericpeng0604-coder\n\n## Human Expert v4 — Round %s\n\n- Run：%s\n- Expert corpus：%s Runs / %s card choices\n- Human holdout top-1：%s\n- Combat：**MCTS-2000 固定**\n- Gate：Dev **%s** → Hidden **%s** → Fresh **%s**\n- Promotion：**%s**\n- Selected expert strength：%s\n- Human Expert generation：%s\n- Accepted / Rejected：%s / %s\n- Current expert strength：%s\n- 正式 PPO / Strategy Champion：**未修改**\n- 下一輪：**%s**'               "$ROUND" "$run_url" "$RUNS" "$CHOICES" "$HOLDOUT" "$DEV" "$HIDDEN" "$FRESH" "$CONFIRM500" "$ESCALATED" "$PROMOTION" "$SELECTED" "$GEN" "$ACCEPTED" "$REJECTED" "$STRENGTH"               "$([ "$continue_loop" -eq 1 ] && echo CONTINUE || echo PAUSE)"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body" >/dev/null
+          else
+            next_retry="$((retry_count + 1))"
+            if [ "$next_retry" -le "$max_retries" ]; then
+              continue_loop=1
+            fi
+            printf -v body '@ericpeng0604-coder\n\n## Human Expert v4 — execution failure\n\n- Run：%s\n- Contract：%s\n- Human Expert round：%s\n- Retry：%s / %s\n- 正式 Champion：**未修改**'               "$run_url" "$CONTRACT_RESULT" "$ROUND_RESULT" "$next_retry" "$max_retries"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body" >/dev/null
+          fi
+
+          if [ "$continue_loop" -ne 1 ]; then
+            echo "HUMAN_EXPERT_LOOP_PAUSED exhausted=$search_exhausted"
+            exit 0
+          fi
+
+          path="control/sts1-human-expert-loop-v4.request"
+          updated=0
+          for control_try in 1 2 3 4 5; do
+            meta="$RUNNER_TEMP/control-meta.json"
+            gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$GITHUB_REF_NAME" > "$meta"
+            sha="$(python - "$meta" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding="utf-8"))["sha"])
+          PY
+          )"
+            python - "$meta" "$RUNNER_TEMP/current.request" "$RUNNER_TEMP/next.request" "$next_attempt" "$next_retry" <<'PY'
+          import base64, json, sys
+          from pathlib import Path
+          meta=json.load(open(sys.argv[1], encoding="utf-8"))
+          raw=base64.b64decode(meta["content"]).decode("utf-8")
+          rows=[]
+          for line in raw.splitlines():
+              if not line.strip():
+                  continue
+              key,value=line.split("=",1)
+              if key=="attempt":
+                  value=sys.argv[4]
+              elif key=="retry_count":
+                  value=sys.argv[5]
+              rows.append((key,value))
+          Path(sys.argv[2]).write_text(raw, encoding="utf-8")
+          Path(sys.argv[3]).write_text(
+              "".join(f"{key}={value}\n" for key,value in rows),
+              encoding="utf-8",
+          )
+          PY
+            if cmp -s "$RUNNER_TEMP/current.request" "$RUNNER_TEMP/next.request"; then
+              updated=1
+              break
+            fi
+            encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
+            if gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path"               -f message="control(sts1): continue Human Expert loop"               -f content="$encoded"               -f sha="$sha"               -f branch="$GITHUB_REF_NAME" >/dev/null 2>"$RUNNER_TEMP/control-put.err"; then
+              updated=1
+              break
+            fi
+            cat "$RUNNER_TEMP/control-put.err"
+            sleep "$control_try"
+          done
+          test "$updated" -eq 1
+
+          dispatched=0
+          for dispatch_try in 1 2 3; do
+            if gh workflow run sts1-human-expert-loop-v4.yml --ref "$GITHUB_REF_NAME"; then
+              dispatched=1
+              echo "HUMAN_EXPERT_AUTO_LOOP_DISPATCHED try=$dispatch_try"
+              break
+            fi
+            sleep "$dispatch_try"
+          done
+          test "$dispatched" -eq 1

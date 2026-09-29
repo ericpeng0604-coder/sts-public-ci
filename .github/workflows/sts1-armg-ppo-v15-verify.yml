@@ -9,6 +9,7 @@ on:
       - scripts/sts1/sts1_armg_ppo_train_v14_sharded.py
       - scripts/sts1/sts1_armg_ppo_v14_replay.py
       - scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py
+      - scripts/sts1/sts1_armg_ppo_rollout_v14.py
       - scripts/sts1/sts1_armg_ppo_v14_gate.py
       - scripts/sts1/sts1_armg_ppo_v15_tournament.py
       - scripts/sts1/sts1_armg_ppo_v15_eval.py
@@ -54,6 +55,7 @@ jobs:
             scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
             scripts/sts1/sts1_armg_ppo_v14_replay.py \
             scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py \
+            scripts/sts1/sts1_armg_ppo_rollout_v14.py \
             scripts/sts1/sts1_armg_ppo_v14_gate.py \
             scripts/sts1/sts1_armg_ppo_v15_tournament.py \
             scripts/sts1/sts1_armg_ppo_v15_eval.py \

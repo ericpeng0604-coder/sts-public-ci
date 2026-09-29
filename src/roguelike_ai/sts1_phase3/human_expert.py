@@ -18,7 +18,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from roguelike_ai.sts1_phase3.simulator import ArmGNoncombatPolicy, SimulatorRunError
 
 
-PRIOR_SCHEMA_VERSION = "sts1-human-expert-card-prior-v2"
+PRIOR_SCHEMA_VERSION = "sts1-human-expert-card-prior-v3"
 SKIP_TOKEN = "__SKIP__"
 _UPGRADE_RE = re.compile(r"\+\d+$")
 
@@ -104,24 +104,29 @@ def _choice_candidates(choice: Mapping[str, Any]) -> tuple[str, list[str]]:
 
 
 def _fit_scores(
-    examples: Sequence[tuple[int, str, list[str], float]],
+    examples: Sequence[tuple[int, str, list[str], float, tuple[str, ...]]],
     *,
     alpha: float,
 ) -> tuple[
     dict[str, float],
     dict[str, dict[str, float]],
     dict[str, dict[str, float]],
+    dict[str, dict[str, float]],
     dict[str, Any],
 ]:
-    """Fit base card utility plus direct card-vs-card matchup preferences."""
+    """Fit base utility, offered-set matchup, and existing-deck synergy."""
     wins: dict[str, float] = defaultdict(float)
     losses: dict[str, float] = defaultdict(float)
     act_wins: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     act_losses: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     pair_wins: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    context_wins: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    context_losses: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     pair_count = 0
+    context_pair_count = 0
 
-    for act, picked, alternatives, weight in examples:
+    for act, picked, alternatives, weight, context_cards in examples:
+        context = tuple(sorted(set(normalize_card_name(x) for x in context_cards if x)))
         for other in alternatives:
             if other == picked:
                 continue
@@ -131,6 +136,10 @@ def _fit_scores(
             act_losses[act][other] += weight
             pair_wins[picked][other] += weight
             pair_count += 1
+            for existing in context:
+                context_wins[picked][existing] += weight
+                context_losses[other][existing] += weight
+                context_pair_count += 1
 
     names = sorted(set(wins) | set(losses))
     global_scores = {
@@ -164,10 +173,28 @@ def _fit_scores(
         if row:
             pairwise_scores[left] = row
 
-    return global_scores, by_act, pairwise_scores, {
+    context_scores: dict[str, dict[str, float]] = {}
+    context_directions = 0
+    context_alpha = max(4.0, alpha * 2.0)
+    for candidate in names:
+        row: dict[str, float] = {}
+        keys = sorted(set(context_wins[candidate]) | set(context_losses[candidate]))
+        for existing in keys:
+            positive = float(context_wins[candidate].get(existing, 0.0))
+            negative = float(context_losses[candidate].get(existing, 0.0))
+            row[existing] = math.log(
+                (positive + context_alpha) / (negative + context_alpha)
+            )
+            context_directions += 1
+        if row:
+            context_scores[candidate] = row
+
+    return global_scores, by_act, pairwise_scores, context_scores, {
         "pairwise_examples": pair_count,
+        "context_pair_examples": context_pair_count,
         "unique_cards": len(names),
         "observed_matchup_directions": matchup_pairs,
+        "observed_context_directions": context_directions,
     }
 
 
@@ -181,48 +208,61 @@ def _base_card_score(prior: Mapping[str, Any], card_name: str, *, floor: int) ->
     return 0.30 * global_score + 0.70 * act_score
 
 
+def _mean_known(row: Mapping[str, Any], values: Sequence[str], *, exclude: str | None = None) -> float:
+    known: list[float] = []
+    for value in values:
+        name = normalize_card_name(value)
+        if exclude is not None and name == exclude:
+            continue
+        if name in row:
+            known.append(float(row[name]))
+    return sum(known) / len(known) if known else 0.0
+
+
 def prior_card_score(
     prior: Mapping[str, Any],
     card_name: str,
     *,
     floor: int,
     offered: Sequence[str] | None = None,
+    deck_context: Sequence[str] | None = None,
 ) -> float:
-    """Score a card using Act-aware utility plus offered-set matchup context."""
+    """Score a card from Act, offered cards, and already-owned cards."""
     name = normalize_card_name(card_name)
-    base = _base_card_score(prior, name, floor=floor)
-    mix = float(prior.get("matchup_mix", 0.0) or 0.0)
-    if not offered or mix <= 0.0:
-        return base
+    score = _base_card_score(prior, name, floor=floor)
 
-    row = (prior.get("pairwise_scores") or {}).get(name, {}) or {}
-    matchup_values: list[float] = []
-    for other in offered:
-        other_name = normalize_card_name(other)
-        if other_name == name:
-            continue
-        if other_name in row:
-            matchup_values.append(float(row[other_name]))
+    matchup_mix = float(prior.get("matchup_mix", 0.0) or 0.0)
+    if offered and matchup_mix > 0.0:
+        row = (prior.get("pairwise_scores") or {}).get(name, {}) or {}
+        score += matchup_mix * _mean_known(row, offered, exclude=name)
 
-    if not matchup_values:
-        return base
-    matchup = sum(matchup_values) / len(matchup_values)
-    return (1.0 - mix) * base + mix * matchup
+    context_mix = float(prior.get("context_mix", 0.0) or 0.0)
+    if deck_context and context_mix > 0.0:
+        row = (prior.get("context_scores") or {}).get(name, {}) or {}
+        score += context_mix * _mean_known(row, deck_context)
+
+    return score
 
 
 def _top1_accuracy(
-    examples: Sequence[tuple[int, str, list[str], float]],
+    examples: Sequence[tuple[int, str, list[str], float, tuple[str, ...]]],
     prior: Mapping[str, Any],
 ) -> float:
     if not examples:
         return 0.0
     correct = 0
     total = 0
-    for act, picked, alternatives, _weight in examples:
+    for act, picked, alternatives, _weight, context_cards in examples:
         options = [picked] + [value for value in alternatives if value != picked]
         floor = 1 if act == 1 else 17 if act == 2 else 34 if act == 3 else 51
         scores = [
-            prior_card_score(prior, value, floor=floor, offered=options)
+            prior_card_score(
+                prior,
+                value,
+                floor=floor,
+                offered=options,
+                deck_context=context_cards,
+            )
             for value in options
         ]
         best = max(range(len(options)), key=scores.__getitem__)
@@ -245,12 +285,8 @@ def build_card_prior(
     if not files:
         raise RuntimeError(f"no supported expert run files found under {data_root}")
 
-    train_examples: list[tuple[int, str, list[str], float]] = []
-    holdout_examples: list[tuple[int, str, list[str], float]] = []
-    all_examples: list[tuple[int, str, list[str], float]] = []
-    accepted_runs = 0
-    victory_runs = 0
-    source_counts: dict[str, int] = defaultdict(int)
+    parsed: list[tuple[Path, dict[str, Any]]] = []
+    known_cards: set[str] = set()
     corpus = hashlib.sha256()
 
     for path in files:
@@ -264,6 +300,21 @@ def build_card_prior(
             raise RuntimeError(f"invalid run JSON: {path}: {exc}") from exc
         if not _valid_run(run, min_ascension=min_ascension):
             continue
+        parsed.append((path, run))
+        for choice in list(run.get("card_choices") or []):
+            picked, alternatives = _choice_candidates(choice)
+            if picked != SKIP_TOKEN:
+                known_cards.add(picked)
+            known_cards.update(x for x in alternatives if x != SKIP_TOKEN)
+
+    train_examples: list[tuple[int, str, list[str], float, tuple[str, ...]]] = []
+    holdout_examples: list[tuple[int, str, list[str], float, tuple[str, ...]]] = []
+    all_examples: list[tuple[int, str, list[str], float, tuple[str, ...]]] = []
+    accepted_runs = 0
+    victory_runs = 0
+    source_counts: dict[str, int] = defaultdict(int)
+
+    for path, run in parsed:
         accepted_runs += 1
         victory_runs += int(bool(run.get("victory")))
         source = "panacea" if "panacea" in str(path).lower() else "rotating"
@@ -271,23 +322,69 @@ def build_card_prior(
         play_id = str(run.get("play_id") or path.name)
         holdout = _stable_holdout(play_id)
         weight = _run_weight(run, path)
-        for choice in list(run.get("card_choices") or []):
+
+        purchases = sorted(
+            (
+                int(floor),
+                normalize_card_name(item),
+            )
+            for item, floor in zip(
+                list(run.get("items_purchased") or []),
+                list(run.get("item_purchase_floors") or []),
+            )
+            if normalize_card_name(item) in known_cards
+        )
+        purges = sorted(
+            (
+                int(floor),
+                normalize_card_name(item),
+            )
+            for item, floor in zip(
+                list(run.get("items_purged") or []),
+                list(run.get("items_purged_floors") or []),
+            )
+        )
+
+        acquired: list[str] = []
+        purchase_index = 0
+        purge_index = 0
+        choices = sorted(
+            enumerate(list(run.get("card_choices") or [])),
+            key=lambda row: (int(row[1].get("floor", 0) or 0), row[0]),
+        )
+        for _order, choice in choices:
             floor = int(choice.get("floor", 0) or 0)
             if floor <= 0:
                 continue
+
+            while purchase_index < len(purchases) and purchases[purchase_index][0] < floor:
+                acquired.append(purchases[purchase_index][1])
+                purchase_index += 1
+            while purge_index < len(purges) and purges[purge_index][0] < floor:
+                purge_name = purges[purge_index][1]
+                try:
+                    acquired.remove(purge_name)
+                except ValueError:
+                    pass
+                purge_index += 1
+
             picked, alternatives = _choice_candidates(choice)
             if not alternatives:
                 continue
-            row = (act_bucket(floor), picked, alternatives, weight)
+            context = tuple(acquired)
+            row = (act_bucket(floor), picked, alternatives, weight, context)
             all_examples.append(row)
             (holdout_examples if holdout else train_examples).append(row)
+
+            if picked != SKIP_TOKEN:
+                acquired.append(picked)
 
     if accepted_runs < 1 or not all_examples:
         raise RuntimeError("expert corpus produced no usable Ironclad card choices")
     if not train_examples:
         raise RuntimeError("expert corpus produced an empty training split")
 
-    global_scores, act_scores, pairwise_scores, stats = _fit_scores(
+    global_scores, act_scores, pairwise_scores, context_scores, stats = _fit_scores(
         train_examples,
         alpha=alpha,
     )
@@ -296,30 +393,38 @@ def build_card_prior(
         "global_scores": global_scores,
         "act_scores": act_scores,
         "pairwise_scores": pairwise_scores,
+        "context_scores": context_scores,
         "matchup_mix": 0.0,
+        "context_mix": 0.0,
     }
     baseline_holdout_top1 = _top1_accuracy(holdout_examples, baseline_prior)
 
-    # Select how much direct offered-set matchup context to trust using a stable
-    # holdout.  Ties prefer the smaller mix, so v2 cannot become more complex
-    # without measured holdout benefit.
-    mix_candidates = (0.0, 0.25, 0.50, 0.75, 1.0)
-    mix_results: list[dict[str, float]] = []
-    for mix in mix_candidates:
-        candidate_prior = dict(baseline_prior)
-        candidate_prior["matchup_mix"] = float(mix)
-        accuracy = _top1_accuracy(holdout_examples, candidate_prior)
-        mix_results.append({"matchup_mix": float(mix), "holdout_top1": float(accuracy)})
+    search_results: list[dict[str, float]] = []
+    for matchup_mix in (0.0, 0.25, 0.50):
+        for context_mix in (0.0, 0.25, 0.50, 0.75, 1.0):
+            candidate_prior = dict(baseline_prior)
+            candidate_prior["matchup_mix"] = float(matchup_mix)
+            candidate_prior["context_mix"] = float(context_mix)
+            accuracy = _top1_accuracy(holdout_examples, candidate_prior)
+            search_results.append(
+                {
+                    "matchup_mix": float(matchup_mix),
+                    "context_mix": float(context_mix),
+                    "holdout_top1": float(accuracy),
+                }
+            )
     selected = max(
-        mix_results,
-        key=lambda row: (row["holdout_top1"], -row["matchup_mix"]),
+        search_results,
+        key=lambda row: (
+            row["holdout_top1"],
+            -(row["matchup_mix"] + row["context_mix"]),
+        ),
     )
     matchup_mix = float(selected["matchup_mix"])
+    context_mix = float(selected["context_mix"])
     holdout_top1 = float(selected["holdout_top1"])
 
-    # Validate hyperparameters on the stable holdout, then fit deployable
-    # statistics on every permitted expert decision.
-    global_scores, act_scores, pairwise_scores, full_stats = _fit_scores(
+    global_scores, act_scores, pairwise_scores, context_scores, full_stats = _fit_scores(
         all_examples,
         alpha=alpha,
     )
@@ -338,13 +443,17 @@ def build_card_prior(
         "baseline_holdout_top1": baseline_holdout_top1,
         "holdout_top1": holdout_top1,
         "matchup_mix": matchup_mix,
-        "matchup_mix_search": mix_results,
+        "context_mix": context_mix,
+        "mix_search": search_results,
         "pairwise_examples": full_stats["pairwise_examples"],
+        "context_pair_examples": full_stats["context_pair_examples"],
         "observed_matchup_directions": full_stats["observed_matchup_directions"],
+        "observed_context_directions": full_stats["observed_context_directions"],
         "unique_cards": full_stats["unique_cards"],
         "global_scores": global_scores,
         "act_scores": act_scores,
         "pairwise_scores": pairwise_scores,
+        "context_scores": context_scores,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -402,12 +511,17 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
                     if semantic.get("choice") == "skip"
                     else normalize_card_name(semantic.get("card_name"))
                 )
+            deck_context = [
+                normalize_card_name(self.module.card_name(card))
+                for card in list(getattr(gc, "deck", []))
+            ]
             for index, card_name in enumerate(card_names):
                 additions[index] = self.expert_strength * prior_card_score(
                     self.expert_prior,
                     card_name,
                     floor=floor,
                     offered=card_names,
+                    deck_context=deck_context,
                 )
                 adjusted[index] += additions[index]
 

@@ -1,5 +1,5 @@
-attempt=11
-retry_count=2
+attempt=12
+retry_count=3
 games_per_worker=80
 rng_seed=2026092801
 temperature=0.98

@@ -71,6 +71,15 @@ FRESH_STRATEGY_GATE = StrategyGatePolicy(
     max_one_sided_sign_p=0.10,
 )
 
+CONFIRM_500_STRATEGY_GATE = StrategyGatePolicy(
+    "strategy-confirm-500",
+    500,
+    min_win_delta=1,
+    min_floor_delta=0.0,
+    max_floor_regression_with_win_gain=60.0,
+    max_one_sided_sign_p=0.10,
+)
+
 
 def branch_quality(
     *,
@@ -407,6 +416,7 @@ __all__ = [
     "ArmGStrategyError",
     "DEV_STRATEGY_GATE",
     "FRESH_STRATEGY_GATE",
+    "CONFIRM_500_STRATEGY_GATE",
     "HIDDEN_STRATEGY_GATE",
     "SAFETY_FIELDS",
     "STRATEGY_DATASET_SCHEMA_VERSION",

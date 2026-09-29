@@ -43,7 +43,9 @@ jobs:
       - name: Install verification runtime
         run: |
           python -m pip install --upgrade pip
-          pip install -e . numpy torch==2.11.0 pytest
+          pip install -e . numpy pytest
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python -c 'import torch; assert torch.__version__.startswith("2.11.0"); assert not torch.cuda.is_available(); print("PPO_V15_VERIFY_CPU_TORCH_PASS", torch.__version__)'
 
       - name: Compile and unit tests
         run: |

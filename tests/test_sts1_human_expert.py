@@ -105,6 +105,7 @@ def test_build_prior_filters_to_high_ascension_ironclad(tmp_path: Path) -> None:
     assert 0.0 <= report["baseline_holdout_top1"] <= 1.0
     assert report["holdout_top1"] >= report["baseline_holdout_top1"]
     assert 0.0 <= report["matchup_mix"] <= 1.0
+    assert 0.0 <= report["context_mix"] <= 1.0
     assert report["observed_matchup_directions"] > 0
     assert prior_card_score(report, "Inflame", floor=3) > prior_card_score(
         report,
@@ -160,3 +161,31 @@ def test_pairwise_offered_context_changes_score() -> None:
     }
     assert prior_card_score(prior, "A", floor=3, offered=["A", "B"]) > 0.0
     assert prior_card_score(prior, "A", floor=3, offered=["A", "C"]) < 0.0
+
+
+def test_deck_context_changes_score() -> None:
+    prior = {
+        "global_scores": {"Corruption": 0.0},
+        "act_scores": {"2": {"Corruption": 0.0}},
+        "pairwise_scores": {},
+        "context_scores": {
+            "Corruption": {
+                "Feel No Pain": 2.0,
+                "Clash": -2.0,
+            }
+        },
+        "matchup_mix": 0.0,
+        "context_mix": 1.0,
+    }
+    assert prior_card_score(
+        prior,
+        "Corruption",
+        floor=20,
+        deck_context=["Feel No Pain"],
+    ) > 0.0
+    assert prior_card_score(
+        prior,
+        "Corruption",
+        floor=20,
+        deck_context=["Clash"],
+    ) < 0.0

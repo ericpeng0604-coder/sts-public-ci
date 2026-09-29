@@ -26,7 +26,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . numpy torch==2.11.0
+          python -m pip install -e . torch==2.11.0 numpy torch==2.11.0
       - name: Fetch pinned expert corpus
         run: |
           git clone --filter=blob:none https://github.com/MaT1g3R/Slay-the-Spire-data.git "$RUNNER_TEMP/expert-data"

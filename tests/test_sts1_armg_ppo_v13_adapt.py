@@ -45,6 +45,7 @@ def test_profile_ladder_is_bounded():
         assert profile.name == name
         mod.validate_profile(profile)
         assert profile.entropy <= 0.005
+        assert profile.epochs == 6
 
 
 def test_long_plateau_alternates_explore_and_refine_when_not_close():
@@ -125,3 +126,4 @@ def test_adapt_changes_training_only_not_gate():
 def test_all_profiles_pass_safety_bounds():
     for profile in mod.PROFILES.values():
         mod.validate_profile(profile)
+        assert profile.epochs == 6

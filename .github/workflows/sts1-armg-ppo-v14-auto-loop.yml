@@ -140,7 +140,7 @@ jobs:
           source control/sts1-armg-ppo-v14-auto-loop.request
           set +a
           echo "PPO_TEMPERATURE=$temperature" >> "$GITHUB_ENV"
-          echo "PPO_EPOCHS=$epochs" >> "$GITHUB_ENV"
+          echo "PPO_EPOCHS=6" >> "$GITHUB_ENV"
           echo "PPO_LR=$learning_rate" >> "$GITHUB_ENV"
           echo "PPO_CLIP=$clip" >> "$GITHUB_ENV"
           echo "PPO_TARGET_KL=$target_kl" >> "$GITHUB_ENV"

@@ -29,11 +29,11 @@ class Profile:
 
 
 PROFILES = {
-    "stable": Profile("stable", 50, 1.00, 4, 3e-5, 0.20, 0.020, 0.0010, 0.020),
-    "diversify": Profile("diversify", 60, 1.04, 5, 3.5e-5, 0.20, 0.018, 0.0015, 0.018),
+    "stable": Profile("stable", 50, 1.00, 6, 3e-5, 0.20, 0.020, 0.0010, 0.020),
+    "diversify": Profile("diversify", 60, 1.04, 6, 3.5e-5, 0.20, 0.018, 0.0015, 0.018),
     "broaden": Profile("broaden", 75, 1.07, 6, 4e-5, 0.18, 0.015, 0.0020, 0.015),
     "escape": Profile("escape", 100, 1.10, 6, 4.5e-5, 0.16, 0.012, 0.0030, 0.012),
-    "wide_explore": Profile("wide_explore", 100, 1.12, 5, 4e-5, 0.15, 0.010, 0.0040, 0.010),
+    "wide_explore": Profile("wide_explore", 100, 1.12, 6, 4e-5, 0.15, 0.010, 0.0040, 0.010),
     "near_miss_refine": Profile("near_miss_refine", 80, 0.98, 6, 2.5e-5, 0.12, 0.008, 0.0005, 0.030),
 }
 
@@ -114,8 +114,8 @@ def validate_profile(profile: Profile) -> None:
         raise RuntimeError("games_per_worker outside safety bounds")
     if not 0.70 <= profile.temperature <= 1.20:
         raise RuntimeError("temperature outside safety bounds")
-    if not 2 <= profile.epochs <= 8:
-        raise RuntimeError("epochs outside safety bounds")
+    if profile.epochs != 6:
+        raise RuntimeError("all PPO v1.4 profiles must keep a 6-epoch ceiling")
     if not 1e-5 <= profile.learning_rate <= 8e-5:
         raise RuntimeError("learning_rate outside safety bounds")
     if not 0.10 <= profile.clip <= 0.25:
@@ -170,6 +170,7 @@ def adapt(
         "last_gate_30_win_delta": _last_win_delta(state),
         "last_dev_mean_paired_floor_delta": _last_floor_delta(state),
         "profile": asdict(profile),
+        "smart_early_stop_epoch_ceiling": 6,
         "gate_policy_changed": True,
         "gate_policy_note": "Dev Parent accumulates; strict Final 30/50 remains unchanged",
         "production_champion_changed": False,

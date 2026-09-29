@@ -1,0 +1,164 @@
+name: STS1 G5 vs G3 500 Paired Benchmark
+
+on:
+  push:
+    branches:
+      - gpt/sts1-g5-vs-g3-500-20260929
+    paths:
+      - control/sts1-g5-vs-g3-500.request
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sts1-g5-vs-g3-500-benchmark
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  GH_TOKEN: ${{ github.token }}
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  G3_ARTIFACT_ID: '11010168960'
+  G5_ARTIFACT_ID: '11013460597'
+  G3_SHA256: 'e6300bc93f4ea53b6cb6c394d7d032b3c7f911f334a498ff0d7c0df7c5b6bca3'
+  G5_SHA256: 'd113380af3f0d39c128737fcaa805e32184037708374bc9d1bfcbb2958f1e6d7'
+
+jobs:
+  paired-500:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install and hydrate pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download frozen G3 and G5 weights
+        run: |
+          set -euo pipefail
+          for spec in "g3:$G3_ARTIFACT_ID:$G3_SHA256" "g5:$G5_ARTIFACT_ID:$G5_SHA256"; do
+            IFS=: read -r label artifact expected <<< "$spec"
+            mkdir -p "$RUNNER_TEMP/$label"
+            curl --fail --location               -H "Authorization: Bearer $GH_TOKEN"               -H "Accept: application/vnd.github+json"               -o "$RUNNER_TEMP/$label.zip"               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip"
+            unzip -q "$RUNNER_TEMP/$label.zip" -d "$RUNNER_TEMP/$label/raw"
+            weight="$(find "$RUNNER_TEMP/$label/raw" -name offline-champion.pt -print -quit)"
+            test -n "$weight"
+            actual="$(sha256sum "$weight" | awk '{print $1}')"
+            test "$actual" = "$expected"
+            cp "$weight" "$RUNNER_TEMP/$label.pt"
+            echo "${label^^}_WEIGHT=$RUNNER_TEMP/$label.pt" >> "$GITHUB_ENV"
+            echo "$label identity verified: $actual"
+          done
+
+      - name: Build fresh 500-seed exclusion boundary
+        run: |
+          set -euo pipefail
+          cat             external/sts-rl-agent/source/eval/eval_seeds_50.txt             control/sts1-v14-final-promotion-seeds-50.txt             > "$RUNNER_TEMP/excluded-seeds.txt"
+          python - <<'PY'
+          from pathlib import Path
+          vals=[]
+          for line in Path(Path(__import__('os').environ['RUNNER_TEMP'])/'excluded-seeds.txt').read_text().splitlines():
+              s=line.strip()
+              if s and not s.startswith('#'):
+                  vals.append(int(s))
+          assert len(set(vals)) == 100, (len(vals), len(set(vals)))
+          print("EXCLUSION_BOUNDARY_PASS", len(set(vals)))
+          PY
+
+      - name: Run G3 vs G5 on the same 500 fresh seeds
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_armg_v3_ab.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --v1-weight "$G3_WEIGHT"             --v3-weight "$G5_WEIGHT"             --formal-seed-file "$RUNNER_TEMP/excluded-seeds.txt"             --output-dir evidence/sts1/g5-vs-g3-500             --seed-count 500             --rng-seed 20260929503             --mcts-sims 2000
+
+      - name: Statistical summary
+        run: |
+          python - <<'PY'
+          import json, math, random
+          from pathlib import Path
+          p=Path("evidence/sts1/g5-vs-g3-500/armg-v3-ab-summary.json")
+          d=json.loads(p.read_text())
+          rows=d["rows"]
+          n=len(rows)
+          assert n==500
+          g3=[1 if r["v1"].get("outcome")=="victory" else 0 for r in rows]
+          g5=[1 if r["v3"].get("outcome")=="victory" else 0 for r in rows]
+          diffs=[b-a for a,b in zip(g3,g5)]
+          g5_only=sum(1 for x in diffs if x==1)
+          g3_only=sum(1 for x in diffs if x==-1)
+          discord=g5_only+g3_only
+          if discord:
+              k=min(g5_only,g3_only)
+              tail=sum(math.comb(discord,i) for i in range(k+1))/(2**discord)
+              sign_p=min(1.0,2*tail)
+          else:
+              sign_p=1.0
+          floors=[float(r["v3"]["final_floor"])-float(r["v1"]["final_floor"]) for r in rows]
+          rng=random.Random(20260929503)
+          win_boot=[]
+          floor_boot=[]
+          for _ in range(20000):
+              idx=[rng.randrange(n) for _ in range(n)]
+              win_boot.append(sum(diffs[i] for i in idx)/n)
+              floor_boot.append(sum(floors[i] for i in idx)/n)
+          win_boot.sort(); floor_boot.sort()
+          lo=lambda xs: xs[int(0.025*len(xs))]
+          hi=lambda xs: xs[int(0.975*len(xs))-1]
+          out={
+            "schema_version":"sts1-g5-vs-g3-500-analysis-v1",
+            "seed_count":n,
+            "mcts_sims":2000,
+            "g3_sha256":__import__("os").environ["G3_SHA256"],
+            "g5_sha256":__import__("os").environ["G5_SHA256"],
+            "g3_wins":sum(g3),
+            "g5_wins":sum(g5),
+            "g3_win_rate":sum(g3)/n,
+            "g5_win_rate":sum(g5)/n,
+            "paired_win_rate_delta":sum(diffs)/n,
+            "paired_win_rate_delta_bootstrap_95ci":[lo(win_boot),hi(win_boot)],
+            "g5_only_wins":g5_only,
+            "g3_only_wins":g3_only,
+            "discordant_seeds":discord,
+            "paired_exact_sign_test_two_sided_p":sign_p,
+            "mean_floor_delta_g5_minus_g3":sum(floors)/n,
+            "mean_floor_delta_bootstrap_95ci":[lo(floor_boot),hi(floor_boot)],
+            "safety":{
+              "g3_nonpass":sum(r["v1"].get("result")!="PASS_SIMULATOR_COMPLETE_RUN" for r in rows),
+              "g5_nonpass":sum(r["v3"].get("result")!="PASS_SIMULATOR_COMPLETE_RUN" for r in rows),
+            },
+          }
+          Path("evidence/sts1/g5-vs-g3-500/analysis.json").write_text(json.dumps(out,indent=2,sort_keys=True)+"\n")
+          print("G5_VS_G3_500_RESULT",json.dumps(out,sort_keys=True))
+          PY
+
+      - name: Keep compact benchmark evidence
+        if: always()
+        run: |
+          mkdir -p evidence/sts1/g5-vs-g3-500-upload
+          cp evidence/sts1/g5-vs-g3-500/armg-v3-ab-summary.json evidence/sts1/g5-vs-g3-500-upload/ 2>/dev/null || true
+          cp evidence/sts1/g5-vs-g3-500/analysis.json evidence/sts1/g5-vs-g3-500-upload/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-g5-vs-g3-500-${{ github.run_id }}
+          path: evidence/sts1/g5-vs-g3-500-upload/
+          if-no-files-found: warn
+          retention-days: 90

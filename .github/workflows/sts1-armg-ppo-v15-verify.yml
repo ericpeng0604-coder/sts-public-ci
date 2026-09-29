@@ -79,6 +79,8 @@ jobs:
               "assert len(files)==16",
               "  prepare:",
               "  eval-parent:",
+              "PPO_V15_PARENT_FAST_CACHE_HIT runs=30",
+              "if: env.PARENT_CACHE_HIT != '1'",
               "  candidate:",
               "needs: [prepare, eval-parent]",
               "curriculum: '0.00'",

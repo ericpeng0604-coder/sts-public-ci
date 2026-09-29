@@ -1,0 +1,5 @@
+requested_at=2026-09-29T16:30:00+08:00
+benchmark=v1.4-g7-vs-v1.5-g5
+seeds=500
+paired=true
+mcts_sims=2000

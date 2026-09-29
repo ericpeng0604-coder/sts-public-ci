@@ -11,6 +11,7 @@ on:
       - scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py
       - scripts/sts1/sts1_armg_ppo_v14_gate.py
       - scripts/sts1/sts1_armg_ppo_v15_tournament.py
+      - scripts/sts1/sts1_armg_ppo_v15_eval.py
       - scripts/sts1/sts1_armg_ppo_v14_state.py
       - scripts/sts1/sts1_armg_ppo_v15_adapt.py
       - control/sts1-armg-ppo-v15-auto-loop.request
@@ -55,6 +56,7 @@ jobs:
             scripts/sts1/sts1_armg_ppo_preprocess_v11_sharded.py \
             scripts/sts1/sts1_armg_ppo_v14_gate.py \
             scripts/sts1/sts1_armg_ppo_v15_tournament.py \
+            scripts/sts1/sts1_armg_ppo_v15_eval.py \
             scripts/sts1/sts1_armg_ppo_v14_state.py \
             scripts/sts1/sts1_armg_ppo_v15_adapt.py
           pytest -q \
@@ -72,20 +74,31 @@ jobs:
           from pathlib import Path
           text=Path(".github/workflows/sts1-armg-ppo-v15-population-curriculum.yml").read_text()
           required=[
+              "worker: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]",
+              'PPO_TOTAL_GAMES=$((games_per_worker * 8))',
+              "assert len(files)==16",
               "  prepare:",
+              "  eval-parent:",
               "  candidate:",
+              "needs: [prepare, eval-parent]",
               "curriculum: '0.00'",
               "curriculum: '1.00'",
               "strategy-replay.jsonl",
               "--strategy-bc-coef",
+              "Evaluate Candidate ${{ matrix.name }} on same 30 seeds",
               "merge-multiple: true",
-              "needs: [prepare, candidate]",
+              "needs: [prepare, eval-parent, candidate]",
+              "Assemble parallel 4-Candidate tournament",
+              "--parent-evidence evidence/sts1/ppo-v15-parent-eval/parent-eval.json",
+              "--candidate-evidence evidence/sts1/ppo-v15-population/D/eval/candidate-eval.json",
               "PPO_V15_PARALLEL_POPULATION_READY",
           ]
           missing=[item for item in required if item not in text]
           assert not missing, missing
           assert 'for spec in "A:0.00"' not in text
-          print("PPO_V15_PARALLEL_WIRING_PASS")
+          assert "--candidate A=evidence/sts1/ppo-v15-population/A/actor.pt" not in text
+          assert text.count("worker: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]")==1
+          print("PPO_V15_TEN_MINUTE_WIRING_PASS")
           PY
 
       - name: Hydrate pinned runtime
@@ -210,31 +223,87 @@ jobs:
           print("PPO_V15_STRATEGY_BC_PASS",r["strategy_bc_total_examples"])
           PY
 
-      - name: Real 30-seed Gate smoke
+      - name: Real 30-seed parallel-eval and Gate-cache smoke
         run: |
-          mkdir -p "$RUNNER_TEMP/gate-state"
-          cp external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt "$RUNNER_TEMP/gate-state/offline-champion.pt"
-          printf '%s\n' '{"schema_version":"sts1-armg-ppo-v14-loop-state-v1","round_index":0,"generation":0,"stagnation_count":0,"production_champion_replaced":false}' > "$RUNNER_TEMP/gate-state/state.json"
-          python scripts/sts1/sts1_armg_ppo_v14_gate.py \
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/eval-state"
+          cp external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt "$RUNNER_TEMP/eval-state/offline-champion.pt"
+          printf '%s\n' '{"schema_version":"sts1-armg-ppo-v14-loop-state-v1","round_index":0,"generation":0,"parent_generation":0,"stagnation_count":0,"production_champion_replaced":false}' > "$RUNNER_TEMP/eval-state/state.json"
+
+          python scripts/sts1/sts1_armg_ppo_v15_eval.py parent \
             --module-dir external/sts_lightspeed/source/build-probe \
             --armg-root .cache/v15-armg \
-            --parent-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
-            --baseline-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
-            --candidate-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --parent-weight "$RUNNER_TEMP/eval-state/offline-champion.pt" \
             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
-            --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
-            --state "$RUNNER_TEMP/gate-state/state.json" \
-            --output-dir "$RUNNER_TEMP/gate" \
+            --state "$RUNNER_TEMP/eval-state/state.json" \
+            --output-dir "$RUNNER_TEMP/parent-eval" \
             --mcts-sims 2000 \
             --workers 4
+
+          python scripts/sts1/sts1_armg_ppo_v15_eval.py candidate \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/v15-armg \
+            --candidate "A=$RUNNER_TEMP/eval-state/offline-champion.pt" \
+            --index 0 \
+            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --parent-evidence "$RUNNER_TEMP/parent-eval/parent-eval.json" \
+            --output-dir "$RUNNER_TEMP/candidate-A" \
+            --mcts-sims 2000 \
+            --workers 4
+
           python - <<'PY'
           import json, os
           from pathlib import Path
-          g=json.loads(Path(os.environ["RUNNER_TEMP"]+"/gate/gate-summary.json").read_text())
+          src=Path(os.environ["RUNNER_TEMP"])/"candidate-A/candidate-eval.json"
+          payload=json.loads(src.read_text())
+          payload["candidate"]["name"]="B"
+          payload["candidate"]["index"]=1
+          payload["candidate"]["rank_key"][-1]=-1
+          dst=Path(os.environ["RUNNER_TEMP"])/"candidate-B"
+          dst.mkdir(parents=True,exist_ok=True)
+          (dst/"candidate-eval.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+          PY
+
+          cp "$RUNNER_TEMP/parent-eval/state.json" "$RUNNER_TEMP/eval-state/state.json"
+          python scripts/sts1/sts1_armg_ppo_v15_tournament.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/v15-armg \
+            --parent-weight "$RUNNER_TEMP/eval-state/offline-champion.pt" \
+            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --state "$RUNNER_TEMP/eval-state/state.json" \
+            --output-dir "$RUNNER_TEMP/tournament" \
+            --mcts-sims 2000 \
+            --workers 4 \
+            --parent-evidence "$RUNNER_TEMP/parent-eval/parent-eval.json" \
+            --candidate-evidence "$RUNNER_TEMP/candidate-A/candidate-eval.json" \
+            --candidate-evidence "$RUNNER_TEMP/candidate-B/candidate-eval.json"
+
+          python scripts/sts1/sts1_armg_ppo_v14_gate.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/v15-armg \
+            --parent-weight "$RUNNER_TEMP/eval-state/offline-champion.pt" \
+            --baseline-weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --candidate-weight "$RUNNER_TEMP/eval-state/offline-champion.pt" \
+            --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt \
+            --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+            --state "$RUNNER_TEMP/eval-state/state.json" \
+            --output-dir "$RUNNER_TEMP/gate" \
+            --mcts-sims 2000 \
+            --workers 4 | tee "$RUNNER_TEMP/gate.log"
+
+          grep -q 'PPO_V14_CACHE_HIT key=dev_parent runs=30' "$RUNNER_TEMP/gate.log"
+          grep -q 'PPO_V14_CACHE_HIT key=dev_candidate runs=30' "$RUNNER_TEMP/gate.log"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          t=json.loads((Path(os.environ["RUNNER_TEMP"])/"tournament/tournament-summary.json").read_text())
+          g=json.loads((Path(os.environ["RUNNER_TEMP"])/"gate/gate-summary.json").read_text())
+          assert t["parallel_candidate_evaluation"] is True, t
+          assert t["reused_by_gate"] is True, t
           assert g["dev_gate"]["status"]=="HOLD", g
           assert g["mcts_sims"]==2000, g
           assert g["production_champion_replaced"] is False, g
-          print("PPO_V15_GATE_POLICY_PASS")
+          print("PPO_V15_PARALLEL_EVAL_GATE_REUSE_PASS")
           PY
 
       - name: Repository whitespace check

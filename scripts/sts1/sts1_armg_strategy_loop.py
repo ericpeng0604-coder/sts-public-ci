@@ -1723,15 +1723,14 @@ def _interpolate_checkpoint(
 
 
 def _dev_gate_rank(gate: Mapping[str, Any]) -> tuple[float, ...]:
-    paired = gate.get("paired") or {}
-    floor_delta = gate.get("floor_delta")
+    """Victory-first Candidate ordering; floor depth is not a selection target."""
+    paired_wins = gate.get("paired_wins") or {}
     return (
         1.0 if gate.get("status") == "PASS" else 0.0,
         float(gate.get("win_delta", -10**9) or 0.0),
-        float(floor_delta) if isinstance(floor_delta, (int, float)) else -10**9,
-        float(paired.get("candidate_better", 0) or 0)
-        - float(paired.get("candidate_worse", 0) or 0),
-        -float(paired.get("one_sided_sign_p", 1.0) or 1.0),
+        float(paired_wins.get("candidate_better", 0) or 0)
+        - float(paired_wins.get("candidate_worse", 0) or 0),
+        -float(paired_wins.get("one_sided_sign_p", 1.0) or 1.0),
     )
 
 

@@ -1,0 +1,224 @@
+name: STS1 G7 vs G3 500 Paired Benchmark
+
+on:
+  push:
+    branches:
+      - gpt/sts1-g7-vs-g3-500-20260929
+    paths:
+      - control/sts1-g7-vs-g3-500.request
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sts1-g7-vs-g3-500-benchmark
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  GH_TOKEN: ${{ github.token }}
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  G3_ARTIFACT_ID: '11010168960'
+  G7_ARTIFACT_ID: '11016750527'
+  G5_BENCHMARK_ARTIFACT_ID: '11017086007'
+  G3_SHA256: 'e6300bc93f4ea53b6cb6c394d7d032b3c7f911f334a498ff0d7c0df7c5b6bca3'
+  G7_SHA256: '93e12e8b2f328736c57f457c7bc23037475be9d2a63607793dee3d0acfb62cf8'
+
+jobs:
+  prepare-seeds:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reuse the exact G5-vs-G3 500 seeds
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/previous"
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/previous.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G5_BENCHMARK_ARTIFACT_ID/zip"
+          unzip -q "$RUNNER_TEMP/previous.zip" -d "$RUNNER_TEMP/previous"
+          summary="$(find "$RUNNER_TEMP/previous" -name armg-v3-ab-summary.json -print -quit)"
+          test -n "$summary"
+          python - "$summary" "$RUNNER_TEMP/seeds-500.txt" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          seeds=[int(r["seed"]) for r in d["rows"]]
+          assert len(seeds)==500, len(seeds)
+          assert len(set(seeds))==500, len(set(seeds))
+          open(sys.argv[2],"w",encoding="utf-8").write("\n".join(map(str,seeds))+"\n")
+          print("G7_BENCHMARK_SEEDS_PASS",len(seeds),seeds[0],seeds[-1])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-g7-vs-g3-seeds-${{ github.run_id }}
+          path: ${{ runner.temp }}/seeds-500.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  paired:
+    needs: prepare-seeds
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install and hydrate pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download frozen G3 and G7 weights
+        run: |
+          set -euo pipefail
+          for spec in "g3:$G3_ARTIFACT_ID:$G3_SHA256" "g7:$G7_ARTIFACT_ID:$G7_SHA256"; do
+            IFS=: read -r label artifact expected <<< "$spec"
+            mkdir -p "$RUNNER_TEMP/$label"
+            curl --fail --location               -H "Authorization: Bearer $GH_TOKEN"               -H "Accept: application/vnd.github+json"               -o "$RUNNER_TEMP/$label.zip"               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip"
+            unzip -q "$RUNNER_TEMP/$label.zip" -d "$RUNNER_TEMP/$label/raw"
+            weight="$(find "$RUNNER_TEMP/$label/raw" -name offline-champion.pt -print -quit)"
+            test -n "$weight"
+            actual="$(sha256sum "$weight" | awk '{print $1}')"
+            test "$actual" = "$expected"
+            cp "$weight" "$RUNNER_TEMP/$label.pt"
+            echo "${label^^}_WEIGHT=$RUNNER_TEMP/$label.pt" >> "$GITHUB_ENV"
+            echo "$label identity verified: $actual"
+          done
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-g7-vs-g3-seeds-${{ github.run_id }}
+          path: ${{ runner.temp }}/seeds
+
+      - name: Run 50 paired seeds
+        run: |
+          set -euo pipefail
+          shard=${{ matrix.shard }}
+          start=$((shard * 50))
+          python scripts/sts1/sts1_armg_paired_seed_shard.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg             --baseline-weight "$G3_WEIGHT"             --candidate-weight "$G7_WEIGHT"             --seed-file "$RUNNER_TEMP/seeds/seeds-500.txt"             --start-index "$start"             --seed-count 50             --output-dir "evidence/sts1/g7-vs-g3-500/shard-$shard"             --mcts-sims 2000
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-g7-vs-g3-shard-${{ matrix.shard }}-${{ github.run_id }}
+          path: evidence/sts1/g7-vs-g3-500/shard-${{ matrix.shard }}/summary.json
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sts1-g7-vs-g3-shard-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/shards
+
+      - name: Aggregate and analyze all 500 paired seeds
+        run: |
+          python - <<'PY'
+          import json, math, os, random
+          from pathlib import Path
+
+          files=sorted(Path(os.environ["RUNNER_TEMP"]).glob("shards/**/summary.json"))
+          assert len(files)==10, len(files)
+          rows=[]
+          for f in files:
+              d=json.loads(f.read_text())
+              rows.extend(d["rows"])
+          rows.sort(key=lambda r:int(r["seed"]))
+          assert len(rows)==500, len(rows)
+          assert len({int(r["seed"]) for r in rows})==500
+
+          g3=[1 if r["baseline"].get("outcome")=="victory" else 0 for r in rows]
+          g7=[1 if r["candidate"].get("outcome")=="victory" else 0 for r in rows]
+          diffs=[b-a for a,b in zip(g3,g7)]
+          floors=[
+              float(r["candidate"]["final_floor"])-float(r["baseline"]["final_floor"])
+              for r in rows
+          ]
+          g7_only=sum(d==1 for d in diffs)
+          g3_only=sum(d==-1 for d in diffs)
+          discord=g7_only+g3_only
+          if discord:
+              k=min(g7_only,g3_only)
+              tail=sum(math.comb(discord,i) for i in range(k+1))/(2**discord)
+              sign_p=min(1.0,2*tail)
+          else:
+              sign_p=1.0
+
+          rng=random.Random(20260929703)
+          n=len(rows)
+          win_boot=[]
+          floor_boot=[]
+          for _ in range(20000):
+              idx=[rng.randrange(n) for _ in range(n)]
+              win_boot.append(sum(diffs[i] for i in idx)/n)
+              floor_boot.append(sum(floors[i] for i in idx)/n)
+          win_boot.sort(); floor_boot.sort()
+          def ci(xs):
+              return [xs[int(0.025*len(xs))], xs[int(0.975*len(xs))-1]]
+
+          out={
+              "schema_version":"sts1-g7-vs-g3-500-analysis-v1",
+              "seed_source":"exact_same_500_as_g5_vs_g3",
+              "seed_count":500,
+              "mcts_sims":2000,
+              "g3_sha256":os.environ["G3_SHA256"],
+              "g7_sha256":os.environ["G7_SHA256"],
+              "g3_wins":sum(g3),
+              "g7_wins":sum(g7),
+              "g3_win_rate":sum(g3)/n,
+              "g7_win_rate":sum(g7)/n,
+              "paired_win_rate_delta":sum(diffs)/n,
+              "paired_win_rate_delta_bootstrap_95ci":ci(win_boot),
+              "g7_only_wins":g7_only,
+              "g3_only_wins":g3_only,
+              "discordant_seeds":discord,
+              "paired_exact_sign_test_two_sided_p":sign_p,
+              "mean_floor_delta_g7_minus_g3":sum(floors)/n,
+              "mean_floor_delta_bootstrap_95ci":ci(floor_boot),
+              "safety":{
+                  "g3_nonpass":sum(r["baseline"].get("result")!="PASS_SIMULATOR_COMPLETE_RUN" for r in rows),
+                  "g7_nonpass":sum(r["candidate"].get("result")!="PASS_SIMULATOR_COMPLETE_RUN" for r in rows),
+              },
+          }
+          outdir=Path("evidence/sts1/g7-vs-g3-500")
+          outdir.mkdir(parents=True,exist_ok=True)
+          (outdir/"analysis.json").write_text(json.dumps(out,indent=2,sort_keys=True)+"\n")
+          (outdir/"rows.json").write_text(json.dumps(rows,indent=2,sort_keys=True)+"\n")
+          print("G7_VS_G3_500_RESULT",json.dumps(out,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-g7-vs-g3-500-${{ github.run_id }}
+          path: |
+            evidence/sts1/g7-vs-g3-500/analysis.json
+            evidence/sts1/g7-vs-g3-500/rows.json
+          if-no-files-found: error
+          retention-days: 90

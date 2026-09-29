@@ -378,7 +378,7 @@ jobs:
 
           dispatched=0
           for dispatch_try in 1 2 3; do
-            if gh workflow run sts1-human-expert-loop-v2.yml --ref "$GITHUB_REF_NAME"; then
+            if gh workflow run sts1-human-expert-loop-v3.yml --ref "$GITHUB_REF_NAME"; then
               dispatched=1
               echo "HUMAN_EXPERT_AUTO_LOOP_DISPATCHED try=$dispatch_try"
               break

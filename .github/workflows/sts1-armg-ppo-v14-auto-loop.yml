@@ -432,12 +432,13 @@ jobs:
             "R_POOL":r.get("ppo_pool_games",0),
             "R_ELITE":r.get("elite_pool_games",0),
             "R_STALE":r.get("stale_ppo_games_rejected",0),
+            "SELECTED_STEP":(s.get("v14_last_gate_preview") or {}).get("selected_step_scale","unknown"),
           }
           for k,v in vals.items(): print(f"{k}={shlex.quote(str(v))}")
           PY
           )"
             if [ "$max_rounds" -gt 0 ] && [ "$ROUND" -ge "$max_rounds" ]; then should_continue=0; fi
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.4 Auto Loop — Round %s\n\n- Run：%s\n- Training Parent：**%s**\n- Parent generation：%s\n- Final Gate：**%s**\n- Stagnation：%s\n- Fresh games：%s\n- PPO replay：%s games / %s decisions\n- Same-parent replay pool：%s games\n- Elite archive：%s games\n- Stale PPO replay rejected：%s\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）' "$ROUND" "$run_url" "$DECISION" "$PGEN" "$READY" "$STAG" "$R_FRESH" "$R_TRAIN" "$R_TRAIN_DECISIONS" "$R_POOL" "$R_ELITE" "$R_STALE"
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.4 Auto Loop — Round %s\n\n- Run：%s\n- Training Parent：**%s**\n- Parent generation：%s\n- Final Gate：**%s**\n- Stagnation：%s\n- Selected actor step：**%s**\n- Fresh games：%s\n- PPO replay：%s games / %s decisions\n- Same-parent replay pool：%s games\n- Elite archive：%s games\n- Stale PPO replay rejected：%s\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）' "$ROUND" "$run_url" "$DECISION" "$PGEN" "$READY" "$STAG" "$SELECTED_STEP" "$R_FRESH" "$R_TRAIN" "$R_TRAIN_DECISIONS" "$R_POOL" "$R_ELITE" "$R_STALE"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
           else
             next_retry="$((retry_count + 1))"

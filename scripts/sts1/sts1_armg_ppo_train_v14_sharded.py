@@ -76,6 +76,34 @@ def should_reset_critic(
     return critic_loaded and health_explained_variance < threshold
 
 
+def curriculum_floor_band(floor: int) -> str:
+    """Map a terminal floor to a coarse act-sized training band."""
+    if floor <= 16:
+        return "act1"
+    if floor <= 33:
+        return "act2"
+    return "act3"
+
+
+def choose_curriculum_focus(
+    floors: list[int],
+    victories: list[bool],
+) -> tuple[str, dict[str, int]]:
+    """Pick the most common failure band, preferring later acts on ties."""
+    if len(floors) != len(victories):
+        raise RuntimeError("curriculum metadata length mismatch")
+    counts = {"act1": 0, "act2": 0, "act3": 0}
+    for floor, victory in zip(floors, victories):
+        if victory:
+            continue
+        counts[curriculum_floor_band(int(floor))] += 1
+    if sum(counts.values()) == 0:
+        return "none", counts
+    order = {"act1": 0, "act2": 1, "act3": 2}
+    focus = max(counts, key=lambda k: (counts[k], order[k]))
+    return focus, counts
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("shards", "armg-root", "base-weight", "output"):
@@ -99,6 +127,7 @@ def main() -> int:
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--bc-coef", type=float, default=0.01)
     p.add_argument("--bc-max-decisions", type=int, default=1024)
+    p.add_argument("--curriculum-strength", type=float, default=0.0)
     a = p.parse_args()
 
     if not 0.25 <= a.behavior_temperature <= 2.0:
@@ -113,6 +142,8 @@ def main() -> int:
         raise RuntimeError("bc-coef outside safe bounds")
     if not 0 <= a.bc_max_decisions <= 4096:
         raise RuntimeError("bc-max-decisions outside safe bounds")
+    if not 0.0 <= a.curriculum_strength <= 1.5:
+        raise RuntimeError("curriculum-strength outside safe bounds")
 
     os.environ["STS_BOT_DIR"] = str(a.armg_root)
     sys.path.insert(0, str(a.armg_root))
@@ -181,6 +212,47 @@ def main() -> int:
             replay_decisions += len(d["action"])
     if replay_decisions > fresh_decisions:
         raise RuntimeError("replay decisions must not exceed fresh decisions")
+
+    curriculum_floors: list[int] = []
+    curriculum_victories: list[bool] = []
+    seen_curriculum_seeds: set[int] = set()
+    for path in fresh_files:
+        with np.load(path, allow_pickle=False) as d:
+            if "game_seed" not in d or "game_final_floor" not in d or "game_victory" not in d:
+                if a.curriculum_strength > 0.0:
+                    raise RuntimeError("curriculum requires game floor/victory metadata")
+                continue
+            seeds = np.asarray(d["game_seed"], np.int64)
+            floors = np.asarray(d["game_final_floor"], np.int16)
+            victories = np.asarray(d["game_victory"], np.bool_)
+            if not (len(seeds) == len(floors) == len(victories)):
+                raise RuntimeError("curriculum metadata row mismatch")
+            for raw_seed in np.unique(seeds):
+                seed = int(raw_seed)
+                if seed in seen_curriculum_seeds:
+                    continue
+                idx = int(np.flatnonzero(seeds == seed)[0])
+                seen_curriculum_seeds.add(seed)
+                curriculum_floors.append(int(floors[idx]))
+                curriculum_victories.append(bool(victories[idx]))
+    curriculum_focus, curriculum_failure_counts = choose_curriculum_focus(
+        curriculum_floors,
+        curriculum_victories,
+    )
+    fresh_file_set = set(fresh_files)
+    print(
+        "PPO_V15_CURRICULUM_FOCUS",
+        json.dumps(
+            {
+                "focus": curriculum_focus,
+                "failure_counts": curriculum_failure_counts,
+                "strength": a.curriculum_strength,
+                "games": len(curriculum_floors),
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
 
     # Diagnose a persisted Critic against discounted returns that do not
     # depend on that Critic. A negative EV means it is worse than a constant
@@ -337,6 +409,27 @@ def main() -> int:
                 if np.any(behavior_temperatures < 0.25) or np.any(behavior_temperatures > 2.0):
                     raise RuntimeError("replay behavior temperature outside safe bounds")
 
+                curriculum_weights = np.ones(len(A), np.float32)
+                if (
+                    a.curriculum_strength > 0.0
+                    and f in fresh_file_set
+                    and curriculum_focus != "none"
+                ):
+                    floors = np.asarray(d["game_final_floor"], np.int16)
+                    victories = np.asarray(d["game_victory"], np.bool_)
+                    if not (len(floors) == len(victories) == len(A)):
+                        raise RuntimeError("curriculum shard metadata mismatch")
+                    focused = np.asarray(
+                        [
+                            (not bool(victories[i]))
+                            and curriculum_floor_band(int(floors[i])) == curriculum_focus
+                            for i in range(len(A))
+                        ],
+                        np.bool_,
+                    )
+                    curriculum_weights[focused] = 1.0 + a.curriculum_strength
+                W = torch.from_numpy(curriculum_weights)
+
                 new_logp = []
                 entropy_terms = []
                 anchor_terms = []
@@ -377,7 +470,8 @@ def main() -> int:
                 clipped = (
                     torch.clamp(ratio, 1 - a.clip, 1 + a.clip) * A
                 )
-                pg = -torch.minimum(unclipped, clipped).mean()
+                objective = torch.minimum(unclipped, clipped)
+                pg = -(objective * W).sum() / W.sum().clamp_min(1.0)
                 anchor_loss = anchor_kl.mean()
                 actor_loss = (
                     pg
@@ -442,6 +536,8 @@ def main() -> int:
                     "anchor_kl": anchor_kls[-1],
                     "clip_fraction": clip_fraction,
                     "explained_variance": shard_ev,
+                    "curriculum_weighted_decisions": int((curriculum_weights > 1.0).sum()),
+                    "curriculum_focus": curriculum_focus,
                     "seconds": time.time() - t,
                 }
                 if ep == 1 and si == 0:
@@ -599,6 +695,10 @@ def main() -> int:
         "entropy_coef": a.entropy,
         "anchor_coef": a.anchor_coef,
         "bc_coef": a.bc_coef,
+        "curriculum_strength": a.curriculum_strength,
+        "curriculum_focus": curriculum_focus,
+        "curriculum_failure_counts": curriculum_failure_counts,
+        "curriculum_games": len(curriculum_floors),
         "elite_bc_total_updates": total_bc_updates,
         "elite_bc_total_decisions": total_bc_decisions,
         "actor_lr": a.lr,

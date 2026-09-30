@@ -159,6 +159,20 @@ def _eval_rescue(actor, torch, rows):
     return {"loss": float(np.mean(losses)), "top1": top1 / len(rows)}
 
 
+def _preservation_margin_loss(actor, torch, row, margin: float):
+    obs = torch.tensor(row["obs"], dtype=torch.float32)
+    desc = torch.tensor(row["descs"], dtype=torch.float32)
+    logits = actor.net(torch.cat([obs.repeat(len(desc), 1), desc], 1)).squeeze(1)
+    target = int(row["parent_selected_index"])
+    if len(logits) <= 1:
+        return logits.sum() * 0.0, logits
+    mask = torch.ones(len(logits), dtype=torch.bool)
+    mask[target] = False
+    best_other = torch.max(logits[mask])
+    violation = best_other - logits[target] + float(margin)
+    return torch.relu(violation), logits
+
+
 def _eval_preservation(actor, torch, rows):
     if not rows:
         return {"loss": 0.0, "top1": 1.0, "examples": 0}
@@ -253,6 +267,7 @@ def main() -> int:
     p.add_argument("--distill-coef", type=float, default=1.20)
     p.add_argument("--rescue-coef", type=float, default=0.60)
     p.add_argument("--preservation-coef", type=float, default=0.30)
+    p.add_argument("--preservation-margin", type=float, default=0.001)
     p.add_argument("--param-anchor-coef", type=float, default=1e-5)
     p.add_argument("--min-parent-agreement", type=float, default=0.995)
     p.add_argument("--max-parent-kl", type=float, default=0.002)
@@ -274,6 +289,8 @@ def main() -> int:
         raise RuntimeError("loss coefficient outside safe bound")
     if not 0 < a.preservation_coef <= 2:
         raise RuntimeError("preservation coefficient outside safe bound")
+    if not 0 < a.preservation_margin <= 0.05:
+        raise RuntimeError("preservation margin outside safe bound")
     if not 0 <= a.param_anchor_coef <= 1e-2:
         raise RuntimeError("param anchor outside safe bound")
     if not 0.95 <= a.min_parent_agreement <= 1.0:
@@ -371,8 +388,10 @@ def main() -> int:
                     distill_terms.append(kl)
 
             for row in preservation:
-                ce, _ = _teacher_loss(actor, torch, row)
-                preservation_terms.append(ce)
+                hinge, _ = _preservation_margin_loss(
+                    actor, torch, row, a.preservation_margin
+                )
+                preservation_terms.append(hinge)
 
             components = []
             if rescue_terms:
@@ -539,6 +558,8 @@ def main() -> int:
         "elite_decisions_total": int(len(elite["action"])),
         "elite_train_decisions": int(len(elite_train)),
         "retention_eval_decisions": int(len(retention_eval)),
+        "preservation_margin": a.preservation_margin,
+        "preservation_coef": a.preservation_coef,
         "guards": {
             "min_parent_high_conf_agreement": a.min_parent_agreement,
             "parent_high_conf_prob_gap": PARENT_HIGH_CONFIDENCE_PROB_GAP,

@@ -1,10 +1,10 @@
-name: STS1 ArmG PPO v1.7 WinRate Loop
+name: STS1 ArmG PPO v1.8 Critical Win Conversion
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - gpt/sts1-ppo-v17-winrate-loop-20260930
+      - gpt/sts1-ppo-v18-critical-win-conversion-20260930
     paths:
       - control/sts1-v15-run.trigger
 
@@ -14,15 +14,15 @@ permissions:
   issues: write
 
 concurrency:
-  group: sts1-armg-ppo-v17-winrate-loop
+  group: sts1-armg-ppo-v18-critical-win-conversion
   cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: '1'
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
-  STATE_ARTIFACT: sts1-armg-ppo-v17-winrate-state
-  LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v16-rescue-state
+  STATE_ARTIFACT: sts1-armg-ppo-v18-win-conversion-state
+  LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v17-winrate-state
 
 jobs:
   rollout:
@@ -132,7 +132,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sts1-armg-ppo-v15-rollout-${{ github.run_id }}-${{ matrix.worker }}
-          path: evidence/sts1/ppo-v14-auto/worker-${{ matrix.worker }}/rollout.npz
+          path: |
+            evidence/sts1/ppo-v14-auto/worker-${{ matrix.worker }}/rollout.npz
+            evidence/sts1/ppo-v14-auto/worker-${{ matrix.worker }}/win-conversion.jsonl
           if-no-files-found: error
           retention-days: 30
 
@@ -282,6 +284,21 @@ jobs:
             exit 0
           fi
           cp "$replay" evidence/sts1/ppo-v15-inputs/strategy/strategy-replay.jsonl
+          python - <<'PY'
+          from pathlib import Path
+          src_root=Path("evidence/sts1/ppo-v14-rollouts")
+          out=Path("evidence/sts1/ppo-v15-inputs/strategy/win-conversion.jsonl")
+          rows=[]
+          for p in sorted(src_root.rglob("win-conversion.jsonl")):
+              rows.extend(line for line in p.read_text(encoding="utf-8").splitlines() if line.strip())
+          out.write_text("".join(line+"\n" for line in rows), encoding="utf-8")
+          if rows:
+              target=Path("evidence/sts1/ppo-v15-inputs/strategy/strategy-replay.jsonl")
+              with target.open("a", encoding="utf-8") as fh:
+                  for line in rows:
+                      fh.write(line+"\n")
+          print(f"PPO_V18_WIN_CONVERSIONS_MERGED examples={len(rows)}")
+          PY
           python - evidence/sts1/ppo-v15-inputs/strategy/strategy-replay.jsonl "$strategy_id" <<'PY'
           import hashlib,json,sys
           from collections import Counter
@@ -295,12 +312,14 @@ jobs:
               rows.append(row)
           mistakes=[r for r in rows if int(r["current_armg_index"]) != int(r["teacher_best_index"])]
           kinds=Counter(str(r.get("kind","unknown")) for r in mistakes)
+          conversions=[r for r in rows if r.get("source")=="sts1-ppo-v18-win-conversion-v1"]
           meta={
               "schema_version":"sts1-ppo-v15-strategy-teacher-pin-v1",
               "artifact_id":int(sys.argv[2]),
               "sha256":hashlib.sha256(p.read_bytes()).hexdigest(),
               "examples":len(rows),
               "mistake_examples":len(mistakes),
+              "win_conversion_examples":len(conversions),
               "mistakes_by_kind":dict(sorted(kinds.items())),
               "combat_policy":"mcts_2000",
           }
@@ -697,7 +716,7 @@ jobs:
       - name: Upload durable v1.5 state
         uses: actions/upload-artifact@v4
         with:
-          name: sts1-armg-ppo-v17-winrate-state
+          name: sts1-armg-ppo-v18-win-conversion-state
           path: |
             ${{ runner.temp }}/ppo-v15-state/state.json
             ${{ runner.temp }}/ppo-v15-state/offline-champion.pt
@@ -751,7 +770,7 @@ jobs:
           should_continue=1
 
           if [ "$ROLLOUT_RESULT" = "success" ] && [ "$TRAIN_GATE_RESULT" = "success" ]; then
-            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-ppo-v17-winrate-state") | .id' | head -n1)"
+            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-ppo-v18-win-conversion-state") | .id' | head -n1)"
             test -n "$artifact_id"
             curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/state.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
             mkdir -p "$RUNNER_TEMP/state"
@@ -780,7 +799,7 @@ jobs:
               if k=="retry_count":
                   v="0"
               if k=="ppo_version":
-                  v="1.7"
+                  v="1.8"
               rows.append((k,v))
               seen.add(k)
           defaults={
@@ -827,10 +846,10 @@ jobs:
             fi
             if [ "${rescue_stop_stagnation:-0}" -gt 0 ] && [ "$STAG" -ge "$rescue_stop_stagnation" ]; then
               should_continue=0
-              echo "PPO_V17_AUTO_PAUSE_STAGNATION current=$STAG limit=$rescue_stop_stagnation"
+              echo "PPO_V18_AUTO_PAUSE_STAGNATION current=$STAG limit=$rescue_stop_stagnation"
             fi
 
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.7 WinRate Loop — Round %s\n\n- Run：%s\n- Training Parent：**%s**\n- Parent generation：%s\n- Dev wins：Candidate %s / Parent %s\n- Final Gate：**%s**\n- Stagnation：%s\n- Fresh games：%s\n- PPO replay：%s games\n- Same-parent pool：%s games\n- Elite archive：%s games\n- Stale replay rejected：%s\n- 4-Candidate + Curriculum：**enabled**\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）\n- 下一輪：**%s**' \
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.8 Critical Win Conversion — Round %s\n\n- Run：%s\n- Training Parent：**%s**\n- Parent generation：%s\n- Dev wins：Candidate %s / Parent %s\n- Final Gate：**%s**\n- Stagnation：%s\n- Fresh games：%s\n- PPO replay：%s games\n- Same-parent pool：%s games\n- Elite archive：%s games\n- Stale replay rejected：%s\n- 4-Candidate + Curriculum：**enabled**\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）\n- 下一輪：**%s**' \
               "$ROUND" "$run_url" "$DECISION" "$PGEN" "$DEV_WINS" "$PARENT_WINS" "$READY" "$STAG" "$R_FRESH" "$R_TRAIN" "$R_POOL" "$R_ELITE" "$R_STALE" \
               "$([ "$should_continue" -eq 1 ] && echo CONTINUE || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
@@ -852,7 +871,7 @@ jobs:
               elif k=="reason":
                   v="auto_retry_after_failure"
               elif k=="ppo_version":
-                  v="1.7"
+                  v="1.8"
               rows.append((k,v))
               seen.add(k)
           defaults={
@@ -872,7 +891,7 @@ jobs:
             if [ "$next_retry" -gt "$max_retries" ]; then
               should_continue=0
             fi
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.7 WinRate Loop — technical failure\n\n- Run：%s\n- Rollout：**%s**\n- Train/Gate：**%s**\n- Retry：%s/%s\n- 參數：**原樣重試，不把技術錯誤算成 stagnation**\n- 下一輪：**%s**' \
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.8 Critical Win Conversion — technical failure\n\n- Run：%s\n- Rollout：**%s**\n- Train/Gate：**%s**\n- Retry：%s/%s\n- 參數：**原樣重試，不把技術錯誤算成 stagnation**\n- 下一輪：**%s**' \
               "$run_url" "$ROLLOUT_RESULT" "$TRAIN_GATE_RESULT" "$next_retry" "$max_retries" \
               "$([ "$should_continue" -eq 1 ] && echo RETRY || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
@@ -884,7 +903,7 @@ jobs:
           sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$GITHUB_REF_NAME" --jq '.sha')"
           encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
-            -f message="control(sts1): continue PPO v1.7 win-rate loop" \
+            -f message="control(sts1): continue PPO v1.8 critical win conversion" \
             -f content="$encoded" \
             -f sha="$sha" \
             -f branch="$GITHUB_REF_NAME" >/dev/null

@@ -206,7 +206,7 @@ jobs:
           echo "STATE_DIR=$state" >> "$GITHUB_ENV"
           echo "CHECKPOINT_ID=armg-ppo-v19-$sha" >> "$GITHUB_ENV"
 
-      - name: Migrate state to clean v1.8 victory-first reward
+      - name: Preserve clean victory-first reward for v1.9
         run: |
           set -euo pipefail
           marker="$RUNNER_TEMP/v18-clean-migrated"
@@ -222,10 +222,10 @@ jobs:
               s["v18_clean_reward_migration"]=True
               p.write_text(json.dumps(s,indent=2,sort_keys=True)+"\n",encoding="utf-8")
               marker.write_text("1\n",encoding="utf-8")
-              print("PPO_V18_CLEAN_REWARD_MIGRATION_RESET")
+              print("PPO_V19_CLEAN_REWARD_MIGRATION_RESET")
           else:
               assert s.get("training_reward_mode")=="v17_winrate", s
-              print("PPO_V18_CLEAN_REWARD_MIGRATION_ALREADY_DONE")
+              print("PPO_V19_CLEAN_REWARD_MIGRATION_ALREADY_DONE")
           PY
           if [ -f "$marker" ]; then
             rm -f "$STATE_DIR/training-critic.pt" "$STATE_DIR/ppo-replay.npz"
@@ -308,7 +308,7 @@ jobs:
               with target.open("a", encoding="utf-8") as fh:
                   for line in rows:
                       fh.write(line+"\n")
-          print(f"PPO_V18_WIN_CONVERSIONS_MERGED examples={len(rows)}")
+          print(f"PPO_V19_WIN_CONVERSIONS_MERGED examples={len(rows)}")
           PY
           python - evidence/sts1/ppo-v15-inputs/strategy/strategy-replay.jsonl "$strategy_id" <<'PY'
           import hashlib,json,sys
@@ -767,7 +767,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Continue v1.8, retry, or pause
+      - name: Continue v1.9, retry, or pause
         env:
           ROLLOUT_RESULT: ${{ needs.rollout.result }}
           TRAIN_GATE_RESULT: ${{ needs.train-and-gate.result }}

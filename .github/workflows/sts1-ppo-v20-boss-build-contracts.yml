@@ -31,7 +31,8 @@ jobs:
         run: |
           python -m py_compile \
             src/roguelike_ai/sts1_phase3/simulator.py \
-            scripts/sts1/sts1_ppo_v20_boss_search_diagnostic.py
+            scripts/sts1/sts1_ppo_v20_boss_search_diagnostic.py \
+            scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py
       - name: Unit contracts
         run: |
           pytest -q \

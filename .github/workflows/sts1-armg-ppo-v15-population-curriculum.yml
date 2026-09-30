@@ -1,10 +1,10 @@
-name: STS1 ArmG PPO v1.5 Population Curriculum
+name: STS1 ArmG PPO v1.6 Stagnation Rescue
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - gpt/sts1-ppo-v15-population-curriculum-20260929
+      - gpt/sts1-ppo-v16-stagnation-rescue-20260930
     paths:
       - control/sts1-v15-run.trigger
 
@@ -14,15 +14,15 @@ permissions:
   issues: write
 
 concurrency:
-  group: sts1-armg-ppo-v15-population-curriculum
+  group: sts1-armg-ppo-v16-stagnation-rescue
   cancel-in-progress: false
 
 env:
   PYTHONUNBUFFERED: '1'
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
-  STATE_ARTIFACT: sts1-armg-ppo-v15-loop-state
-  LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v14-loop-state
+  STATE_ARTIFACT: sts1-armg-ppo-v16-rescue-state
+  LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v15-loop-state
 
 jobs:
   rollout:
@@ -656,7 +656,7 @@ jobs:
       - name: Upload durable v1.5 state
         uses: actions/upload-artifact@v4
         with:
-          name: sts1-armg-ppo-v15-loop-state
+          name: sts1-armg-ppo-v16-rescue-state
           path: |
             ${{ runner.temp }}/ppo-v15-state/state.json
             ${{ runner.temp }}/ppo-v15-state/offline-champion.pt
@@ -710,7 +710,7 @@ jobs:
           should_continue=1
 
           if [ "$ROLLOUT_RESULT" = "success" ] && [ "$TRAIN_GATE_RESULT" = "success" ]; then
-            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-ppo-v15-loop-state") | .id' | head -n1)"
+            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-ppo-v16-rescue-state") | .id' | head -n1)"
             test -n "$artifact_id"
             curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/state.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
             mkdir -p "$RUNNER_TEMP/state"

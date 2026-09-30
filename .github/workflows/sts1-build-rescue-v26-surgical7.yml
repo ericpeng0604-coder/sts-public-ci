@@ -5,7 +5,7 @@ on:
     branches:
       - gpt/sts1-build-rescue-v22-antiforget-20260930
     paths:
-      - control/sts1-build-rescue-v25-surgical7.trigger
+      - control/sts1-build-rescue-v26-surgical7.trigger
   workflow_dispatch:
 
 permissions:
@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Validate v2.5 balanced replay contract
+      - name: Validate v2.6 surgical replay contract
         run: |
           set -euo pipefail
           python -m py_compile scripts/sts1/sts1_build_rescue_bc_v26.py
@@ -52,7 +52,7 @@ jobs:
           ]
           missing=[x for x in required if x not in p]
           if missing:
-              raise SystemExit(f"missing v2.5 balanced replay contract: {missing}")
+              raise SystemExit(f"missing v2.6 surgical replay contract: {missing}")
           print("V26_SURGICAL_CONTRACT_PASS")
           PY
 
@@ -60,7 +60,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: v24-mine-*
-          path: evidence/sts1/v25-surgical7-raw
+          path: evidence/sts1/v26-surgical7-raw
           merge-multiple: true
           github-token: ${{ github.token }}
           run-id: ${{ env.SOURCE_RUN_ID }}
@@ -68,12 +68,12 @@ jobs:
       - name: Freeze Surgical7 dataset
         run: |
           set -euo pipefail
-          mkdir -p evidence/sts1/v25-surgical7
+          mkdir -p evidence/sts1/v26-surgical7
           python - <<'PY'
           import json
           from pathlib import Path
           wanted={341684210,469494371,523373928,572162032,620908546}
-          root=Path("evidence/sts1/v25-surgical7-raw")
+          root=Path("evidence/sts1/v26-surgical7-raw")
           results={}
           teachers=[]
           for p in root.glob("result-*.json"):
@@ -95,11 +95,11 @@ jobs:
               raise SystemExit("Surgical7 teacher identity contract failed")
           if any(x.get("confidence_weight")!=1.0 or x.get("teacher_consensus_fraction")!=1.0 for x in teachers):
               raise SystemExit("Surgical7 teacher confidence contract failed")
-          out=Path("evidence/sts1/v25-surgical7/new-win-teacher.jsonl")
+          out=Path("evidence/sts1/v26-surgical7/new-win-teacher.jsonl")
           out.write_text("".join(json.dumps(x,sort_keys=True)+"\n" for x in teachers))
-          Path("evidence/sts1/v25-surgical7/summary.json").write_text(
+          Path("evidence/sts1/v26-surgical7/summary.json").write_text(
               json.dumps({
-                  "schema_version":"sts1-v25-surgical7-dataset",
+                  "schema_version":"sts1-v26-surgical7-dataset",
                   "teacher_examples":7,
                   "teacher_seeds":sorted(wanted),
                   "statuses":{str(k):results[k]["status"] for k in sorted(wanted)},
@@ -133,7 +133,7 @@ jobs:
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
           test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
           python scripts/sts1/build_probe.py
-          root=.cache/sts1-v25-surgical7
+          root=.cache/sts1-v26-surgical7
           mkdir -p "$root/sim/sts_lightspeed"
           ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
@@ -156,17 +156,17 @@ jobs:
       - name: Train Surgical7 Candidate
         run: |
           set -euo pipefail
-          mkdir -p evidence/sts1/v25-surgical7-candidate
+          mkdir -p evidence/sts1/v26-surgical7-candidate
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
           elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
-          python scripts/sts1/sts1_build_rescue_bc_v26.py             --armg-root .cache/sts1-v25-surgical7             --module-dir external/sts_lightspeed/source/build-probe             --base-weight "$parent"             --elite-replay "$elite"             --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl             --new-win-replay evidence/sts1/v25-surgical7/new-win-teacher.jsonl             --preservation-replay evidence/sts1/v23-trace/preservation.jsonl             --output evidence/sts1/v25-surgical7-candidate/candidate.pt             --report evidence/sts1/v25-surgical7-candidate/train-report.json             --epochs 10 --lr 1e-5             --elite-train-max 8192 --retention-eval-max 2048             --rescue-repeats 2 --new-win-repeats 8             --winner-coef 0.80 --distill-coef 1.20             --rescue-coef 0.05 --new-win-coef 0.50 --new-win-margin 0.01             --preservation-coef 0.30 --preservation-margin 0.001             --param-anchor-coef 1e-5             --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-winner-drop 0.01             --threads 4
+          python scripts/sts1/sts1_build_rescue_bc_v26.py             --armg-root .cache/sts1-v26-surgical7             --module-dir external/sts_lightspeed/source/build-probe             --base-weight "$parent"             --elite-replay "$elite"             --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl             --new-win-replay evidence/sts1/v26-surgical7/new-win-teacher.jsonl             --preservation-replay evidence/sts1/v23-trace/preservation.jsonl             --output evidence/sts1/v26-surgical7-candidate/candidate.pt             --report evidence/sts1/v26-surgical7-candidate/train-report.json             --epochs 10 --lr 1e-5             --elite-train-max 8192 --retention-eval-max 2048             --rescue-repeats 2 --new-win-repeats 8             --winner-coef 0.80 --distill-coef 1.20             --rescue-coef 0.05 --new-win-coef 0.50 --new-win-margin 0.01             --preservation-coef 0.30 --preservation-margin 0.001             --param-anchor-coef 1e-5             --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-winner-drop 0.01             --threads 4
 
       - name: Build fixed gate seeds
         run: |
           set -euo pipefail
-          cp control/sts1-v22-parent-only-seeds-2.txt evidence/sts1/v25-surgical7-candidate/regression2-seeds.txt
-          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > evidence/sts1/v25-surgical7-candidate/dev30-seeds.txt
-          cp control/sts1-v14-final-promotion-seeds-50.txt evidence/sts1/v25-surgical7-candidate/hidden50-seeds.txt
+          cp control/sts1-v22-parent-only-seeds-2.txt evidence/sts1/v26-surgical7-candidate/regression2-seeds.txt
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > evidence/sts1/v26-surgical7-candidate/dev30-seeds.txt
+          cp control/sts1-v14-final-promotion-seeds-50.txt evidence/sts1/v26-surgical7-candidate/hidden50-seeds.txt
           python - <<'PY'
           import random
           from pathlib import Path
@@ -182,7 +182,7 @@ jobs:
               x=rng.randrange(1,2_000_000_000)
               if x not in protected and x not in fresh:
                   fresh.append(x)
-          Path("evidence/sts1/v25-surgical7-candidate/fresh100-seeds.txt").write_text("\n".join(map(str,fresh))+"\n")
+          Path("evidence/sts1/v26-surgical7-candidate/fresh100-seeds.txt").write_text("\n".join(map(str,fresh))+"\n")
           PY
 
       - name: Regression2 preservation Gate
@@ -190,10 +190,10 @@ jobs:
         run: |
           set -euo pipefail
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v25-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v25-surgical7-candidate/candidate.pt             --seed-file evidence/sts1/v25-surgical7-candidate/regression2-seeds.txt             --output evidence/sts1/v25-surgical7-candidate/regression2.json             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0 --label v25-surgical7-regression2
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v26-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v26-surgical7-candidate/candidate.pt             --seed-file evidence/sts1/v26-surgical7-candidate/regression2-seeds.txt             --output evidence/sts1/v26-surgical7-candidate/regression2.json             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0 --label v26-surgical7-regression2
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          x=json.load(open("evidence/sts1/v25-surgical7-candidate/regression2.json"))
+          x=json.load(open("evidence/sts1/v26-surgical7-candidate/regression2.json"))
           passed=(x["parent_wins"]==2 and x["candidate_wins"]==2 and x["parent_only_wins"]==0)
           print("passed="+str(passed).lower())
           PY
@@ -204,10 +204,10 @@ jobs:
         run: |
           set -euo pipefail
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v25-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v25-surgical7-candidate/candidate.pt             --seed-file evidence/sts1/v25-surgical7-candidate/dev30-seeds.txt             --output evidence/sts1/v25-surgical7-candidate/dev30.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v25-surgical7-dev30
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v26-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v26-surgical7-candidate/candidate.pt             --seed-file evidence/sts1/v26-surgical7-candidate/dev30-seeds.txt             --output evidence/sts1/v26-surgical7-candidate/dev30.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v26-surgical7-dev30
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          x=json.load(open("evidence/sts1/v25-surgical7-candidate/dev30.json"))
+          x=json.load(open("evidence/sts1/v26-surgical7-candidate/dev30.json"))
           passed=(x["parent_wins"]==6 and x["candidate_wins"]>=7 and x["candidate_only_wins"]>=1 and x["parent_only_wins"]==0)
           print("passed="+str(passed).lower())
           print("parent="+str(x["parent_wins"]))
@@ -222,10 +222,10 @@ jobs:
         run: |
           set -euo pipefail
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v25-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v25-surgical7-candidate/candidate.pt             --seed-file evidence/sts1/v25-surgical7-candidate/hidden50-seeds.txt             --output evidence/sts1/v25-surgical7-candidate/hidden50.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v25-surgical7-hidden50
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v26-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v26-surgical7-candidate/candidate.pt             --seed-file evidence/sts1/v26-surgical7-candidate/hidden50-seeds.txt             --output evidence/sts1/v26-surgical7-candidate/hidden50.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v26-surgical7-hidden50
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          x=json.load(open("evidence/sts1/v25-surgical7-candidate/hidden50.json"))
+          x=json.load(open("evidence/sts1/v26-surgical7-candidate/hidden50.json"))
           print("passed="+str(x["pass"]).lower())
           PY
 
@@ -235,10 +235,10 @@ jobs:
         run: |
           set -euo pipefail
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v25-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v25-surgical7-candidate/candidate.pt             --seed-file evidence/sts1/v25-surgical7-candidate/fresh100-seeds.txt             --output evidence/sts1/v25-surgical7-candidate/fresh100.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v25-surgical7-fresh100
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v26-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v26-surgical7-candidate/candidate.pt             --seed-file evidence/sts1/v26-surgical7-candidate/fresh100-seeds.txt             --output evidence/sts1/v26-surgical7-candidate/fresh100.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v26-surgical7-fresh100
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          x=json.load(open("evidence/sts1/v25-surgical7-candidate/fresh100.json"))
+          x=json.load(open("evidence/sts1/v26-surgical7-candidate/fresh100.json"))
           print("passed="+str(x["pass"]).lower())
           PY
 
@@ -248,7 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v25-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v25-surgical7-candidate/candidate.pt             --seed-file control/sts1-v16-benchmark-seeds-500.txt             --output evidence/sts1/v25-surgical7-candidate/heldout500.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v25-surgical7-heldout500
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v26-surgical7             --parent-weight "$parent"             --candidate-weight evidence/sts1/v26-surgical7-candidate/candidate.pt             --seed-file control/sts1-v16-benchmark-seeds-500.txt             --output evidence/sts1/v26-surgical7-candidate/heldout500.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v26-surgical7-heldout500
 
       - name: Write Surgical7 summary
         if: always()
@@ -266,12 +266,12 @@ jobs:
           python - <<'PY'
           import json,os
           from pathlib import Path
-          out=Path("evidence/sts1/v25-surgical7-candidate")
+          out=Path("evidence/sts1/v26-surgical7-candidate")
           train={}
           if (out/"train-report.json").exists():
               train=json.loads((out/"train-report.json").read_text())
           summary={
-              "schema_version":"sts1-v25-surgical7-summary",
+              "schema_version":"sts1-v26-surgical7-summary",
               "teachers":7,
               "teacher_seeds":[341684210,469494371,523373928,572162032,620908546],
               "new_win_train_before":train.get("before",{}).get("new_win"),
@@ -295,10 +295,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sts1-v25-surgical7-${{ github.run_id }}
+          name: sts1-v26-surgical7-${{ github.run_id }}
           path:
-            evidence/sts1/v25-surgical7/
-            evidence/sts1/v25-surgical7-candidate/
+            evidence/sts1/v26-surgical7/
+            evidence/sts1/v26-surgical7-candidate/
           if-no-files-found: warn
           retention-days: 90
 
@@ -313,7 +313,7 @@ jobs:
           print("@ericpeng0604-coder")
           print()
           print("## Build Rescue v2.6 Surgical7")
-          p=Path("evidence/sts1/v25-surgical7-candidate/summary.json")
+          p=Path("evidence/sts1/v26-surgical7-candidate/summary.json")
           if not p.exists():
               print("- Surgical7 failed before final summary. G7 remains unchanged.")
           else:

@@ -140,6 +140,16 @@ def diagnose_seed(
     ]
     records=list(reversed(records[-max_states:]))
     attempted=0
+    if not records:
+        return {
+            "seed":seed,
+            "status":"NO_CAPTURED_REVERSIBLE_STATE",
+            "base":base,
+            "target_boss_floor":target,
+            "captured_state_count":len(policy.conversion_states),
+            "attempted_states":0,
+            "rescue":None,
+        }
 
     for record in records:
         selected=int(record["selected_index"])
@@ -193,6 +203,7 @@ def diagnose_seed(
                 "captured_states":len(captured),
                 "captured_state_summary":captured_summary,
                 "candidate_states":len(records),
+                "captured_state_count":len(policy.conversion_states),
                 "attempted_states":attempted,
                 "rescue":{
                     "decision_floor":int(record["floor"]),
@@ -221,6 +232,7 @@ def diagnose_seed(
         "captured_states":len(captured),
         "captured_state_summary":captured_summary,
         "candidate_states":len(records),
+        "captured_state_count":len(policy.conversion_states),
         "attempted_states":attempted,
         "rescue":None,
     }
@@ -276,7 +288,9 @@ def main() -> int:
         "diagnosed_seeds":len(rows),
         "early_build_rescues":len(teacher),
         "no_single_rescue":sum(row["status"]=="NO_SINGLE_EARLY_BUILD_RESCUE" for row in rows),
+        "capture_missing":sum(row["status"]=="NO_CAPTURED_REVERSIBLE_STATE" for row in rows),
         "not_reproduced":sum(row["status"]=="NOT_REPRODUCED_AS_NEAR_BOSS_LOSS" for row in rows),
+        "captured_state_total":sum(int(row.get("captured_state_count",0) or 0) for row in rows),
         "rows":rows,
     }
     args.output.parent.mkdir(parents=True,exist_ok=True)
@@ -290,6 +304,8 @@ def main() -> int:
         "diagnosed_seeds":len(rows),
         "early_build_rescues":len(teacher),
         "no_single_rescue":payload["no_single_rescue"],
+        "capture_missing":payload["capture_missing"],
+        "captured_state_total":payload["captured_state_total"],
         "not_reproduced":payload["not_reproduced"],
     },sort_keys=True),flush=True)
     return 0

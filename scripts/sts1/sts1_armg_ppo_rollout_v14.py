@@ -458,7 +458,7 @@ def _mine_win_conversions(
 
     return []
 
-def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> dict[str, Any]:
+def _collect_one(task: tuple[Any, ...]) -> dict[str, Any]:
     (
         module_dir,
         armg_root,
@@ -469,6 +469,11 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
         worker,
         torch_seed,
         reward_mode,
+        conversion_enabled,
+        conversion_max_states,
+        conversion_max_alternatives,
+        conversion_max_second_alternatives,
+        conversion_sample_modulus,
     ) = task
 
     module_path = Path(module_dir)
@@ -603,15 +608,21 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
         or 0
     )
     win_conversions: list[dict[str, Any]] = []
-    if (not victory) and _near_boss_failure(final_floor):
+    conversion_mining_attempted = bool(
+        conversion_enabled
+        and (not victory)
+        and _near_boss_failure(final_floor)
+        and int(seed) % int(conversion_sample_modulus) == 0
+    )
+    if conversion_mining_attempted:
         win_conversions = _mine_win_conversions(
             policy=policy,
             sts=sts,
             final_floor=final_floor,
             seed=int(seed),
-            max_states=6,
-            max_alternatives=2,
-            max_second_alternatives=2,
+            max_states=int(conversion_max_states),
+            max_alternatives=int(conversion_max_alternatives),
+            max_second_alternatives=int(conversion_max_second_alternatives),
         )
         for row in win_conversions:
             row["seed"] = int(seed)
@@ -622,6 +633,7 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
         "victory": victory,
         "final_floor": final_floor,
         "win_conversions": win_conversions,
+        "conversion_mining_attempted": conversion_mining_attempted,
         "rows": rows,
         "checkpoint_id": checkpoint_id,
         "reward_mode": reward_mode,
@@ -697,12 +709,25 @@ def main() -> None:
     parser.add_argument("--reward-mode", choices=("legacy", "v14_dense", "v17_winrate"), default="v14_dense")
     parser.add_argument("--final-seed-file", type=Path)
     parser.add_argument("--extra-heldout-seed-file", type=Path)
+    parser.add_argument("--win-conversion-enabled", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--win-conversion-max-states", type=int, default=6)
+    parser.add_argument("--win-conversion-max-alternatives", type=int, default=2)
+    parser.add_argument("--win-conversion-max-second-alternatives", type=int, default=2)
+    parser.add_argument("--win-conversion-sample-modulus", type=int, default=4)
     args = parser.parse_args()
 
     if args.parallel_games < 1 or args.parallel_games > 4:
         raise RuntimeError("parallel-games must be within 1..4")
     if args.max_training_seed_rejections < 0 or args.max_training_seed_rejections > 32:
         raise RuntimeError("max-training-seed-rejections must be within 0..32")
+    if not 1 <= args.win_conversion_max_states <= 8:
+        raise RuntimeError("win-conversion-max-states must be within 1..8")
+    if not 1 <= args.win_conversion_max_alternatives <= 4:
+        raise RuntimeError("win-conversion-max-alternatives must be within 1..4")
+    if not 1 <= args.win_conversion_max_second_alternatives <= 3:
+        raise RuntimeError("win-conversion-max-second-alternatives must be within 1..3")
+    if not 1 <= args.win_conversion_sample_modulus <= 16:
+        raise RuntimeError("win-conversion-sample-modulus must be within 1..16")
 
     formal = {
         int(x)
@@ -752,6 +777,11 @@ def main() -> None:
                         + index
                     ),
                     args.reward_mode,
+                    bool(args.win_conversion_enabled),
+                    int(args.win_conversion_max_states),
+                    int(args.win_conversion_max_alternatives),
+                    int(args.win_conversion_max_second_alternatives),
+                    int(args.win_conversion_sample_modulus),
                 )
                 for index, seed in enumerate(seeds)
             ]
@@ -826,6 +856,10 @@ def main() -> None:
                 "reward_mode": args.reward_mode,
                 "near_boss_losses": sum(
                     (not bool(game["victory"])) and _near_boss_failure(int(game["final_floor"]))
+                    for game in games
+                ),
+                "conversion_mining_attempts": sum(
+                    bool(game.get("conversion_mining_attempted", False))
                     for game in games
                 ),
                 "win_conversion_examples": len(conversion_rows),

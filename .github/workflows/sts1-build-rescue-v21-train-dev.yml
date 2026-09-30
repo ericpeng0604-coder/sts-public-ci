@@ -1,0 +1,130 @@
+name: STS1 Build Rescue v2.1 Train Dev
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v21-teacher-loop-20260930
+    paths:
+      - control/sts1-build-rescue-v21-train.trigger
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_MINE_RUN_ID: '36699995040'
+  G7_STATE_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v21-train-dev
+  cancel-in-progress: true
+
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: v21-verified-36699995040
+          path: evidence/sts1/v21-verified
+          github-token: ${{ github.token }}
+          run-id: 36699995040
+      - name: Install and build
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v21-train
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: Download G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+      - name: Train Build-only Candidate
+        run: |
+          mkdir -p evidence/sts1/v21-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+          python scripts/sts1/sts1_build_rescue_bc_v21.py             --armg-root .cache/sts1-v21-train             --module-dir external/sts_lightspeed/source/build-probe             --base-weight "$parent"             --elite-replay "$elite"             --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl             --output evidence/sts1/v21-candidate/candidate.pt             --report evidence/sts1/v21-candidate/train-report.json             --epochs 8 --lr 1e-5 --elite-max-decisions 1024 --rescue-repeats 16             --elite-coef 0.40 --rescue-coef 1.0 --anchor-coef 0.03 --max-parent-kl 0.08 --threads 4
+          cp evidence/sts1/v21-verified/summary.json evidence/sts1/v21-candidate/dataset-summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v21-candidate-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate/
+          if-no-files-found: error
+          retention-days: 90
+
+  dev30:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: v21-candidate-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate
+      - name: Prepare gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v21-gate
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > "$RUNNER_TEMP/dev30.txt"
+      - name: Run Dev30
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v21-gate             --parent-weight "$parent"             --candidate-weight evidence/sts1/v21-candidate/candidate.pt             --seed-file "$RUNNER_TEMP/dev30.txt"             --output evidence/sts1/v21-candidate/dev30.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label dev30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v21-dev30-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate/dev30.json
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          x=json.load(open("evidence/sts1/v21-candidate/dev30.json"))
+          print("@ericpeng0604-coder")
+          print()
+          print("## Build Rescue v2.1 Dev30")
+          print(f"- Parent: **{x['parent_wins']}/30**")
+          print(f"- Candidate: **{x['candidate_wins']}/30**")
+          print(f"- Delta: **{x['win_delta']}**")
+          print(f"- PASS: **{x['pass']}**")
+          print("- 正式 Champion 未變更。")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

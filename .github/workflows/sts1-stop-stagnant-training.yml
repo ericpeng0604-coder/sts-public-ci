@@ -1,0 +1,25 @@
+name: STS1 Stop Stagnant Training
+
+on:
+  push:
+    branches:
+      - gpt/sts1-ppo-v15-population-curriculum-20260929
+    paths:
+      - '.github/workflows/sts1-stop-stagnant-training.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-stagnant:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel stale PPO v1.5 runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for run_id in 36662625646 36662668035; do
+            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" || true
+          done
+          echo "STALE_PPO_V15_CANCEL_REQUESTED"

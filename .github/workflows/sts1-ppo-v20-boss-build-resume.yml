@@ -1,0 +1,118 @@
+name: STS1 PPO v2.0 Boss Build Resume
+
+on:
+  push:
+    branches:
+      - gpt/sts1-ppo-v20-boss-build-rescue-20260930
+    paths:
+      - control/sts1-v20-boss-resume.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SOURCE_RUN_ID: '36677610709'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  G7_STATE_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+
+concurrency:
+  group: sts1-ppo-v20-boss-build-resume
+  cancel-in-progress: true
+
+jobs:
+  resume:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download completed Boss shards from source run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sts1-v20-boss-diagnostic-${{ env.SOURCE_RUN_ID }}-*
+          path: evidence/sts1/v20-boss-resume/all
+          merge-multiple: false
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Aggregate existing 50-seed result
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_ppo_v20_boss_search_diagnostic.py aggregate \
+            --input-dir evidence/sts1/v20-boss-resume/all \
+            --seeds-file control/sts1-v15-dev-seeds-50.txt \
+            --output evidence/sts1/v20-boss-resume/summary.json \
+            --shard-count 10
+          cat evidence/sts1/v20-boss-resume/summary.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v20-boss-resume-summary
+          path: evidence/sts1/v20-boss-resume/summary.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Install Build trace runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v20-resume
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download frozen G7 parent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/g7.zip" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          weight="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$weight"
+          actual="$(sha256sum "$weight" | awk '{print $1}')"
+          test "$actual" = "$G7_WEIGHT_SHA256"
+          cp "$weight" "$RUNNER_TEMP/g7-parent.pt"
+          echo "PPO_V20_RESUME_G7_PIN_PASS $actual"
+
+      - name: Trace Boss-50k unresolved losses into earlier Build decisions
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v20-resume \
+            --weight "$RUNNER_TEMP/g7-parent.pt" \
+            --seeds-file control/sts1-v15-dev-seeds-50.txt \
+            --boss-summary evidence/sts1/v20-boss-resume/summary.json \
+            --output evidence/sts1/v20-build-resume/summary.json \
+            --teacher-output evidence/sts1/v20-build-resume/candidate-teacher.jsonl \
+            --max-seeds 10 \
+            --max-states 20 \
+            --max-alternatives 2
+          cat evidence/sts1/v20-build-resume/summary.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v20-build-resume-summary
+          path: evidence/sts1/v20-build-resume/
+          if-no-files-found: error
+          retention-days: 90

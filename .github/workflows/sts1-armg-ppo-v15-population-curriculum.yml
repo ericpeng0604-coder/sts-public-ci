@@ -227,14 +227,24 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence/sts1/ppo-v15-inputs/strategy
-          strategy_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=sts1-armg-strategy-loop-state-v4&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
+          strategy_id=""
+          strategy_source=""
+          for candidate_source in             sts1-armg-strategy-loop-state-v7-human-verified             sts1-armg-strategy-loop-state-v6-rescue             sts1-armg-strategy-loop-state-v4; do
+            candidate_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$candidate_source&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')"
+            if [ -n "$candidate_id" ]; then
+              strategy_id="$candidate_id"
+              strategy_source="$candidate_source"
+              break
+            fi
+          done
           if [ -z "$strategy_id" ]; then
             if [ "$PPO_TEACHER_REQUIRED" = "1" ]; then
-              echo "PPO_V15_STRATEGY_TEACHER_MISSING"
+              echo "PPO_V16_STRATEGY_TEACHER_MISSING"
               exit 1
             fi
             exit 0
           fi
+          echo "PPO_V16_STRATEGY_TEACHER_SOURCE=$strategy_source artifact=$strategy_id"
           curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/strategy.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$strategy_id/zip"
           mkdir -p "$RUNNER_TEMP/strategy"
           unzip -q "$RUNNER_TEMP/strategy.zip" -d "$RUNNER_TEMP/strategy"
@@ -696,7 +706,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Continue v1.5, retry, or pause
+      - name: Continue v1.6, retry, or pause
         env:
           ROLLOUT_RESULT: ${{ needs.rollout.result }}
           TRAIN_GATE_RESULT: ${{ needs.train-and-gate.result }}
@@ -739,7 +749,7 @@ jobs:
               if k=="retry_count":
                   v="0"
               if k=="ppo_version":
-                  v="1.5"
+                  v="1.6"
               rows.append((k,v))
               seen.add(k)
           defaults={
@@ -781,8 +791,12 @@ jobs:
             if [ "$max_rounds" -gt 0 ] && [ "$ROUND" -ge "$max_rounds" ]; then
               should_continue=0
             fi
+            if [ "${rescue_stop_stagnation:-0}" -gt 0 ] && [ "$STAG" -ge "$rescue_stop_stagnation" ]; then
+              should_continue=0
+              echo "PPO_V16_AUTO_PAUSE_STAGNATION current=$STAG limit=$rescue_stop_stagnation"
+            fi
 
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.5 Population Curriculum — Round %s\n\n- Run：%s\n- Training Parent：**%s**\n- Parent generation：%s\n- Dev wins：Candidate %s / Parent %s\n- Final Gate：**%s**\n- Stagnation：%s\n- Fresh games：%s\n- PPO replay：%s games\n- Same-parent pool：%s games\n- Elite archive：%s games\n- Stale replay rejected：%s\n- 4-Candidate + Curriculum：**enabled**\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）\n- 下一輪：**%s**' \
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.6 Stagnation Rescue — Round %s\n\n- Run：%s\n- Training Parent：**%s**\n- Parent generation：%s\n- Dev wins：Candidate %s / Parent %s\n- Final Gate：**%s**\n- Stagnation：%s\n- Fresh games：%s\n- PPO replay：%s games\n- Same-parent pool：%s games\n- Elite archive：%s games\n- Stale replay rejected：%s\n- 4-Candidate + Curriculum：**enabled**\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）\n- 下一輪：**%s**' \
               "$ROUND" "$run_url" "$DECISION" "$PGEN" "$DEV_WINS" "$PARENT_WINS" "$READY" "$STAG" "$R_FRESH" "$R_TRAIN" "$R_POOL" "$R_ELITE" "$R_STALE" \
               "$([ "$should_continue" -eq 1 ] && echo CONTINUE || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
@@ -804,7 +818,7 @@ jobs:
               elif k=="reason":
                   v="auto_retry_after_failure"
               elif k=="ppo_version":
-                  v="1.5"
+                  v="1.6"
               rows.append((k,v))
               seen.add(k)
           defaults={
@@ -821,7 +835,7 @@ jobs:
             if [ "$next_retry" -gt "$max_retries" ]; then
               should_continue=0
             fi
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.5 Population Curriculum — technical failure\n\n- Run：%s\n- Rollout：**%s**\n- Train/Gate：**%s**\n- Retry：%s/%s\n- 參數：**原樣重試，不把技術錯誤算成 stagnation**\n- 下一輪：**%s**' \
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.6 Stagnation Rescue — technical failure\n\n- Run：%s\n- Rollout：**%s**\n- Train/Gate：**%s**\n- Retry：%s/%s\n- 參數：**原樣重試，不把技術錯誤算成 stagnation**\n- 下一輪：**%s**' \
               "$run_url" "$ROLLOUT_RESULT" "$TRAIN_GATE_RESULT" "$next_retry" "$max_retries" \
               "$([ "$should_continue" -eq 1 ] && echo RETRY || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"

@@ -363,8 +363,8 @@ def main() -> int:
     p.add_argument("--threads", type=int, default=4)
     a = p.parse_args()
 
-    if not 1 <= a.epochs <= 20:
-        raise RuntimeError("epochs outside 1..20")
+    if not 1 <= a.epochs <= 40:
+        raise RuntimeError("epochs outside 1..40")
     if not 0 < a.lr <= 2e-5:
         raise RuntimeError("lr outside safe bound")
     if not 128 <= a.elite_train_max <= 32768:

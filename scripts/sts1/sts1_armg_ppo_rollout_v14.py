@@ -279,12 +279,12 @@ def _conversion_row(
         "combat_policy": f"mcts_{int(primary_mcts)}",
         "confirmation_policy": f"mcts_{int(confirm_mcts)}",
         "baseline_confirmed_loss": {
-            "mcts_2000": baseline_2k,
-            "mcts_10000": baseline_10k,
+            f"mcts_{int(primary_mcts)}": baseline_2k,
+            f"mcts_{int(confirm_mcts)}": baseline_10k,
         },
         "alternative_confirmed_progress": {
-            "mcts_2000": alt_2k,
-            "mcts_10000": alt_10k,
+            f"mcts_{int(primary_mcts)}": alt_2k,
+            f"mcts_{int(confirm_mcts)}": alt_10k,
         },
     }
 

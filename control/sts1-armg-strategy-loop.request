@@ -1,5 +1,5 @@
 enabled=1
-attempt=9
+attempt=10
 retry_count=0
 max_retries=3
 max_rounds=0

@@ -36,6 +36,7 @@ jobs:
       - name: Static anti-forgetting contract
         run: |
           set -euo pipefail
+          python -m pip install -q numpy
           python -m py_compile scripts/sts1/sts1_build_rescue_bc_v22.py scripts/sts1/sts1_build_rescue_gate_v21.py
           python - <<'PY'
           from pathlib import Path

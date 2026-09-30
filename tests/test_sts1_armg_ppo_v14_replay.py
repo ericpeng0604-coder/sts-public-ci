@@ -140,7 +140,11 @@ def test_same_parent_replay_is_bounded_and_preserves_temperature(tmp_path: Path)
     assert m2["train_replay_fraction_of_fresh_decisions"] <= 0.5
     with np.load(tmp_path / "out2" / "replay_00.npz", allow_pickle=False) as d:
         assert np.allclose(d["behavior_temperature"], 1.12, atol=1e-6)
-        assert set(map(int, d["game_seed"])).issubset({1, 2, 3, 4})
+        replayed = set(map(int, d["game_seed"]))
+        assert replayed.issubset({1, 2, 3, 4})
+        assert 3 in replayed  # the known winning episode must survive replay selection
+    assert m2["train_replay_victories"] >= 1
+    assert m2["train_replay_selection"] == "victory_then_floor_then_recency"
 
 
 def test_parent_change_rejects_ppo_replay_but_keeps_elite_archive(tmp_path: Path):

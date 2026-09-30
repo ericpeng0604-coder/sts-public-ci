@@ -26,7 +26,7 @@ permissions:
 
 concurrency:
   group: sts1-strategy-v7-human-verified-mining
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: '1'
@@ -40,6 +40,7 @@ env:
   EXPERT_DATA_SHA: '097aaf3564c2247835162d267cbc7c55d2c9039e'
   STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v7-human-verified'
   BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v6-rescue'
+  FALLBACK_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v4'
   BOOTSTRAP_ELITE_REPORT_ARTIFACT: 'sts1-armg-strategy-loop-report-36415222490'
   BOOTSTRAP_ELITE_EXPECTED_SHA: 'ea6d7bfa59f3bd4ac3c11dd2d4ebf236182a38acaed3fa720f0b81744cc0e4e5'
   BOOTSTRAP_ELITE_PARENT_SHA: 'fc4bb1e64ea3ee4aec2245445a01172afb35f872b7b9c90a2b6000430f4c67cb'
@@ -243,9 +244,16 @@ jobs:
               --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[].id'
           )
           if [ "${#artifact_ids[@]}" -eq 0 ]; then
-            echo "NO_V4_STATE_BOOTSTRAP_FROM_V3"
+            echo "NO_V7_STATE_TRY_V6"
             mapfile -t artifact_ids < <(
               gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$BOOTSTRAP_STATE_ARTIFACT&per_page=100" \
+                --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[].id'
+            )
+          fi
+          if [ "${#artifact_ids[@]}" -eq 0 ]; then
+            echo "NO_V6_STATE_FALLBACK_V4"
+            mapfile -t artifact_ids < <(
+              gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$FALLBACK_STATE_ARTIFACT&per_page=100" \
                 --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[].id'
             )
           fi

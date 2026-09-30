@@ -84,6 +84,44 @@ jobs:
           ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: GameContext clone isolation smoke
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.simulator import _load_sts, _set_pauses, public_run_state
+          sts=_load_sts(Path("external/sts_lightspeed/source/build-probe"))
+          gc=sts.GameContext(sts.CharacterClass.IRONCLAD, 2026093020, 0)
+          assert callable(getattr(gc, "clone", None)), "GameContext.clone binding missing"
+          agent=sts.Agent()
+          _set_pauses(agent)
+          for _ in range(200):
+              agent.playout(gc)
+              if gc.outcome != sts.GameOutcome.UNDECIDED:
+                  raise AssertionError("run ended before a branchable non-combat decision")
+              if gc.screen_state != sts.ScreenState.BATTLE:
+                  actions=list(sts.get_legal_game_actions(gc))
+                  if len(actions) >= 2:
+                      before=public_run_state(gc)
+                      clone=gc.clone()
+                      actions2=list(sts.get_legal_game_actions(clone))
+                      assert len(actions2)==len(actions)
+                      actions2[1].execute(clone)
+                      assert public_run_state(gc)==before, "clone branch mutated original GameContext"
+                      print("PASS_GAMECONTEXT_CLONE_ISOLATION", before.get("floor"), before.get("act"))
+                      break
+              if gc.screen_state == sts.ScreenState.BATTLE:
+                  bc=sts.BattleContext()
+                  bc.init(gc)
+                  while bc.outcome == sts.Outcome.UNDECIDED:
+                      legal=list(sts.get_legal_actions(bc))
+                      action=legal[0] if len(legal)==1 else sts.mcts_recommend(bc, 64)
+                      action.execute(bc)
+                  bc.exit_battle(gc)
+          else:
+              raise AssertionError("no branchable non-combat decision found")
+          PY
+
       - name: Boss schedule simulator smoke
         run: |
           set -euo pipefail

@@ -21,6 +21,7 @@ from roguelike_ai.sts1_phase3.armg_strategy_evolve import (
     DEV_STRATEGY_GATE,
     FRESH_STRATEGY_GATE,
     HIDDEN_STRATEGY_GATE,
+    StrategyGatePolicy,
     evaluate_strategy_gate,
 )
 from roguelike_ai.sts1_phase3.human_expert import HumanExpertPolicy, build_card_prior
@@ -28,7 +29,15 @@ from roguelike_ai.sts1_phase3.human_path_prior import build_path_prior
 from roguelike_ai.sts1_phase3.simulator import _load_sts, run_simulator_game
 
 
-REPORT_SCHEMA = "sts1-human-expert-v5-path-benchmark-v1"
+REPORT_SCHEMA = "sts1-human-expert-v5-path-benchmark-v2"
+
+DEV_CONFIRM_20_GATE = StrategyGatePolicy(
+    "human-expert-v5-dev-confirm-20",
+    20,
+    min_win_delta=0,
+    min_floor_delta=0.0,
+    max_floor_regression_with_win_gain=60.0,
+)
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -303,6 +312,7 @@ def main() -> int:
 
     frozen50 = _read_seeds(args.dev_seed_file)
     dev30 = frozen50[:30]
+    dev_confirm20 = frozen50[30:]
     parent_dev = _evaluate(
         seeds=dev30,
         module_dir=args.module_dir,
@@ -358,7 +368,50 @@ def main() -> int:
     dev_gate = dict(selected["gate"])
     _write_json(args.output_dir / "parent-dev30.json", parent_dev)
 
-    hidden_gate: dict[str, Any] = {"status":"SKIPPED","reasons":["dev_30_gate_did_not_pass"]}
+    dev_confirm_gate: dict[str, Any] = {
+        "status": "SKIPPED",
+        "reasons": ["dev_30_gate_did_not_pass"],
+    }
+    if dev_gate.get("status") == "PASS":
+        parent_confirm = _evaluate(
+            seeds=dev_confirm20,
+            module_dir=args.module_dir,
+            armg_root=args.armg_root,
+            base_weight=args.armg_base_weight,
+            card_prior=card_prior,
+            card_strength=args.card_strength,
+            path_prior=path_prior,
+            path_strength=0.0,
+            mcts_sims=args.combat_mcts_sims,
+            workers=args.eval_workers,
+        )
+        candidate_confirm = _evaluate(
+            seeds=dev_confirm20,
+            module_dir=args.module_dir,
+            armg_root=args.armg_root,
+            base_weight=args.armg_base_weight,
+            card_prior=card_prior,
+            card_strength=args.card_strength,
+            path_prior=path_prior,
+            path_strength=path_strength,
+            path_min_prior_spread=path_min_prior_spread,
+            path_max_armg_margin=path_max_armg_margin,
+            mcts_sims=args.combat_mcts_sims,
+            workers=args.eval_workers,
+        )
+        dev_confirm_gate = _paired_gate(
+            parent=parent_confirm,
+            candidate=candidate_confirm,
+            policy=DEV_CONFIRM_20_GATE,
+            mcts_sims=args.combat_mcts_sims,
+        )
+        _write_json(args.output_dir / "parent-dev-confirm20.json", parent_confirm)
+        _write_json(args.output_dir / "candidate-dev-confirm20.json", candidate_confirm)
+
+    hidden_gate: dict[str, Any] = {
+        "status":"SKIPPED",
+        "reasons":["dev_confirmation_not_passed"],
+    }
     fresh_gate: dict[str, Any] = {"status":"SKIPPED","reasons":["hidden_50_gate_not_passed"]}
     confirm_gate: dict[str, Any] = {"status":"SKIPPED","reasons":["fresh_100_did_not_require_confirmation"]}
     hidden_seeds: tuple[int, ...] = ()
@@ -458,6 +511,11 @@ def main() -> int:
             "contexts": len(path_data["context_log_probs"]),
         },
         "dev30": _summary(dev_gate),
+        "dev_confirm20": (
+            _summary(dev_confirm_gate)
+            if dev_confirm_gate.get("status") != "SKIPPED"
+            else dev_confirm_gate
+        ),
         "selected_dev_path_diagnostics": dict(selected["path_diagnostics"]),
         "hidden50": _summary(hidden_gate) if hidden_gate.get("status") != "SKIPPED" else hidden_gate,
         "fresh100": _summary(fresh_gate) if fresh_gate.get("status") != "SKIPPED" else fresh_gate,

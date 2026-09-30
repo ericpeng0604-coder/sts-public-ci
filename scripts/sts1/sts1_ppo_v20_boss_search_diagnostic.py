@@ -190,15 +190,15 @@ def aggregate(args: argparse.Namespace) -> int:
             "regressed_seeds":regressed,
         }
 
-    build_limited=[
+    not_rescued=[
         s for s in seeds
         if not base[s] and not _is_win(by_seed[s]["modes"]["boss_50k"])
     ]
-    summary["build_limited_after_boss_50k"]={
-        "count":len(build_limited),
-        "seeds":build_limited,
+    summary["not_rescued_by_boss_50k"]={
+        "count":len(not_rescued),
+        "seeds":not_rescued,
         "fraction_of_baseline_losses":(
-            len(build_limited)/sum(not base[s] for s in seeds)
+            len(not_rescued)/sum(not base[s] for s in seeds)
             if any(not base[s] for s in seeds)
             else 0.0
         ),

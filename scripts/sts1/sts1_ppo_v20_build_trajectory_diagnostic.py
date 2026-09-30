@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -508,6 +512,138 @@ def diagnose_seed_replay(
     }
 
 
+def _isolated_force_choice_and_finish(
+    record:dict[str,Any],
+    *,
+    sts:Any,
+    policy:Any,
+    timeout_seconds:int,
+    retries:int,
+    isolate:bool,
+    **kwargs:Any,
+) -> tuple[dict[str,Any] | None, list[dict[str,Any]]]:
+    """Run one native counterfactual in a fork so SIGSEGV cannot kill the controller."""
+    force_fn=getattr(rollout, "_force_choice_and_finish")
+    failures:list[dict[str,Any]]=[]
+
+    if not isolate:
+        try:
+            return force_fn(record, sts=sts, policy=policy, **kwargs), failures
+        except BaseException as exc:
+            failures.append({
+                "attempt":0,
+                "kind":"python_exception",
+                "error_type":type(exc).__name__,
+                "error":str(exc),
+            })
+            return None, failures
+
+    if not hasattr(os, "fork"):
+        raise RuntimeError("isolated Build tracing requires os.fork on this runner")
+
+    for attempt in range(int(retries)+1):
+        fd,path=tempfile.mkstemp(prefix="sts1-v20-branch-",suffix=".json")
+        os.close(fd)
+        pid=os.fork()
+        if pid==0:
+            try:
+                result=force_fn(record, sts=sts, policy=policy, **kwargs)
+                Path(path).write_text(
+                    json.dumps({"ok":True,"result":result},sort_keys=True)+"\n",
+                    encoding="utf-8",
+                )
+                os._exit(0)
+            except BaseException as exc:
+                try:
+                    Path(path).write_text(
+                        json.dumps({
+                            "ok":False,
+                            "error_type":type(exc).__name__,
+                            "error":str(exc),
+                        },sort_keys=True)+"\n",
+                        encoding="utf-8",
+                    )
+                finally:
+                    os._exit(2)
+
+        deadline=time.monotonic()+int(timeout_seconds)
+        status=None
+        timed_out=False
+        while status is None:
+            waited,raw=os.waitpid(pid,os.WNOHANG)
+            if waited==pid:
+                status=raw
+                break
+            if time.monotonic()>=deadline:
+                timed_out=True
+                try:
+                    os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                _,status=os.waitpid(pid,0)
+                break
+            time.sleep(0.05)
+
+        payload=None
+        try:
+            p=Path(path)
+            if p.exists() and p.stat().st_size:
+                payload=json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            failures.append({
+                "attempt":attempt,
+                "kind":"result_decode_error",
+                "error_type":type(exc).__name__,
+                "error":str(exc),
+            })
+        finally:
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+
+        if (
+            not timed_out
+            and status is not None
+            and os.WIFEXITED(status)
+            and os.WEXITSTATUS(status)==0
+            and payload
+            and payload.get("ok") is True
+        ):
+            return dict(payload["result"]),failures
+
+        if timed_out:
+            failure={"attempt":attempt,"kind":"timeout","timeout_seconds":int(timeout_seconds)}
+        elif status is not None and os.WIFSIGNALED(status):
+            sig=int(os.WTERMSIG(status))
+            failure={
+                "attempt":attempt,
+                "kind":"native_signal",
+                "signal":sig,
+                "signal_name":signal.Signals(sig).name if sig in signal.Signals.__members__.values() else str(sig),
+            }
+        elif payload and payload.get("ok") is False:
+            failure={
+                "attempt":attempt,
+                "kind":"python_exception",
+                "error_type":payload.get("error_type"),
+                "error":payload.get("error"),
+            }
+        else:
+            failure={
+                "attempt":attempt,
+                "kind":"child_exit",
+                "exit_code":(
+                    int(os.WEXITSTATUS(status))
+                    if status is not None and os.WIFEXITED(status)
+                    else None
+                ),
+            }
+        failures.append(failure)
+
+    return None,failures
+
+
 def diagnose_seed(
     *,
     seed:int,
@@ -519,6 +655,9 @@ def diagnose_seed(
     max_alternatives:int,
     max_two_step_states:int,
     max_second_alternatives:int,
+    isolate_branches:bool=False,
+    branch_timeout_seconds:int=180,
+    branch_retries:int=1,
 ) -> dict[str,Any]:
     sts=_load_sts(module_dir)
     policy=rollout.SamplingArmG(
@@ -527,6 +666,30 @@ def diagnose_seed(
         temperature=1.0,
         torch_seed=seed,
     )
+    branch_failures:list[dict[str,Any]]=[]
+
+    def run_force(record:dict[str,Any], **kwargs:Any) -> dict[str,Any]:
+        # Existing call sites pass sts/policy; the controller owns those.
+        kwargs.pop("sts",None)
+        kwargs.pop("policy",None)
+        result,failures=_isolated_force_choice_and_finish(
+            record,
+            sts=sts,
+            policy=policy,
+            timeout_seconds=branch_timeout_seconds,
+            retries=branch_retries,
+            isolate=isolate_branches,
+            **kwargs,
+        )
+        branch_failures.extend(failures)
+        if result is None:
+            return {
+                "passed_boss":False,
+                "victory":False,
+                "isolated_failure":True,
+                "failure_details":failures,
+            }
+        return result
     base=run_simulator_game(
         student=None,
         sts=sts,
@@ -593,7 +756,7 @@ def diagnose_seed(
 
     for record in records:
         selected=int(record["selected_index"])
-        baseline50=rollout._force_choice_and_finish(
+        baseline50=run_force(
             record,
             choice_index=selected,
             sts=sts,
@@ -602,7 +765,7 @@ def diagnose_seed(
             boss_mcts_sims=50000,
             target_floor=target,
         )
-        if _result_passes(baseline50):
+        if baseline50.get("isolated_failure") or _result_passes(baseline50):
             continue
 
         alternatives=[i for i in range(len(record["descs"])) if i!=selected]
@@ -612,7 +775,7 @@ def diagnose_seed(
         )
         for alternative in alternatives[:max_alternatives]:
             attempted += 1
-            boss10=rollout._force_choice_and_finish(
+            boss10=run_force(
                 record,
                 choice_index=alternative,
                 sts=sts,
@@ -623,7 +786,7 @@ def diagnose_seed(
             )
             if not _result_passes(boss10):
                 continue
-            boss50=rollout._force_choice_and_finish(
+            boss50=run_force(
                 record,
                 choice_index=alternative,
                 sts=sts,
@@ -645,6 +808,8 @@ def diagnose_seed(
                 "candidate_states":len(records),
                 "captured_state_count":len(policy.conversion_states),
                 "attempted_states":attempted,
+                "native_branch_failures":len(branch_failures),
+                "branch_failure_details":branch_failures,
                 "rescue":{
                     "decision_floor":int(record["floor"]),
                     "decision_act":int(record["act"]),
@@ -667,7 +832,7 @@ def diagnose_seed(
     two_step_attempts=0
     for record in records[:max_two_step_states]:
         selected=int(record["selected_index"])
-        baseline50=rollout._force_choice_and_finish(
+        baseline50=run_force(
             record,
             choice_index=selected,
             sts=sts,
@@ -676,7 +841,7 @@ def diagnose_seed(
             boss_mcts_sims=50000,
             target_floor=target,
         )
-        if _result_passes(baseline50):
+        if baseline50.get("isolated_failure") or _result_passes(baseline50):
             continue
 
         alternatives=[i for i in range(len(record["descs"])) if i!=selected]
@@ -687,7 +852,7 @@ def diagnose_seed(
         for alternative in alternatives[:max_alternatives]:
             for second_rank in range(max_second_alternatives):
                 two_step_attempts += 1
-                boss10=rollout._force_choice_and_finish(
+                boss10=run_force(
                     record,
                     choice_index=alternative,
                     sts=sts,
@@ -699,7 +864,7 @@ def diagnose_seed(
                 )
                 if not _result_passes(boss10):
                     continue
-                boss50=rollout._force_choice_and_finish(
+                boss50=run_force(
                     record,
                     choice_index=alternative,
                     sts=sts,
@@ -746,6 +911,8 @@ def diagnose_seed(
                     "captured_state_count":len(policy.conversion_states),
                     "attempted_states":attempted,
                     "two_step_attempts":two_step_attempts,
+                    "native_branch_failures":len(branch_failures),
+                    "branch_failure_details":branch_failures,
                     "rescue":{
                         "decision_floor":int(record["floor"]),
                         "decision_act":int(record["act"]),
@@ -770,6 +937,8 @@ def diagnose_seed(
         "captured_state_count":len(policy.conversion_states),
         "attempted_states":attempted,
         "two_step_attempts":two_step_attempts,
+        "native_branch_failures":len(branch_failures),
+        "branch_failure_details":branch_failures,
         "rescue":None,
     }
 
@@ -788,6 +957,10 @@ def main() -> int:
     p.add_argument("--max-alternatives",type=int,default=2)
     p.add_argument("--max-two-step-states",type=int,default=8)
     p.add_argument("--max-second-alternatives",type=int,default=2)
+    p.add_argument("--candidate-index",type=int)
+    p.add_argument("--isolate-branches",type=int,choices=(0,1),default=1)
+    p.add_argument("--branch-timeout-seconds",type=int,default=180)
+    p.add_argument("--branch-retries",type=int,default=1)
     args=p.parse_args()
     if not 1<=args.max_seeds<=20:
         raise RuntimeError("max-seeds must be within 1..20")
@@ -795,10 +968,14 @@ def main() -> int:
         raise RuntimeError("max-states must be within 1..20")
     if not 1<=args.max_alternatives<=4:
         raise RuntimeError("max-alternatives must be within 1..4")
-    if not 1<=args.max_two_step_states<=12:
-        raise RuntimeError("max-two-step-states must be within 1..12")
+    if not 1<=args.max_two_step_states<=20:
+        raise RuntimeError("max-two-step-states must be within 1..20")
     if not 1<=args.max_second_alternatives<=3:
         raise RuntimeError("max-second-alternatives must be within 1..3")
+    if not 10<=args.branch_timeout_seconds<=600:
+        raise RuntimeError("branch-timeout-seconds must be within 10..600")
+    if not 0<=args.branch_retries<=2:
+        raise RuntimeError("branch-retries must be within 0..2")
 
     heldout=_read_seeds(args.seeds_file)
     summary=json.loads(args.boss_summary.read_text(encoding="utf-8"))
@@ -806,6 +983,10 @@ def main() -> int:
         int(v)
         for v in summary["not_rescued_by_boss_50k"]["seeds"]
     ][:args.max_seeds]
+    if args.candidate_index is not None:
+        if not 0<=args.candidate_index<len(candidates):
+            raise RuntimeError("candidate-index is outside selected Build-limited seeds")
+        candidates=[candidates[args.candidate_index]]
 
     rows=[
         diagnose_seed_replay(
@@ -818,6 +999,9 @@ def main() -> int:
             max_alternatives=args.max_alternatives,
             max_two_step_states=args.max_two_step_states,
             max_second_alternatives=args.max_second_alternatives,
+            isolate_branches=bool(args.isolate_branches),
+            branch_timeout_seconds=args.branch_timeout_seconds,
+            branch_retries=args.branch_retries,
         )
         for seed in candidates
     ]
@@ -842,6 +1026,7 @@ def main() -> int:
         "capture_missing":sum(row["status"]=="NO_CAPTURED_REVERSIBLE_STATE" for row in rows),
         "not_reproduced":sum(row["status"]=="NOT_REPRODUCED_AS_NEAR_BOSS_LOSS" for row in rows),
         "captured_state_total":sum(int(row.get("captured_state_count",0) or 0) for row in rows),
+        "native_branch_failures":sum(int(row.get("native_branch_failures",0) or 0) for row in rows),
         "rows":rows,
     }
     args.output.parent.mkdir(parents=True,exist_ok=True)
@@ -860,6 +1045,7 @@ def main() -> int:
         "no_early_rescue":payload["no_early_rescue"],
         "capture_missing":payload["capture_missing"],
         "captured_state_total":payload["captured_state_total"],
+        "native_branch_failures":payload["native_branch_failures"],
         "not_reproduced":payload["not_reproduced"],
     },sort_keys=True),flush=True)
     return 0

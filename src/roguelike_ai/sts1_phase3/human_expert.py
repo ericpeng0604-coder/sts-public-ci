@@ -474,6 +474,8 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
         expert_strength: float,
         path_prior_path: Path | None = None,
         path_strength: float = 0.0,
+        path_min_prior_spread: float = 0.0,
+        path_max_armg_margin: float = float("inf"),
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -488,6 +490,10 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
             raise SimulatorRunError("human expert strength must be finite and non-negative")
         if not math.isfinite(float(path_strength)) or float(path_strength) < 0:
             raise SimulatorRunError("human path strength must be finite and non-negative")
+        if not math.isfinite(float(path_min_prior_spread)) or float(path_min_prior_spread) < 0:
+            raise SimulatorRunError("human path minimum prior spread must be finite and non-negative")
+        if math.isnan(float(path_max_armg_margin)) or float(path_max_armg_margin) < 0:
+            raise SimulatorRunError("human path maximum ArmG margin must be non-negative")
 
         path_payload: dict[str, Any] | None = None
         if path_prior_path is not None:
@@ -505,6 +511,8 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
         self.expert_strength = float(expert_strength)
         self.path_prior = path_payload
         self.path_strength = float(path_strength)
+        self.path_min_prior_spread = float(path_min_prior_spread)
+        self.path_max_armg_margin = float(path_max_armg_margin)
         self.last_expert_rerank: dict[str, Any] | None = None
         self.path_diagnostics: dict[str, Any] = {
             "map_decisions": 0,
@@ -514,6 +522,9 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
             "raw_margin_sum": 0.0,
             "raw_margin_max": 0.0,
             "rooms_seen": {},
+            "eligible_decisions": 0,
+            "blocked_low_prior_confidence": 0,
+            "blocked_armg_confident": 0,
             "flip_examples": [],
         }
 
@@ -560,24 +571,35 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
             max_hp = getattr(gc, "max_hp", None)
             gold = getattr(gc, "gold", None)
             rooms: list[str] = []
-            for index, desc in enumerate(descs):
+            prior_scores: list[float] = []
+            for desc in descs:
                 semantic = self.describe_choice("map", desc)
                 room = str(semantic.get("room") or "")
                 rooms.append(room)
-                additions[index] = self.path_strength * path_prior_score(
-                    self.path_prior,
-                    room,
-                    floor=floor,
-                    hp=hp,
-                    max_hp=max_hp,
-                    gold=gold,
+                prior_scores.append(
+                    path_prior_score(
+                        self.path_prior,
+                        room,
+                        floor=floor,
+                        hp=hp,
+                        max_hp=max_hp,
+                        gold=gold,
+                    )
                 )
-                adjusted[index] += additions[index]
+
+            sorted_raw = sorted(raw, reverse=True)
+            raw_margin = sorted_raw[0] - sorted_raw[1] if len(sorted_raw) > 1 else 0.0
+            prior_spread = max(prior_scores) - min(prior_scores) if prior_scores else 0.0
+            eligible = (
+                prior_spread >= float(getattr(self, "path_min_prior_spread", 0.0))
+                and raw_margin <= float(getattr(self, "path_max_armg_margin", float("inf")))
+            )
+            if eligible:
+                additions = [self.path_strength * score for score in prior_scores]
+                adjusted = [value + bonus for value, bonus in zip(raw, additions)]
 
             raw_choice = max(range(len(raw)), key=raw.__getitem__)
             adjusted_choice = max(range(len(adjusted)), key=adjusted.__getitem__)
-            sorted_raw = sorted(raw, reverse=True)
-            raw_margin = sorted_raw[0] - sorted_raw[1] if len(sorted_raw) > 1 else 0.0
             addition_spread = max(additions) - min(additions) if additions else 0.0
             diag = getattr(self, "path_diagnostics", None)
             if not isinstance(diag, dict):
@@ -589,10 +611,20 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
                     "raw_margin_sum": 0.0,
                     "raw_margin_max": 0.0,
                     "rooms_seen": {},
+                    "eligible_decisions": 0,
+                    "blocked_low_prior_confidence": 0,
+                    "blocked_armg_confident": 0,
                     "flip_examples": [],
                 }
                 self.path_diagnostics = diag
             diag["map_decisions"] = int(diag.get("map_decisions", 0)) + 1
+            diag["eligible_decisions"] = int(diag.get("eligible_decisions", 0)) + int(eligible)
+            diag["blocked_low_prior_confidence"] = int(diag.get("blocked_low_prior_confidence", 0)) + int(
+                prior_spread < float(getattr(self, "path_min_prior_spread", 0.0))
+            )
+            diag["blocked_armg_confident"] = int(diag.get("blocked_armg_confident", 0)) + int(
+                raw_margin > float(getattr(self, "path_max_armg_margin", float("inf")))
+            )
             diag["map_flips"] = int(diag.get("map_flips", 0)) + int(raw_choice != adjusted_choice)
             diag["addition_spread_sum"] = float(diag.get("addition_spread_sum", 0.0)) + addition_spread
             diag["addition_spread_max"] = max(float(diag.get("addition_spread_max", 0.0)), addition_spread)
@@ -609,6 +641,9 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
                     "gold": gold,
                     "rooms": rooms,
                     "raw_scores": raw,
+                    "prior_scores": prior_scores,
+                    "prior_spread": prior_spread,
+                    "raw_margin": raw_margin,
                     "additions": additions,
                     "adjusted_scores": adjusted,
                     "raw_choice": raw_choice,
@@ -629,6 +664,9 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
         decisions = int(diag.get("map_decisions", 0) or 0)
         flips = int(diag.get("map_flips", 0) or 0)
         diag["flip_rate"] = (flips / decisions) if decisions else 0.0
+        diag["eligible_rate"] = (
+            int(diag.get("eligible_decisions", 0) or 0) / decisions if decisions else 0.0
+        )
         diag["mean_addition_spread"] = (
             float(diag.get("addition_spread_sum", 0.0)) / decisions if decisions else 0.0
         )

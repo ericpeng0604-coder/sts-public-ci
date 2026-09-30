@@ -22,6 +22,12 @@ import numpy as np
 from roguelike_ai.sts1_phase3.simulator import ArmGNoncombatPolicy, run_simulator_game
 
 
+def _v17_terminal_bonus(final_floor: float, *, victory: bool) -> float:
+    """Victory-first terminal reward used by PPO v1.7."""
+    progress = min(0.50, max(0.0, float(final_floor) / 100.0))
+    return progress + (3.0 if victory else -0.25)
+
+
 class SamplingArmG(ArmGNoncombatPolicy):
     def __init__(self, *args: Any, temperature: float = 1.0, torch_seed: int = 0, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -169,8 +175,7 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
                     or result.get("max_floor")
                     or next_floor
                 )
-                reward += min(0.50, max(0.0, final_floor / 100.0))
-                reward += 3.0 if victory else -0.25
+                reward += _v17_terminal_bonus(final_floor, victory=victory)
         else:
             raise RuntimeError(f"unknown reward mode: {reward_mode}")
         action = int(row["selected_index"])

@@ -54,6 +54,8 @@ jobs:
           echo "PPO_WIN_CONVERSION_MAX_ALTS=${win_conversion_max_alternatives:-2}" >> "$GITHUB_ENV"
           echo "PPO_WIN_CONVERSION_MAX_SECOND=${win_conversion_max_second_alternatives:-2}" >> "$GITHUB_ENV"
           echo "PPO_WIN_CONVERSION_SAMPLE_MODULUS=${win_conversion_sample_modulus:-4}" >> "$GITHUB_ENV"
+          echo "PPO_WIN_CONVERSION_PRIMARY_MCTS=${win_conversion_primary_mcts:-2000}" >> "$GITHUB_ENV"
+          echo "PPO_WIN_CONVERSION_CONFIRM_MCTS=${win_conversion_confirm_mcts:-10000}" >> "$GITHUB_ENV"
 
       - name: Install and hydrate
         run: |
@@ -137,7 +139,9 @@ jobs:
             --win-conversion-max-states "$PPO_WIN_CONVERSION_MAX_STATES" \
             --win-conversion-max-alternatives "$PPO_WIN_CONVERSION_MAX_ALTS" \
             --win-conversion-max-second-alternatives "$PPO_WIN_CONVERSION_MAX_SECOND" \
-            --win-conversion-sample-modulus "$PPO_WIN_CONVERSION_SAMPLE_MODULUS"
+            --win-conversion-sample-modulus "$PPO_WIN_CONVERSION_SAMPLE_MODULUS" \
+            --win-conversion-primary-mcts "$PPO_WIN_CONVERSION_PRIMARY_MCTS" \
+            --win-conversion-confirm-mcts "$PPO_WIN_CONVERSION_CONFIRM_MCTS"
 
       - uses: actions/upload-artifact@v4
         with:

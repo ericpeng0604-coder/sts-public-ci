@@ -239,3 +239,53 @@ def test_isolated_branch_returns_success(monkeypatch: pytest.MonkeyPatch):
     )
     assert result == {"passed_boss": True, "victory": False}
     assert failures == []
+
+
+def test_isolated_replay_variant_survives_sigsegv(monkeypatch: pytest.MonkeyPatch):
+    def crash_variant(**kwargs):
+        os.kill(os.getpid(), signal.SIGSEGV)
+
+    monkeypatch.setattr(build_mod, "_run_seed_variant", crash_variant)
+    result, records, failures = build_mod._isolated_run_seed_variant(
+        seed=123,
+        module_dir=Path("."),
+        armg_root=Path("."),
+        weight=Path("fake.pt"),
+        heldout=[123],
+        boss_sims=10000,
+        forced=None,
+        isolate=True,
+        timeout_seconds=10,
+        retries=0,
+    )
+    assert result is None
+    assert records == []
+    assert failures
+    assert failures[-1]["kind"] == "native_signal"
+    assert failures[-1]["signal"] == int(signal.SIGSEGV)
+
+
+def test_isolated_replay_variant_returns_json_records(monkeypatch: pytest.MonkeyPatch):
+    class Policy:
+        records = [{"branch_index": 0, "kind": "rest"}]
+
+    monkeypatch.setattr(
+        build_mod,
+        "_run_seed_variant",
+        lambda **kwargs: ({"result":"PASS_SIMULATOR_COMPLETE_RUN","outcome":"defeat","final_floor":33}, Policy()),
+    )
+    result, records, failures = build_mod._isolated_run_seed_variant(
+        seed=123,
+        module_dir=Path("."),
+        armg_root=Path("."),
+        weight=Path("fake.pt"),
+        heldout=[123],
+        boss_sims=10000,
+        forced=None,
+        isolate=True,
+        timeout_seconds=10,
+        retries=0,
+    )
+    assert result["result"] == "PASS_SIMULATOR_COMPLETE_RUN"
+    assert records == [{"branch_index": 0, "kind": "rest"}]
+    assert failures == []

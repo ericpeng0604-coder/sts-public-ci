@@ -50,7 +50,7 @@ jobs:
           from pathlib import Path
           p=Path("scripts/sts1/sts1_build_rescue_bc_v29.py").read_text()
           required=[
-              "single_seed_full_network_pairwise_only",
+              "single_seed_tail2_pairwise",
               "_new_win_pairwise_margin_loss",
               "V29_SINGLE_SEED_EARLY_STOP",
               "V29_SINGLE_SEED_TRAIN_PASS",

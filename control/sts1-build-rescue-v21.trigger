@@ -1,0 +1,26 @@
+# STS1 Build Rescue Teacher Loop v2.1
+started=2026-09-30T17:32:00+08:00
+validated_contracts_run=36698505764
+parent_generation=7
+parent_sha256=8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0
+source_boss_run=36677610709
+source_verified_build_run=36681528626
+build_limited_seeds_total=40
+already_verified_seeds=10
+remaining_mining_seeds=30
+max_states=20
+max_alternatives=2
+max_two_step_states=20
+max_second_alternatives=2
+branch_isolation=fork
+branch_retries=1
+branch_timeout_seconds=180
+training=build_only_bc
+combat=mcts_2000
+dev_gate=30
+hidden_gate=50
+fresh_gate=100
+heldout_gate=500
+formal_p_threshold=0.10
+production_champion_unchanged=true
+real_game_gate_required=true

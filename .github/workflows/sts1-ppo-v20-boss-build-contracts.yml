@@ -75,6 +75,7 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
           test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
           python scripts/sts1/build_probe.py

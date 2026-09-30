@@ -436,3 +436,53 @@ def test_v16_stagnation_rescue_uses_stronger_teacher_signal():
     assert updated["strategy_teacher_max_examples"] == "1024"
     assert updated["mcts_sims"] == "2000"
     assert report["production_champion_changed"] is False
+
+
+REPLAY_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v14_replay.py"
+REPLAY_SPEC = importlib.util.spec_from_file_location(
+    "sts1_armg_ppo_v14_replay_test",
+    REPLAY_SCRIPT,
+)
+assert REPLAY_SPEC and REPLAY_SPEC.loader
+replay_mod = importlib.util.module_from_spec(REPLAY_SPEC)
+sys.modules[REPLAY_SPEC.name] = replay_mod
+REPLAY_SPEC.loader.exec_module(replay_mod)
+
+
+def _replay_game(seed: int, *, victory: bool, floor: int, source_round: int):
+    return {
+        "seed": seed,
+        "checkpoint_id": "parent",
+        "source_round": source_round,
+        "temperature": 1.0,
+        "victory": victory,
+        "final_floor": floor,
+        "action": [0],
+    }
+
+
+def test_v16_rescue_replay_mixes_wins_deep_losses_and_recent_data():
+    games = [
+        _replay_game(1, victory=True, floor=51, source_round=1),
+        _replay_game(2, victory=True, floor=51, source_round=2),
+        _replay_game(3, victory=True, floor=51, source_round=3),
+        _replay_game(4, victory=False, floor=50, source_round=1),
+        _replay_game(5, victory=False, floor=49, source_round=2),
+        _replay_game(6, victory=False, floor=48, source_round=3),
+        _replay_game(7, victory=False, floor=12, source_round=100),
+        _replay_game(8, victory=False, floor=10, source_round=101),
+        _replay_game(9, victory=False, floor=8, source_round=102),
+    ]
+
+    selected = replay_mod._select_rescue_replay(
+        games,
+        max_games=6,
+        decision_budget=6,
+    )
+
+    seeds = {int(game["seed"]) for game in selected}
+    assert len(selected) == 6
+    assert len(seeds) == 6
+    assert {1, 2, 3}.issubset(seeds)
+    assert any(int(game["final_floor"]) >= 48 and not game["victory"] for game in selected)
+    assert any(int(game["source_round"]) >= 100 and not game["victory"] for game in selected)

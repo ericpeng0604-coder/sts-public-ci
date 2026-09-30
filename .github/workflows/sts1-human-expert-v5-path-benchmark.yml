@@ -1,0 +1,107 @@
+name: STS1 Human Expert v5 Path Benchmark
+
+on:
+  push:
+    branches:
+      - gpt/sts1-human-expert-loop-v5-20260929
+    paths:
+      - '.github/workflows/sts1-human-expert-v5-path-benchmark.yml'
+      - 'scripts/sts1/sts1_human_expert_v5_path_benchmark.py'
+      - 'src/roguelike_ai/sts1_phase3/human_expert.py'
+      - 'src/roguelike_ai/sts1_phase3/human_path_prior.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  EXPERT_DATA_REPO: 'https://github.com/MaT1g3R/Slay-the-Spire-data.git'
+  EXPERT_DATA_SHA: '097aaf3564c2247835162d267cbc7c55d2c9039e'
+
+concurrency:
+  group: sts1-human-expert-v5-path-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install and hydrate pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e . numpy torch==2.11.0
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          git -C external/sts_lightspeed/source apply --check "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          git -C external/sts_lightspeed/source apply "$PWD/patches/sts1/armg_gamecontext_clone.patch"
+          python scripts/sts1/build_probe.py
+
+          root=".cache/sts1-human-expert"
+          rm -rf "$root"
+          mkdir -p "$root"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Fetch pinned expert corpus
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/expert-data"
+          git clone --filter=blob:none "$EXPERT_DATA_REPO" "$data"
+          git -C "$data" checkout "$EXPERT_DATA_SHA"
+          test "$(git -C "$data" rev-parse HEAD)" = "$EXPERT_DATA_SHA"
+          echo "HUMAN_DATA_ROOT=$data" >> "$GITHUB_ENV"
+
+      - name: Compile V5 benchmark
+        run: |
+          python -m py_compile             src/roguelike_ai/sts1_phase3/human_path_prior.py             src/roguelike_ai/sts1_phase3/human_expert.py             scripts/sts1/sts1_human_expert_v5_path_benchmark.py
+
+      - name: Run V5 win-rate benchmark
+        run: |
+          set -euo pipefail
+          rm -rf evidence/sts1/human-expert-v5-path
+          python scripts/sts1/sts1_human_expert_v5_path_benchmark.py             --data-root "$HUMAN_DATA_ROOT"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-human-expert             --armg-base-weight .cache/sts1-human-expert/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --output-dir evidence/sts1/human-expert-v5-path             --card-strength 2.0             --path-strengths 0.10,0.25,0.50,0.75,1.00             --combat-mcts-sims 2000             --eval-workers 4             --rng-seed 2026093005             --min-ascension 15
+
+      - name: Verify V5 report
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open("evidence/sts1/human-expert-v5-path/v5-path-benchmark.json", encoding="utf-8"))
+          assert p["schema_version"]=="sts1-human-expert-v5-path-benchmark-v1"
+          assert p["combat_policy"]=="mcts_2000"
+          assert p["production_champion_replaced"] is False
+          assert p["path_dataset"]["example_count"] >= 4000
+          assert p["dev30"]["seeds"] == 30
+          print("PASS_V5_BENCHMARK", json.dumps({
+              "selected_path_strength":p["selected_path_strength"],
+              "dev30":p["dev30"],
+              "hidden50":p["hidden50"],
+              "fresh100":p["fresh100"],
+              "confirm500":p["confirm500"],
+          }, sort_keys=True))
+          PY
+
+      - name: Upload V5 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts1-human-expert-v5-path-benchmark-${{ github.run_id }}
+          path: evidence/sts1/human-expert-v5-path/
+          if-no-files-found: warn
+          retention-days: 90

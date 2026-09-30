@@ -14,7 +14,6 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
-import sts1_armg_ppo_v13_auto_gate as rt
 
 
 def read_seeds(path: Path) -> list[int]:
@@ -36,6 +35,8 @@ def safety(run: dict) -> dict[str, int]:
 
 
 def shard(args: argparse.Namespace) -> int:
+    import sts1_armg_ppo_v13_auto_gate as rt
+
     seeds = read_seeds(args.seeds_file)
     selected = seeds[args.shard_index::args.shard_count]
     if not selected:

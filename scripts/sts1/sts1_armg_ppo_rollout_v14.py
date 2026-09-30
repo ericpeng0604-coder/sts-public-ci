@@ -123,6 +123,20 @@ def _deterministic_armg_choice(policy: SamplingArmG, gc: Any, sts: Any) -> tuple
     if not descs:
         if gc.screen_state == sts.ScreenState.REWARDS:
             return "reward_empty", -1, [], [], []
+        if gc.screen_state == sts.ScreenState.MAP_SCREEN:
+            legal = list(sts.get_legal_game_actions(gc))
+            if len(legal) == 1:
+                action = legal[0]
+                return (
+                    "map_single_legal_fallback",
+                    0,
+                    [["single_legal_map_transition"]],
+                    [lambda context, a=action: a.execute(context)],
+                    [0.0],
+                )
+            raise RuntimeError(
+                f"conversion replay exposed {len(legal)} legal map actions but ArmG no choice"
+            )
         raise RuntimeError(f"conversion replay exposed no ArmG choice: {gc.screen_state}")
     if len(descs) == 1:
         return str(kind), 0, descs, execs, [0.0]

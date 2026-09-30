@@ -451,8 +451,8 @@ jobs:
           assert len(pool) == 3, pool
           assert sum(bool(row.get("selected")) for row in pool) == 1, pool
           selected=next(row for row in pool if row.get("selected"))
-          assert float(selected["step_scale"]) in {0.25, 0.5, 1.0}
-          assert selected["recipe"] in {"balanced", "confident", "strict"}
+          assert float(selected["step_scale"]) in {0.10, 0.20, 0.35}
+          assert selected["recipe"] in {"rescue_micro", "rescue_confident", "rescue_strict"}
           training=latest.get("training") or {}
           assert training.get("selected_recipe") == selected["recipe"]
           assert float(training.get("parent_distill_coef", 0.0)) > 0.0

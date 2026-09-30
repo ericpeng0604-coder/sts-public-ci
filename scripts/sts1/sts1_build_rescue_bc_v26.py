@@ -350,7 +350,6 @@ def main() -> int:
     p.add_argument("--rescue-coef", type=float, default=0.05)
     p.add_argument("--new-win-coef", type=float, default=0.50)
     p.add_argument("--new-win-margin", type=float, default=0.01)
-    p.add_argument("--new-win-margin", type=float, default=0.02)
     p.add_argument("--new-win-margin-coef", type=float, default=0.50)
     p.add_argument("--min-fully-learned-seeds", type=int, default=1)
     p.add_argument("--preservation-coef", type=float, default=0.30)
@@ -455,6 +454,9 @@ def main() -> int:
 
     before_rescue = _eval_rescue(actor, torch, rescues)
     before_new_win = _eval_new_win(actor, torch, new_wins)
+    before_new_win_margin = _eval_new_win_margin(
+        actor, torch, new_wins, a.new_win_margin
+    )
     before_preservation = _eval_preservation(actor, torch, preservation)
     before_retention = _eval_retention(actor, parent, torch, elite, retention_eval)
     if before_preservation["top1"] < 1.0:
@@ -514,7 +516,7 @@ def main() -> int:
                 if new_win_order:
                     row = new_wins[int(new_win_order[j % len(new_win_order)])]
                     ce, _ = _teacher_loss(actor, torch, row)
-                    hinge, _ = _teacher_margin_loss(
+                    hinge, _ = _new_win_pairwise_margin_loss(
                         actor, torch, row, a.new_win_margin
                     )
                     priority = min(
@@ -571,6 +573,9 @@ def main() -> int:
         actor.eval()
         rescue_eval = _eval_rescue(actor, torch, rescues)
         new_win_eval = _eval_new_win(actor, torch, new_wins)
+        new_win_margin_eval = _eval_new_win_margin(
+            actor, torch, new_wins, a.new_win_margin
+        )
         preservation_eval = _eval_preservation(actor, torch, preservation)
         retention_eval_stats = _eval_retention(actor, parent, torch, elite, retention_eval)
         raw_retention_ok = _retention_ok(
@@ -580,7 +585,13 @@ def main() -> int:
             max_parent_kl=a.max_parent_kl,
             max_winner_drop=a.max_winner_drop,
         )
-        new_win_improved = new_win_eval["loss"] < before_new_win["loss"]
+        new_win_improved = (
+            new_win_eval["loss"] < before_new_win["loss"]
+            or new_win_margin_eval["loss"] < before_new_win_margin["loss"]
+        )
+        new_win_top1_flipped = (
+            int(new_win_eval["top1_examples"]) > int(before_new_win["top1_examples"])
+        )
         learned_enough = (
             int(new_win_eval["fully_learned_seeds"])
             >= a.min_fully_learned_seeds
@@ -595,6 +606,10 @@ def main() -> int:
             "new_win_loss": new_win_eval["loss"],
             "new_win_top1": new_win_eval["top1"],
             "new_win_top1_examples": new_win_eval["top1_examples"],
+            "new_win_top1_flipped": bool(new_win_top1_flipped),
+            "new_win_margin_loss": new_win_margin_eval["loss"],
+            "new_win_margin_pass": new_win_margin_eval["margin_pass"],
+            "new_win_mean_teacher_minus_g7": new_win_margin_eval["mean_teacher_minus_g7"],
             "fully_learned_seeds": new_win_eval["fully_learned_seeds"],
             "fully_learned_seed_ids": new_win_eval["fully_learned_seed_ids"],
             "preservation_loss": preservation_eval["loss"],
@@ -611,7 +626,7 @@ def main() -> int:
             "rescue_improved": bool(improved),
         }
         history.append(row)
-        print("V25_NEW_WIN_EPOCH", json.dumps(row, sort_keys=True), flush=True)
+        print("V26_SURGICAL_NEW_WIN_EPOCH", json.dumps(row, sort_keys=True), flush=True)
 
         # Important v2.2 rule: do NOT reject a useful Rescue checkpoint here
         # merely because the raw update changed too many G7 decisions.
@@ -630,7 +645,7 @@ def main() -> int:
             trained_candidates.append((score, state, row))
 
     if not trained_candidates:
-        raise RuntimeError("no training checkpoint improved verified Rescue loss")
+        raise RuntimeError("no surgical checkpoint learned a complete New-Win seed while preserving guards")
 
     trained_candidates.sort(key=lambda x: x[0], reverse=True)
 
@@ -644,6 +659,9 @@ def main() -> int:
             actor.eval()
             rescue_eval = _eval_rescue(actor, torch, rescues)
             new_win_eval = _eval_new_win(actor, torch, new_wins)
+            new_win_margin_eval = _eval_new_win_margin(
+                actor, torch, new_wins, a.new_win_margin
+            )
             preservation_eval = _eval_preservation(actor, torch, preservation)
             retention_eval_stats = _eval_retention(actor, parent, torch, elite, retention_eval)
             retention_ok = _retention_ok(
@@ -668,6 +686,7 @@ def main() -> int:
                 "alpha": alpha,
                 "rescue": rescue_eval,
                 "new_win": new_win_eval,
+                "new_win_margin": new_win_margin_eval,
                 "retention": retention_eval_stats,
                 "preservation": preservation_eval,
                 "rescue_improved": bool(rescue_improved),
@@ -679,7 +698,7 @@ def main() -> int:
                 "pass": bool(ok),
             }
             blend_trials.append(trial)
-            print("V25_BLEND_TRIAL", json.dumps(trial, sort_keys=True), flush=True)
+            print("V26_SURGICAL_BLEND_TRIAL", json.dumps(trial, sort_keys=True), flush=True)
             if ok:
                 score = (
                     int(new_win_eval["fully_learned_seeds"]),
@@ -700,7 +719,7 @@ def main() -> int:
 
     if best is None:
         raise RuntimeError(
-            "no parent-candidate interpolation improved Rescue while passing anti-forgetting guards"
+            "no surgical interpolation learned New-Win behavior while passing anti-forgetting guards"
         )
 
     selected_state = best[1]
@@ -709,6 +728,9 @@ def main() -> int:
     actor.eval()
     after_rescue = _eval_rescue(actor, torch, rescues)
     after_new_win = _eval_new_win(actor, torch, new_wins)
+    after_new_win_margin = _eval_new_win_margin(
+        actor, torch, new_wins, a.new_win_margin
+    )
     after_preservation = _eval_preservation(actor, torch, preservation)
     after_retention = _eval_retention(actor, parent, torch, elite, retention_eval)
 
@@ -734,7 +756,7 @@ def main() -> int:
     a.output.parent.mkdir(parents=True, exist_ok=True)
     torch.save(actor.state_dict(), a.output)
     report = {
-        "schema_version": "sts1-build-rescue-bc-v25-persistent-new-win",
+        "schema_version": "sts1-build-rescue-bc-v26-surgical-new-win",
         "verified_rescue_examples": len(rescues),
         "new_win_teacher_examples": len(new_wins),
         "new_win_teacher_seeds": len({int(r["seed"]) for r in new_wins}),
@@ -763,12 +785,14 @@ def main() -> int:
         "before": {
             "rescue": before_rescue,
             "new_win": before_new_win,
+            "new_win_margin": before_new_win_margin,
             "preservation": before_preservation,
             "retention": before_retention,
         },
         "after": {
             "rescue": after_rescue,
             "new_win": after_new_win,
+            "new_win_margin": after_new_win_margin,
             "preservation": after_preservation,
             "retention": after_retention,
         },
@@ -781,7 +805,7 @@ def main() -> int:
     a.report.parent.mkdir(parents=True, exist_ok=True)
     a.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
-        "V25_NEW_WIN_TRAIN_PASS",
+        "V26_SURGICAL_NEW_WIN_TRAIN_PASS",
         json.dumps(
             {
                 "verified_rescue_examples": len(rescues),
@@ -791,6 +815,10 @@ def main() -> int:
                 "new_win_loss_after": after_new_win["loss"],
                 "new_win_top1_after": after_new_win["top1"],
                 "new_win_top1_examples_after": after_new_win["top1_examples"],
+                "new_win_top1_flipped": int(after_new_win["top1_examples"]) > int(before_new_win["top1_examples"]),
+                "new_win_margin_loss_before": before_new_win_margin["loss"],
+                "new_win_margin_loss_after": after_new_win_margin["loss"],
+                "new_win_margin_pass_after": after_new_win_margin["margin_pass"],
                 "fully_learned_seeds_after": after_new_win["fully_learned_seeds"],
                 "fully_learned_seed_ids_after": after_new_win["fully_learned_seed_ids"],
                 "preservation_examples": len(preservation),

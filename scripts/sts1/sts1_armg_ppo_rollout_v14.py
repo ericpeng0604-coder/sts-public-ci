@@ -134,6 +134,8 @@ def _deterministic_armg_choice(policy: SamplingArmG, gc: Any, sts: Any) -> tuple
                     [lambda context, a=action: a.execute(context)],
                     [0.0],
                 )
+            if len(legal) == 0:
+                return "map_zero_legal_transition", -1, [], [], []
             raise RuntimeError(
                 f"conversion replay exposed {len(legal)} legal map actions but ArmG no choice"
             )
@@ -143,6 +145,34 @@ def _deterministic_armg_choice(policy: SamplingArmG, gc: Any, sts: Any) -> tuple
     _, _, scores = policy.score_choices(gc)
     raw = [float(v) for v in scores.tolist()]
     return str(kind), int(policy.torch.argmax(scores).item()), descs, execs, raw
+
+
+def _advance_zero_legal_map_transition(agent: Any, gc: Any, sts: Any) -> None:
+    """Advance a MAP_SCREEN transition that exposes no actual player choice."""
+    if gc.screen_state != sts.ScreenState.MAP_SCREEN:
+        raise RuntimeError(f"zero-legal transition is only allowed on MAP_SCREEN: {gc.screen_state}")
+    legal = list(sts.get_legal_game_actions(gc))
+    if legal:
+        raise RuntimeError("refusing to auto-advance a map state that has legal player actions")
+    before = (
+        int(getattr(gc, "floor_num", 0) or 0),
+        int(getattr(gc, "act", 0) or 0),
+        gc.screen_state,
+        gc.outcome,
+    )
+    agent.pause_on_map = False
+    try:
+        agent.playout(gc)
+    finally:
+        agent.pause_on_map = True
+    after = (
+        int(getattr(gc, "floor_num", 0) or 0),
+        int(getattr(gc, "act", 0) or 0),
+        gc.screen_state,
+        gc.outcome,
+    )
+    if after == before:
+        raise RuntimeError("zero-legal map transition made no progress")
 
 
 def _finish_conversion_branch(
@@ -197,7 +227,12 @@ def _finish_conversion_branch(
 
         kind, current, descs, execs, scores = _deterministic_armg_choice(policy, gc, sts)
         if current < 0:
-            gc.skip_reward_cards()
+            if gc.screen_state == sts.ScreenState.REWARDS:
+                gc.skip_reward_cards()
+            elif gc.screen_state == sts.ScreenState.MAP_SCREEN:
+                _advance_zero_legal_map_transition(agent, gc, sts)
+            else:
+                raise RuntimeError(f"conversion replay cannot advance empty choice: {gc.screen_state}")
             continue
 
         if second_alternative_rank is not None and second_intervention is None and len(descs) > 1:

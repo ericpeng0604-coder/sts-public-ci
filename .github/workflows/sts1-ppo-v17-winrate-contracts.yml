@@ -1,0 +1,62 @@
+name: STS1 PPO v1.7 WinRate Contracts
+
+on:
+  push:
+    branches:
+      - gpt/sts1-ppo-v17-winrate-loop-20260930
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+      - name: Compile v1.7 path
+        run: |
+          python -m py_compile \
+            scripts/sts1/sts1_armg_ppo_rollout_v14.py \
+            scripts/sts1/sts1_armg_ppo_v14_replay.py \
+            scripts/sts1/sts1_armg_ppo_train_v14_sharded.py \
+            scripts/sts1/sts1_armg_ppo_v15_adapt.py
+      - name: Unit contracts
+        run: |
+          pytest -q \
+            tests/test_sts1_armg_ppo_v15.py \
+            tests/test_sts1_armg_ppo_v14_replay.py
+      - name: Verify v1.7 control and workflow safety
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          control=Path("control/sts1-armg-ppo-v15-auto-loop.request").read_text()
+          workflow=Path(".github/workflows/sts1-armg-ppo-v15-population-curriculum.yml").read_text()
+          required_control=[
+              "ppo_version=1.7",
+              "reward_mode=v17_winrate",
+              "mcts_sims=2000",
+              "strategy_teacher_required=1",
+              "strategy_teacher_min_confidence=0.75",
+              "strategy_teacher_min_margin=3.0",
+          ]
+          for item in required_control:
+              assert item in control, item
+          assert "STS1 ArmG PPO v1.7 WinRate Loop" in workflow
+          assert "sts1-armg-ppo-v17-winrate-state" in workflow
+          assert "gpt/sts1-ppo-v17-winrate-loop-20260930" in workflow
+          assert "--strategy-min-confidence-weight" in workflow
+          assert "--strategy-min-teacher-margin" in workflow
+          assert "--extra-heldout-seed-file control/sts1-v16-benchmark-seeds-500.txt" in workflow
+          print("PASS_PPO_V17_WINRATE_CONTROL")
+          PY

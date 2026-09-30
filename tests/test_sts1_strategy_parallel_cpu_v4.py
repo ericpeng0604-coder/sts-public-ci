@@ -118,3 +118,12 @@ def test_zero_max_stagnation_disables_auto_pause() -> None:
 def test_positive_max_stagnation_still_pauses() -> None:
     assert m._stagnation_limit_reached(count=11, max_stagnation=12) is False
     assert m._stagnation_limit_reached(count=12, max_stagnation=12) is True
+
+
+def test_stagnation_rescue_uses_smaller_candidate_steps() -> None:
+    normal = m._candidate_recipes_for_stagnation(11)
+    rescue = m._candidate_recipes_for_stagnation(12)
+
+    assert [row["step_scale"] for row in normal] == [0.25, 0.50, 1.00]
+    assert [row["step_scale"] for row in rescue] == [0.10, 0.20, 0.35]
+    assert all(row["name"].startswith("rescue_") for row in rescue)

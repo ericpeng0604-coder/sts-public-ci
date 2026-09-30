@@ -99,6 +99,415 @@ def _teacher_row(
     }
 
 
+
+class ReplayFromSeedArmG(rollout.SamplingArmG):
+    """Replay ArmG from the original seed and force selected strategic decisions.
+
+    This deliberately disables GameContext cloning. Every counterfactual starts
+    from a fresh GameContext, so native MCTS never runs on a copied deep state.
+    """
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        weight_path: Path,
+        seed: int,
+        forced: dict[int, dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(
+            root=root,
+            weight_path=weight_path,
+            temperature=1.0,
+            torch_seed=seed,
+        )
+        self.forced = dict(forced or {})
+        self.branch_index = 0
+        self.records: list[dict[str, Any]] = []
+
+    def capture_conversion_state(self, **kwargs: Any) -> None:
+        # Production Build rescue uses replay-from-seed, never native deep clones.
+        return None
+
+    def decide(self, gc: Any, sts: Any):
+        kind, selected, descs, execs, scores = super().decide(gc, sts)
+        if selected < 0 or len(descs) < 2:
+            return kind, selected, descs, execs, scores
+
+        branch_index = self.branch_index
+        self.branch_index += 1
+        snapshot = self.training_vector_snapshot(gc, descs)
+        record = {
+            "branch_index": int(branch_index),
+            "kind": str(kind),
+            "selected_index": int(selected),
+            "scores": [float(v) for v in scores],
+            "floor": int(getattr(gc, "floor_num", 0) or 0),
+            "act": int(getattr(gc, "act", 0) or 0),
+            "hp": int(getattr(gc, "cur_hp", 0) or 0),
+            "max_hp": int(getattr(gc, "max_hp", 1) or 1),
+            "obs": list(snapshot["obs_412"]),
+            "descs": [list(row) for row in snapshot["candidate_desc_368"]],
+        }
+
+        force = self.forced.get(branch_index)
+        if force is not None:
+            if str(force["kind"]) != str(kind):
+                raise RuntimeError(
+                    f"forced decision kind drift at branch {branch_index}: "
+                    f"{force['kind']} != {kind}"
+                )
+            if force["descs"] != record["descs"]:
+                raise RuntimeError(
+                    f"forced candidate identity drift at branch {branch_index}"
+                )
+            forced_index = int(force["index"])
+            if not 0 <= forced_index < len(descs):
+                raise RuntimeError(
+                    f"forced index {forced_index} outside {len(descs)} candidates"
+                )
+            record["forced_index"] = forced_index
+            selected = forced_index
+
+        self.records.append(record)
+        return kind, int(selected), descs, execs, scores
+
+
+def _passes_target_boss(result: dict[str, Any], target_floor: int) -> bool:
+    if str(result.get("outcome", "")).lower() == "victory":
+        return True
+    floor = int(result.get("final_floor") or result.get("max_floor") or 0)
+    return floor > int(target_floor)
+
+
+def _force_spec(record: dict[str, Any], alternative: int) -> dict[str, Any]:
+    return {
+        "kind": str(record["kind"]),
+        "descs": record["descs"],
+        "index": int(alternative),
+    }
+
+
+def _run_seed_variant(
+    *,
+    seed: int,
+    module_dir: Path,
+    armg_root: Path,
+    weight: Path,
+    heldout: list[int],
+    boss_sims: int | None,
+    forced: dict[int, dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], ReplayFromSeedArmG]:
+    sts = _load_sts(module_dir)
+    policy = ReplayFromSeedArmG(
+        root=armg_root,
+        weight_path=weight,
+        seed=seed,
+        forced=forced,
+    )
+    result = run_simulator_game(
+        student=None,
+        sts=sts,
+        seed=seed,
+        evidence_path=None,
+        armg_policy=policy,
+        combat_mcts_sims=2000,
+        combat_mcts_boss_sims=boss_sims,
+        combat_mcts_boss_floors=(16, 33, 50),
+        heldout_seeds=heldout,
+    )
+    if result.get("result") != "PASS_SIMULATOR_COMPLETE_RUN":
+        raise RuntimeError(f"seed {seed} replay incomplete: {result}")
+    for key in ("illegal_action_count", "crash_count", "timeout_count", "remote_error_count"):
+        if int(result.get(key, 0) or 0) != 0:
+            raise RuntimeError(f"seed {seed} replay safety failure {key}: {result}")
+    return dict(result), policy
+
+
+def _replay_teacher_row(
+    *,
+    seed: int,
+    record: dict[str, Any],
+    alternative: int,
+    target_floor: int,
+    boss10: dict[str, Any],
+    boss50: dict[str, Any],
+    type_name: str,
+    priority: float,
+) -> dict[str, Any]:
+    row = _teacher_row(
+        seed=seed,
+        record=record,
+        alternative=alternative,
+        target_floor=target_floor,
+        boss10=boss10,
+        boss50=boss50,
+    )
+    row["type"] = type_name
+    row["source"] = "sts1-ppo-v20-build-replay-from-seed-v1"
+    row["priority"] = float(priority)
+    row["replay_from_seed"] = True
+    return row
+
+
+def diagnose_seed_replay(
+    *,
+    seed: int,
+    module_dir: Path,
+    armg_root: Path,
+    weight: Path,
+    heldout: list[int],
+    max_states: int,
+    max_alternatives: int,
+    max_two_step_states: int,
+    max_second_alternatives: int,
+) -> dict[str, Any]:
+    base, base_policy = _run_seed_variant(
+        seed=seed,
+        module_dir=module_dir,
+        armg_root=armg_root,
+        weight=weight,
+        heldout=heldout,
+        boss_sims=None,
+    )
+    floor = int(base.get("final_floor") or base.get("max_floor") or 0)
+    if str(base.get("outcome", "")).lower() == "victory" or not rollout._near_boss_failure(floor):
+        return {
+            "seed": seed,
+            "status": "NOT_REPRODUCED_AS_NEAR_BOSS_LOSS",
+            "base": base,
+            "captured_state_count": len(base_policy.records),
+            "attempted_states": 0,
+            "two_step_attempts": 0,
+            "rescue": None,
+        }
+
+    target = rollout._boss_target_floor(floor)
+    baseline50, _ = _run_seed_variant(
+        seed=seed,
+        module_dir=module_dir,
+        armg_root=armg_root,
+        weight=weight,
+        heldout=heldout,
+        boss_sims=50000,
+    )
+    if _passes_target_boss(baseline50, target):
+        return {
+            "seed": seed,
+            "status": "BASELINE_50K_RESCUED_ON_REPLAY",
+            "base": base,
+            "baseline_50k": baseline50,
+            "target_boss_floor": target,
+            "captured_state_count": len(base_policy.records),
+            "attempted_states": 0,
+            "two_step_attempts": 0,
+            "rescue": None,
+        }
+
+    records = [
+        row for row in base_policy.records
+        if int(row.get("floor", 0) or 0) <= target
+        and len(row.get("descs", [])) >= 2
+    ]
+    records = list(reversed(records[-max_states:]))
+    if not records:
+        return {
+            "seed": seed,
+            "status": "NO_REPLAYABLE_STRATEGIC_STATE",
+            "base": base,
+            "target_boss_floor": target,
+            "captured_state_count": len(base_policy.records),
+            "attempted_states": 0,
+            "two_step_attempts": 0,
+            "rescue": None,
+        }
+
+    attempted = 0
+    first_step_runs: list[tuple[dict[str, Any], int, dict[str, Any], ReplayFromSeedArmG]] = []
+
+    for record in records:
+        selected = int(record["selected_index"])
+        alternatives = [i for i in range(len(record["descs"])) if i != selected]
+        alternatives.sort(
+            key=lambda i: float(record["scores"][i]) if i < len(record["scores"]) else -1e30,
+            reverse=True,
+        )
+        for alternative in alternatives[:max_alternatives]:
+            attempted += 1
+            forced = {
+                int(record["branch_index"]): _force_spec(record, alternative)
+            }
+            boss10, policy10 = _run_seed_variant(
+                seed=seed,
+                module_dir=module_dir,
+                armg_root=armg_root,
+                weight=weight,
+                heldout=heldout,
+                boss_sims=10000,
+                forced=forced,
+            )
+            first_step_runs.append((record, int(alternative), boss10, policy10))
+            if not _passes_target_boss(boss10, target):
+                continue
+            boss50, _ = _run_seed_variant(
+                seed=seed,
+                module_dir=module_dir,
+                armg_root=armg_root,
+                weight=weight,
+                heldout=heldout,
+                boss_sims=50000,
+                forced=forced,
+            )
+            if not _passes_target_boss(boss50, target):
+                continue
+            teacher = _replay_teacher_row(
+                seed=seed,
+                record=record,
+                alternative=alternative,
+                target_floor=target,
+                boss10=boss10,
+                boss50=boss50,
+                type_name="v20_replay_single_build_rescue",
+                priority=4.5,
+            )
+            return {
+                "seed": seed,
+                "status": "EARLY_BUILD_RESCUE_FOUND",
+                "base": base,
+                "baseline_50k": baseline50,
+                "target_boss_floor": target,
+                "captured_state_count": len(base_policy.records),
+                "candidate_states": len(records),
+                "attempted_states": attempted,
+                "two_step_attempts": 0,
+                "rescue": {
+                    "decision_floor": int(record["floor"]),
+                    "decision_act": int(record["act"]),
+                    "kind": str(record["kind"]),
+                    "branch_index": int(record["branch_index"]),
+                    "current_index": selected,
+                    "alternative_index": int(alternative),
+                    "boss_10k": boss10,
+                    "boss_50k": boss50,
+                    "teacher": teacher,
+                },
+            }
+
+    two_step_attempts = 0
+    # Reuse already-computed first-step 10k replays. Only the nearest
+    # max_two_step_states first interventions are eligible for a second change.
+    for record, alternative, first10, first_policy in first_step_runs[:max_two_step_states]:
+        first_idx = int(record["branch_index"])
+        subsequent = [
+            row for row in first_policy.records
+            if int(row["branch_index"]) > first_idx
+            and int(row.get("floor", 0) or 0) <= target
+            and len(row.get("descs", [])) >= 2
+        ]
+        if not subsequent:
+            continue
+        second_record = subsequent[0]
+        second_selected = int(second_record["selected_index"])
+        second_alts = [
+            i for i in range(len(second_record["descs"]))
+            if i != second_selected
+        ]
+        second_alts.sort(
+            key=lambda i: float(second_record["scores"][i])
+            if i < len(second_record["scores"]) else -1e30,
+            reverse=True,
+        )
+        for second_alt in second_alts[:max_second_alternatives]:
+            two_step_attempts += 1
+            forced = {
+                first_idx: _force_spec(record, alternative),
+                int(second_record["branch_index"]): _force_spec(second_record, second_alt),
+            }
+            boss10, _ = _run_seed_variant(
+                seed=seed,
+                module_dir=module_dir,
+                armg_root=armg_root,
+                weight=weight,
+                heldout=heldout,
+                boss_sims=10000,
+                forced=forced,
+            )
+            if not _passes_target_boss(boss10, target):
+                continue
+            boss50, _ = _run_seed_variant(
+                seed=seed,
+                module_dir=module_dir,
+                armg_root=armg_root,
+                weight=weight,
+                heldout=heldout,
+                boss_sims=50000,
+                forced=forced,
+            )
+            if not _passes_target_boss(boss50, target):
+                continue
+
+            first_teacher = _replay_teacher_row(
+                seed=seed,
+                record=record,
+                alternative=alternative,
+                target_floor=target,
+                boss10=boss10,
+                boss50=boss50,
+                type_name="v20_replay_two_step_build_rescue",
+                priority=4.5,
+            )
+            second_teacher = _replay_teacher_row(
+                seed=seed,
+                record=second_record,
+                alternative=second_alt,
+                target_floor=target,
+                boss10=boss10,
+                boss50=boss50,
+                type_name="v20_replay_two_step_build_rescue_followup",
+                priority=4.25,
+            )
+            return {
+                "seed": seed,
+                "status": "EARLY_TWO_STEP_BUILD_RESCUE_FOUND",
+                "base": base,
+                "baseline_50k": baseline50,
+                "target_boss_floor": target,
+                "captured_state_count": len(base_policy.records),
+                "candidate_states": len(records),
+                "attempted_states": attempted,
+                "two_step_attempts": two_step_attempts,
+                "rescue": {
+                    "decision_floor": int(record["floor"]),
+                    "decision_act": int(record["act"]),
+                    "kind": str(record["kind"]),
+                    "branch_index": first_idx,
+                    "current_index": int(record["selected_index"]),
+                    "alternative_index": int(alternative),
+                    "second_decision_floor": int(second_record["floor"]),
+                    "second_kind": str(second_record["kind"]),
+                    "second_branch_index": int(second_record["branch_index"]),
+                    "second_current_index": second_selected,
+                    "second_alternative_index": int(second_alt),
+                    "boss_10k": boss10,
+                    "boss_50k": boss50,
+                    "teachers": [first_teacher, second_teacher],
+                },
+            }
+
+    return {
+        "seed": seed,
+        "status": "NO_EARLY_BUILD_RESCUE",
+        "base": base,
+        "baseline_50k": baseline50,
+        "target_boss_floor": target,
+        "captured_state_count": len(base_policy.records),
+        "candidate_states": len(records),
+        "attempted_states": attempted,
+        "two_step_attempts": two_step_attempts,
+        "rescue": None,
+    }
+
+
 def diagnose_seed(
     *,
     seed:int,
@@ -399,7 +808,7 @@ def main() -> int:
     ][:args.max_seeds]
 
     rows=[
-        diagnose_seed(
+        diagnose_seed_replay(
             seed=seed,
             module_dir=args.module_dir,
             armg_root=args.armg_root,
@@ -419,7 +828,7 @@ def main() -> int:
             teacher.append(rescue["teacher"])
         teacher.extend(rescue.get("teachers") or [])
     payload={
-        "schema_version":"sts1-ppo-v20-build-trajectory-diagnostic-v2",
+        "schema_version":"sts1-ppo-v20-build-trajectory-diagnostic-v3-replay-from-seed",
         "input_build_limited":len(summary["not_rescued_by_boss_50k"]["seeds"]),
         "diagnosed_seeds":len(rows),
         "early_build_rescue_seeds":sum(

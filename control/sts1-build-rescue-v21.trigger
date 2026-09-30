@@ -24,3 +24,5 @@ fresh_p_max=0.10
 heldout_p_max=0.10
 production_champion_auto_replace=false
 real_game_gate_required=true
+yaml_fix_commit=51ffeefefafed6f768ba836c4bdb4b6c02a63cce
+launch_attempt=2

@@ -80,7 +80,9 @@ jobs:
             --teacher-output evidence/sts1/v20-build-recovery/candidate-teacher.jsonl \
             --max-seeds 10 \
             --max-states 20 \
-            --max-alternatives 2
+            --max-alternatives 2 \
+            --max-two-step-states 8 \
+            --max-second-alternatives 2
           cat evidence/sts1/v20-build-recovery/summary.json
 
       - uses: actions/upload-artifact@v4
@@ -103,8 +105,11 @@ jobs:
           print()
           print(f"- Boss-50k 仍未救回：**{s['input_build_limited']}**")
           print(f"- 深入診斷 Seeds：**{s['diagnosed_seeds']}**")
-          print(f"- 找到更早單一步 Build Rescue：**{s['early_build_rescues']}**")
-          print(f"- 找不到單一步 Rescue：**{s['no_single_rescue']}**")
+          print(f"- 找到更早 Build Rescue Seeds：**{s['early_build_rescue_seeds']}**")
+          print(f"- 單一步 Rescue：**{s['single_step_rescues']}**")
+          print(f"- 兩步 Rescue：**{s['two_step_rescues']}**")
+          print(f"- Teacher examples：**{s['teacher_examples']}**")
+          print(f"- 仍找不到一/兩步 Rescue：**{s['no_early_rescue']}**")
           print(f"- 無法重現原近 Boss 敗局：**{s['not_reproduced']}**")
           print("- 這是診斷資料，不直接替換正式 Champion。")
           PY

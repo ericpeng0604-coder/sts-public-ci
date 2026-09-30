@@ -155,6 +155,22 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
                 reward += min(1.0, max(0.0, final_floor / 50.0))
                 if victory:
                     reward += 1.0
+        elif reward_mode == "v17_winrate":
+            # Victory-first shaping. Floors/HP still provide a weak learning
+            # signal, but a full clear is deliberately worth far more than
+            # merely reaching a late boss.
+            reward = (
+                0.01 * max(0, next_floor - floor)
+                + 0.001 * (next_hp - hp)
+            )
+            if index == len(decisions) - 1:
+                final_floor = float(
+                    result.get("final_floor")
+                    or result.get("max_floor")
+                    or next_floor
+                )
+                reward += min(0.50, max(0.0, final_floor / 100.0))
+                reward += 3.0 if victory else -0.25
         else:
             raise RuntimeError(f"unknown reward mode: {reward_mode}")
         action = int(row["selected_index"])
@@ -251,7 +267,7 @@ def main() -> None:
     parser.add_argument("--worker", type=int, default=0)
     parser.add_argument("--parallel-games", type=int, default=2)
     parser.add_argument("--max-training-seed-rejections", type=int, default=8)
-    parser.add_argument("--reward-mode", choices=("legacy", "v14_dense"), default="v14_dense")
+    parser.add_argument("--reward-mode", choices=("legacy", "v14_dense", "v17_winrate"), default="v14_dense")
     parser.add_argument("--final-seed-file", type=Path)
     parser.add_argument("--extra-heldout-seed-file", type=Path)
     args = parser.parse_args()

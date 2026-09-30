@@ -50,8 +50,8 @@ jobs:
               "ReplayProductionArmG",
               "max-states",
               "max-two-step-states",
-              "boss_mcts_sims=10000",
-              "boss_mcts_sims=50000",
+              "boss_sims=10000",
+              "boss_sims=50000",
               "V24_NEW_WIN_MINER_RESULT",
           ]
           required_trainer=[

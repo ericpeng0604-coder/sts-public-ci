@@ -112,8 +112,17 @@ def load_strategy_teacher_examples(
     *,
     max_examples: int,
     combat_policy: str,
+    min_confidence_weight: float = 0.0,
+    min_teacher_margin: float = 0.0,
+    min_consensus_fraction: float = 0.0,
 ) -> list[dict[str, object]]:
-    """Load high-value Strategy Teacher disagreements for soft-label BC."""
+    """Load only high-value, stable Strategy Teacher disagreements for BC."""
+    if not 0.0 <= min_confidence_weight <= 1.0:
+        raise RuntimeError("strategy teacher minimum confidence must be in [0, 1]")
+    if min_teacher_margin < 0.0:
+        raise RuntimeError("strategy teacher minimum margin must be non-negative")
+    if not 0.0 <= min_consensus_fraction <= 1.0:
+        raise RuntimeError("strategy teacher minimum consensus must be in [0, 1]")
     if path is None or not path.is_file() or max_examples <= 0:
         return []
 
@@ -140,10 +149,21 @@ def load_strategy_teacher_examples(
         teacher = int(row.get("teacher_best_index", -1))
         if not (0 <= current < len(descs) and 0 <= teacher < len(descs)):
             raise RuntimeError(f"strategy replay action index invalid at line {line_no}")
-        # Only disagreements are imported into PPO v1.5. Agreement examples are
-        # already represented by on-policy PPO and add little Teacher signal.
+        # Only disagreements are imported. Agreement examples are already
+        # represented by on-policy PPO and add little Teacher signal.
         if current == teacher:
             continue
+
+        confidence = float(row.get("confidence_weight", 1.0))
+        margin = float(row.get("teacher_margin", 0.0))
+        consensus = float(row.get("teacher_consensus_fraction", 1.0))
+        if confidence < min_confidence_weight:
+            continue
+        if margin < min_teacher_margin:
+            continue
+        if consensus < min_consensus_fraction:
+            continue
+
         target = np.asarray(probs, np.float32)
         if not np.isfinite(target).all() or np.any(target < 0.0):
             raise RuntimeError(f"strategy replay target probabilities invalid at line {line_no}")
@@ -210,6 +230,9 @@ def main() -> int:
     p.add_argument("--strategy-bc-coef", type=float, default=0.0)
     p.add_argument("--strategy-bc-max-examples", type=int, default=512)
     p.add_argument("--strategy-combat-policy", default="mcts_2000")
+    p.add_argument("--strategy-min-confidence-weight", type=float, default=0.0)
+    p.add_argument("--strategy-min-teacher-margin", type=float, default=0.0)
+    p.add_argument("--strategy-min-consensus-fraction", type=float, default=0.0)
     a = p.parse_args()
 
     if not 0.25 <= a.behavior_temperature <= 2.0:
@@ -230,6 +253,12 @@ def main() -> int:
         raise RuntimeError("strategy-bc-coef outside safe bounds")
     if not 0 <= a.strategy_bc_max_examples <= 4096:
         raise RuntimeError("strategy-bc-max-examples outside safe bounds")
+    if not 0.0 <= a.strategy_min_confidence_weight <= 1.0:
+        raise RuntimeError("strategy-min-confidence-weight outside safe bounds")
+    if a.strategy_min_teacher_margin < 0.0:
+        raise RuntimeError("strategy-min-teacher-margin outside safe bounds")
+    if not 0.0 <= a.strategy_min_consensus_fraction <= 1.0:
+        raise RuntimeError("strategy-min-consensus-fraction outside safe bounds")
 
     os.environ["STS_BOT_DIR"] = str(a.armg_root)
     sys.path.insert(0, str(a.armg_root))
@@ -461,6 +490,9 @@ def main() -> int:
         a.strategy_replay,
         max_examples=a.strategy_bc_max_examples,
         combat_policy=a.strategy_combat_policy,
+        min_confidence_weight=a.strategy_min_confidence_weight,
+        min_teacher_margin=a.strategy_min_teacher_margin,
+        min_consensus_fraction=a.strategy_min_consensus_fraction,
     )
     if strategy_examples:
         expected_obs = int(m.OBS_DIM)

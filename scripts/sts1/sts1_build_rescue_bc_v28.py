@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Full-network pairwise surgical New-Win trainer for STS1 ArmG.
+"""Tail2 surgical New-Win trainer for STS1 ArmG.
 
-v2.8 allows all ArmG parameters to move with a tiny learning rate, but the
-New-Win signal is pairwise only: the verified Teacher action only needs to
-barely outrank G7's original action. Strong replay/distillation guards constrain
-collateral drift. Verified New-Win examples use a pairwise margin objective:
+v2.7 freezes the early ArmG backbone and updates only the final two Linear
+layers. Verified New-Win examples use a pairwise margin objective:
 the proven teacher action only needs to outrank G7's original action by a small
 margin. G7 replay, distillation, preservation, and interpolation guards remain.
 
@@ -349,11 +347,12 @@ def main() -> int:
     p.add_argument("--new-win-repeats", type=int, default=8)
     p.add_argument("--winner-coef", type=float, default=0.80)
     p.add_argument("--distill-coef", type=float, default=1.20)
-    p.add_argument("--rescue-coef", type=float, default=0.05)
-    p.add_argument("--new-win-coef", type=float, default=0.50)
+    p.add_argument("--rescue-coef", type=float, default=0.00)
+    p.add_argument("--new-win-coef", type=float, default=0.00)
     p.add_argument("--new-win-margin", type=float, default=0.01)
-    p.add_argument("--new-win-margin-coef", type=float, default=0.50)
+    p.add_argument("--new-win-margin-coef", type=float, default=2.00)
     p.add_argument("--min-fully-learned-seeds", type=int, default=1)
+    p.add_argument("--raw-kl-stop", type=float, default=0.015)
     p.add_argument("--preservation-coef", type=float, default=0.30)
     p.add_argument("--preservation-margin", type=float, default=0.001)
     p.add_argument("--param-anchor-coef", type=float, default=1e-5)
@@ -363,8 +362,8 @@ def main() -> int:
     p.add_argument("--threads", type=int, default=4)
     a = p.parse_args()
 
-    if not 1 <= a.epochs <= 40:
-        raise RuntimeError("epochs outside 1..40")
+    if not 1 <= a.epochs <= 20:
+        raise RuntimeError("epochs outside 1..20")
     if not 0 < a.lr <= 2e-5:
         raise RuntimeError("lr outside safe bound")
     if not 128 <= a.elite_train_max <= 32768:
@@ -375,9 +374,9 @@ def main() -> int:
         raise RuntimeError("rescue-repeats outside safe bound")
     if not 1 <= a.new_win_repeats <= 24:
         raise RuntimeError("new-win-repeats outside safe bound")
-    if not 0 < a.winner_coef <= 2 or not 0 < a.distill_coef <= 4 or not 0 < a.rescue_coef <= 2:
+    if not 0 < a.winner_coef <= 2 or not 0 < a.distill_coef <= 4 or not 0 <= a.rescue_coef <= 2:
         raise RuntimeError("loss coefficient outside safe bound")
-    if not 0 < a.new_win_coef <= 3:
+    if not 0 <= a.new_win_coef <= 3:
         raise RuntimeError("new-win coefficient outside safe bound")
     if not 0 < a.new_win_margin <= 0.10:
         raise RuntimeError("new-win margin outside safe bound")
@@ -387,6 +386,8 @@ def main() -> int:
         raise RuntimeError("new-win-margin-coef outside safe bound")
     if not 1 <= a.min_fully_learned_seeds <= 20:
         raise RuntimeError("min-fully-learned-seeds outside safe bound")
+    if not a.max_parent_kl < a.raw_kl_stop <= 0.10:
+        raise RuntimeError("raw-kl-stop must be above formal KL guard and <=0.10")
     if not 0 < a.preservation_coef <= 2:
         raise RuntimeError("preservation coefficient outside safe bound")
     if not 0 < a.preservation_margin <= 0.05:
@@ -427,8 +428,8 @@ def main() -> int:
     elite = _load_elite(a.elite_replay)
     if len(rescues) < 10:
         raise RuntimeError(f"v2.4 expects the frozen Rescue pool; got {len(rescues)}")
-    if len(new_wins) < 3:
-        raise RuntimeError(f"v2.4 requires at least 3 New-Win Teacher examples; got {len(new_wins)}")
+    if len(new_wins) != 1:
+        raise RuntimeError(f"v2.8 requires exactly one focused New-Win Teacher; got {len(new_wins)}")
 
     expected_obs = int(m.OBS_DIM)
     first_linear = next(layer for layer in actor.net if hasattr(layer, "in_features"))
@@ -466,14 +467,24 @@ def main() -> int:
 
     parent_params = {k: v.detach().clone() for k, v in parent.state_dict().items()}
 
-    # v2.8: all parameters are trainable, but with a tiny LR and pairwise-only
-    # New-Win pressure. Retention/preservation gates decide whether any update
-    # is safe enough to keep.
+    # v2.8 Focused-One Tail2: freeze everything, then unfreeze only the final
+    # two Linear layers. This gives local nonlinear capacity without allowing
+    # the full 780->128 backbone to drift.
     for param in actor.parameters():
-        param.requires_grad_(True)
+        param.requires_grad_(False)
+    linear_layers = [
+        layer for layer in actor.net
+        if hasattr(layer, "in_features") and hasattr(layer, "out_features")
+    ]
+    if len(linear_layers) < 2:
+        raise RuntimeError("unable to locate final two ArmG Linear layers")
+    tail_layers = linear_layers[-2:]
+    for layer in tail_layers:
+        for param in layer.parameters():
+            param.requires_grad_(True)
     trainable = [p for p in actor.parameters() if p.requires_grad]
     if not trainable:
-        raise RuntimeError("full-pairwise trainer has no trainable parameters")
+        raise RuntimeError("surgical Tail2 has no trainable parameters")
     opt = torch.optim.Adam(trainable, lr=a.lr)
     history: list[dict[str, Any]] = []
     trained_candidates: list[
@@ -509,13 +520,15 @@ def main() -> int:
                     rescue_terms.append(priority * ce)
                 if new_win_order:
                     row = new_wins[int(new_win_order[j % len(new_win_order)])]
+                    ce, _ = _teacher_loss(actor, torch, row)
                     hinge, _ = _new_win_pairwise_margin_loss(
                         actor, torch, row, a.new_win_margin
                     )
                     priority = min(
                         2.0, max(1.0, float(row.get("priority", 1.0)) / 4.0)
                     )
-                    new_win_margin_terms.append(priority * hinge)
+                    new_win_terms.append(priority * ce)
+                    new_win_margin_terms.append(hinge)
                 if j < len(elite_order):
                     ce, kl, _, _, _ = _elite_terms(actor, parent, torch, elite, int(elite_order[j]))
                     winner_terms.append(ce)
@@ -530,8 +543,8 @@ def main() -> int:
             components = []
             if rescue_terms:
                 components.append(a.rescue_coef * torch.stack(rescue_terms).mean())
-            # v2.8 intentionally omits New-Win cross entropy. Pairwise margin
-            # is the only direct New-Win objective.
+            if new_win_terms:
+                components.append(a.new_win_coef * torch.stack(new_win_terms).mean())
             if new_win_margin_terms:
                 components.append(
                     a.new_win_margin_coef
@@ -618,7 +631,23 @@ def main() -> int:
             "rescue_improved": bool(improved),
         }
         history.append(row)
-        print("V28_FULL_PAIRWISE_EPOCH", json.dumps(row, sort_keys=True), flush=True)
+        print("V28_FOCUSED_NEW_WIN_EPOCH", json.dumps(row, sort_keys=True), flush=True)
+
+        if float(retention_eval_stats["parent_kl"]) >= a.raw_kl_stop and not learned_enough:
+            print(
+                "V28_RAW_KL_EARLY_STOP",
+                json.dumps(
+                    {
+                        "epoch": ep + 1,
+                        "parent_kl": retention_eval_stats["parent_kl"],
+                        "raw_kl_stop": a.raw_kl_stop,
+                        "fully_learned_seeds": new_win_eval["fully_learned_seeds"],
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            break
 
         # Important v2.2 rule: do NOT reject a useful Rescue checkpoint here
         # merely because the raw update changed too many G7 decisions.
@@ -635,23 +664,9 @@ def main() -> int:
             )
             state = {k: v.detach().clone() for k, v in actor.state_dict().items()}
             trained_candidates.append((score, state, row))
-            if raw_retention_ok and preservation_eval["top1"] >= 1.0:
-                print(
-                    "V28_EARLY_STOP_SAFE_FLIP",
-                    json.dumps(
-                        {
-                            "epoch": ep + 1,
-                            "fully_learned_seed_ids": new_win_eval["fully_learned_seed_ids"],
-                            "parent_kl": retention_eval_stats["parent_kl"],
-                        },
-                        sort_keys=True,
-                    ),
-                    flush=True,
-                )
-                break
 
     if not trained_candidates:
-        raise RuntimeError("no full-pairwise checkpoint learned a complete New-Win seed while preserving guards")
+        raise RuntimeError("no Focused-One checkpoint flipped the target New-Win decision while preserving guards")
 
     trained_candidates.sort(key=lambda x: x[0], reverse=True)
 
@@ -704,7 +719,7 @@ def main() -> int:
                 "pass": bool(ok),
             }
             blend_trials.append(trial)
-            print("V28_FULL_PAIRWISE_BLEND_TRIAL", json.dumps(trial, sort_keys=True), flush=True)
+            print("V28_FOCUSED_BLEND_TRIAL", json.dumps(trial, sort_keys=True), flush=True)
             if ok:
                 score = (
                     int(new_win_eval["fully_learned_seeds"]),
@@ -725,7 +740,7 @@ def main() -> int:
 
     if best is None:
         raise RuntimeError(
-            "no full-pairwise interpolation learned New-Win behavior while passing anti-forgetting guards"
+            "no Tail2 interpolation learned New-Win behavior while passing anti-forgetting guards"
         )
 
     selected_state = best[1]
@@ -762,7 +777,7 @@ def main() -> int:
     a.output.parent.mkdir(parents=True, exist_ok=True)
     torch.save(actor.state_dict(), a.output)
     report = {
-        "schema_version": "sts1-build-rescue-bc-v28-full-pairwise-new-win",
+        "schema_version": "sts1-build-rescue-bc-v28-focused-one",
         "verified_rescue_examples": len(rescues),
         "new_win_teacher_examples": len(new_wins),
         "new_win_teacher_seeds": len({int(r["seed"]) for r in new_wins}),
@@ -776,7 +791,8 @@ def main() -> int:
         "retention_eval_decisions": int(len(retention_eval)),
         "new_win_margin": a.new_win_margin,
         "trainable_parameter_tensors": len(trainable),
-        "training_mode": "full_network_pairwise_only",
+        "trainable_tail_linear_layers": len(tail_layers),
+        "raw_kl_stop": a.raw_kl_stop,
         "preservation_margin": a.preservation_margin,
         "preservation_coef": a.preservation_coef,
         "new_win_margin": a.new_win_margin,
@@ -812,7 +828,7 @@ def main() -> int:
     a.report.parent.mkdir(parents=True, exist_ok=True)
     a.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
-        "V28_FULL_PAIRWISE_TRAIN_PASS",
+        "V28_FOCUSED_NEW_WIN_TRAIN_PASS",
         json.dumps(
             {
                 "verified_rescue_examples": len(rescues),

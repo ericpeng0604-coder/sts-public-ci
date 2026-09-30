@@ -1,17 +1,19 @@
-name: STS1 Strategy v6 Stagnation Rescue
+name: STS1 Strategy v7 Human Verified Mining
 
 on:
   push:
     branches:
-      - gpt/sts1-strategy-v6-stagnation-rescue-20260930
+      - gpt/sts1-strategy-v7-human-verified-mining-20260930
     paths:
       - '.github/workflows/sts1-armg-strategy-loop.yml'
       - 'src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py'
+      - 'src/roguelike_ai/sts1_phase3/human_path_prior.py'
       - 'scripts/sts1/sts1_armg_strategy_loop.py'
       - 'tests/test_sts1_armg_strategy_evolve.py'
       - 'tests/test_sts1_strategy_data_efficiency_v2.py'
       - 'tests/test_sts1_strategy_elite_mining_v3.py'
       - 'tests/test_sts1_strategy_parallel_cpu_v4.py'
+      - 'tests/test_sts1_strategy_human_verified_v7.py'
       - 'scripts/sts1/sts1_strategy_state_validate.py'
       - 'tests/test_sts1_strategy_state_validate.py'
       - 'control/sts1-armg-strategy-loop.start'
@@ -23,7 +25,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: sts1-strategy-v6-stagnation-rescue
+  group: sts1-strategy-v7-human-verified-mining
   cancel-in-progress: false
 
 env:
@@ -34,8 +36,10 @@ env:
   NUMEXPR_NUM_THREADS: '1'
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
-  STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v6-rescue'
-  BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v4'
+  EXPERT_DATA_REPO: 'https://github.com/MaT1g3R/Slay-the-Spire-data.git'
+  EXPERT_DATA_SHA: '097aaf3564c2247835162d267cbc7c55d2c9039e'
+  STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v7-human-verified'
+  BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v6-rescue'
   BOOTSTRAP_ELITE_REPORT_ARTIFACT: 'sts1-armg-strategy-loop-report-36415222490'
   BOOTSTRAP_ELITE_EXPECTED_SHA: 'ea6d7bfa59f3bd4ac3c11dd2d4ebf236182a38acaed3fa720f0b81744cc0e4e5'
   BOOTSTRAP_ELITE_PARENT_SHA: 'fc4bb1e64ea3ee4aec2245445a01172afb35f872b7b9c90a2b6000430f4c67cb'
@@ -63,6 +67,7 @@ jobs:
         run: |
           python -m py_compile \
             src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py \
+            src/roguelike_ai/sts1_phase3/human_path_prior.py \
             scripts/sts1/sts1_armg_strategy_loop.py \
             scripts/sts1/sts1_strategy_state_validate.py
 
@@ -73,6 +78,7 @@ jobs:
             tests/test_sts1_strategy_data_efficiency_v2.py \
             tests/test_sts1_strategy_elite_mining_v3.py \
             tests/test_sts1_strategy_parallel_cpu_v4.py \
+            tests/test_sts1_strategy_human_verified_v7.py \
             tests/test_sts1_strategy_state_validate.py \
             tests/test_sts1_champion_gate.py
 
@@ -158,6 +164,7 @@ jobs:
           echo "STRATEGY_MAX_REPLAY=$max_replay_examples" >> "$GITHUB_ENV"
           echo "STRATEGY_MAX_STAGNATION=$max_stagnation" >> "$GITHUB_ENV"
           echo "STRATEGY_REPORT_ISSUE=$report_issue" >> "$GITHUB_ENV"
+          echo "STRATEGY_HUMAN_PATH_BONUS=${human_path_disagreement_bonus:-0}" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         if: env.STRATEGY_ENABLED == '1'
@@ -197,6 +204,31 @@ jobs:
           ln -s "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
           ln -s "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
           ln -s "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Build pinned Human path mining prior
+        if: env.STRATEGY_ENABLED == '1'
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/human-expert-data"
+          rm -rf "$data"
+          git clone --filter=blob:none "$EXPERT_DATA_REPO" "$data"
+          git -C "$data" checkout "$EXPERT_DATA_SHA"
+          test "$(git -C "$data" rev-parse HEAD)" = "$EXPERT_DATA_SHA"
+          prior="$RUNNER_TEMP/human-path-prior.json"
+          python - "$data" "$prior" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from roguelike_ai.sts1_phase3.human_path_prior import build_path_prior
+          p=build_path_prior(Path(sys.argv[1]), Path(sys.argv[2]), min_ascension=15, alpha=3.0)
+          assert p["accepted_runs"] == 101, p
+          assert p["example_count"] >= 4500, p
+          print("PASS_HUMAN_PATH_MINING_PRIOR", json.dumps({
+              "accepted_runs":p["accepted_runs"],
+              "example_count":p["example_count"],
+              "contexts":len(p["context_log_probs"]),
+          }, sort_keys=True))
+          PY
+          echo "STRATEGY_HUMAN_PATH_PRIOR=$prior" >> "$GITHUB_ENV"
 
       - name: Restore newest valid Strategy state
         if: env.STRATEGY_ENABLED == '1'
@@ -427,7 +459,7 @@ jobs:
         if: env.STRATEGY_ENABLED == '1'
         run: |
           set -euo pipefail
-          python scripts/sts1/sts1_armg_strategy_loop.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-strategy             --armg-base-weight .cache/sts1-armg-strategy/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --state-dir "$STRATEGY_STATE_DIR"             --output-dir evidence/sts1/strategy-loop/runs             --rounds 1             --training-seeds "$STRATEGY_TRAINING_SEEDS"             --combat-mcts-sims "$STRATEGY_MCTS_SIMS"             --eval-workers "$STRATEGY_EVAL_WORKERS"             --rng-seed "$STRATEGY_RNG_SEED"             --max-branch-points-per-game "$STRATEGY_MAX_BRANCH_POINTS"             --max-branch-points-per-kind-per-game "$STRATEGY_MAX_BRANCH_PER_KIND"             --max-choice-branches "$STRATEGY_MAX_CHOICE_BRANCHES"             --teacher-label-budget "$STRATEGY_TEACHER_LABEL_BUDGET"             --min-labels-per-kind "$STRATEGY_MIN_LABELS_PER_KIND"             --collection-workers "$STRATEGY_COLLECTION_WORKERS"             --parallel-teacher-timeout-seconds "$STRATEGY_PARALLEL_TEACHER_TIMEOUT"             --parallel-parity-probes "$STRATEGY_PARALLEL_PARITY_PROBES"             --epochs "$STRATEGY_EPOCHS"             --learning-rate "$STRATEGY_LR"             --anchor-coef "$STRATEGY_ANCHOR"             --max-replay-examples "$STRATEGY_MAX_REPLAY"             --max-stagnation "$STRATEGY_MAX_STAGNATION"             --elite-mining-seeds "$STRATEGY_ELITE_MINING_SEEDS"             --elite-examples-per-seed "$STRATEGY_ELITE_EXAMPLES_PER_SEED"             --elite-min-quality-margin "$STRATEGY_ELITE_MIN_QUALITY_MARGIN"             --elite-max-sign-p "$STRATEGY_ELITE_MAX_SIGN_P"             --elite-min-win-delta "$STRATEGY_ELITE_MIN_WIN_DELTA"             --elite-min-floor-delta "$STRATEGY_ELITE_MIN_FLOOR_DELTA"             --elite-max-pool "$STRATEGY_ELITE_MAX_POOL"
+          python scripts/sts1/sts1_armg_strategy_loop.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-strategy             --armg-base-weight .cache/sts1-armg-strategy/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --state-dir "$STRATEGY_STATE_DIR"             --output-dir evidence/sts1/strategy-loop/runs             --rounds 1             --training-seeds "$STRATEGY_TRAINING_SEEDS"             --combat-mcts-sims "$STRATEGY_MCTS_SIMS"             --eval-workers "$STRATEGY_EVAL_WORKERS"             --rng-seed "$STRATEGY_RNG_SEED"             --max-branch-points-per-game "$STRATEGY_MAX_BRANCH_POINTS"             --max-branch-points-per-kind-per-game "$STRATEGY_MAX_BRANCH_PER_KIND"             --max-choice-branches "$STRATEGY_MAX_CHOICE_BRANCHES"             --teacher-label-budget "$STRATEGY_TEACHER_LABEL_BUDGET"             --min-labels-per-kind "$STRATEGY_MIN_LABELS_PER_KIND"             --collection-workers "$STRATEGY_COLLECTION_WORKERS"             --parallel-teacher-timeout-seconds "$STRATEGY_PARALLEL_TEACHER_TIMEOUT"             --parallel-parity-probes "$STRATEGY_PARALLEL_PARITY_PROBES"             --epochs "$STRATEGY_EPOCHS"             --learning-rate "$STRATEGY_LR"             --anchor-coef "$STRATEGY_ANCHOR"             --max-replay-examples "$STRATEGY_MAX_REPLAY"             --max-stagnation "$STRATEGY_MAX_STAGNATION"             --elite-mining-seeds "$STRATEGY_ELITE_MINING_SEEDS"             --elite-examples-per-seed "$STRATEGY_ELITE_EXAMPLES_PER_SEED"             --elite-min-quality-margin "$STRATEGY_ELITE_MIN_QUALITY_MARGIN"             --elite-max-sign-p "$STRATEGY_ELITE_MAX_SIGN_P"             --elite-min-win-delta "$STRATEGY_ELITE_MIN_WIN_DELTA"             --elite-min-floor-delta "$STRATEGY_ELITE_MIN_FLOOR_DELTA"             --elite-max-pool "$STRATEGY_ELITE_MAX_POOL"             --human-path-prior "$STRATEGY_HUMAN_PATH_PRIOR"             --human-path-disagreement-bonus "$STRATEGY_HUMAN_PATH_BONUS"
 
       - name: Verify Strategy-only invariants
         if: env.STRATEGY_ENABLED == '1'
@@ -461,6 +493,10 @@ jobs:
               assert float(training.get("focus_weight", 0.0)) == 6.0
               assert int(training.get("focus_example_count", 0)) > 0
           assert selected["candidate_strategy_sha256"] == latest["candidate_strategy_sha256"]
+          human=(latest.get("dataset") or {}).get("human_path_mining") or {}
+          assert human.get("enabled") is True, human
+          assert float(human.get("disagreement_bonus", 0.0)) > 0.0, human
+          assert int(human.get("map_candidates", 0)) > 0, human
           replay=latest.get("replay") or {}
           assert 0.0 < float(replay.get("shop_max_fraction", 0.0)) <= 0.25
           assert float(replay.get("mean_confidence_weight", 0.0)) > 0.0
@@ -475,7 +511,7 @@ jobs:
         if: env.STRATEGY_ENABLED == '1' && success()
         uses: actions/upload-artifact@v4
         with:
-          name: sts1-armg-strategy-loop-state-v6-rescue
+          name: sts1-armg-strategy-loop-state-v7-human-verified
           path: |
             ${{ runner.temp }}/strategy-state/strategy-state.json
             ${{ runner.temp }}/strategy-state/current-strategy.pt
@@ -521,7 +557,7 @@ jobs:
           summary_text=""
 
           if [ "$CONTRACT_RESULT" = "success" ] && [ "$ROUND_RESULT" = "success" ]; then
-            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-strategy-loop-state-v6-rescue") | .id' | head -n1)"
+            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-strategy-loop-state-v7-human-verified") | .id' | head -n1)"
             report_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("sts1-armg-strategy-loop-report-")) | .id' | head -n1)"
             test -n "$artifact_id"
             test -n "$report_id"

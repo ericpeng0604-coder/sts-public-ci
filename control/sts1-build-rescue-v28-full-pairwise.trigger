@@ -6,3 +6,4 @@ teacher_examples=7
 teacher_seeds=5
 lr=1e-6
 pairwise_only=true
+revision=epoch-guard-fixed

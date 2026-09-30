@@ -228,6 +228,159 @@ def _run_seed_variant(
     return dict(result), policy
 
 
+def _isolated_run_seed_variant(
+    *,
+    seed:int,
+    module_dir:Path,
+    armg_root:Path,
+    weight:Path,
+    heldout:list[int],
+    boss_sims:int | None,
+    forced:dict[int,dict[str,Any]] | None,
+    isolate:bool,
+    timeout_seconds:int,
+    retries:int,
+) -> tuple[dict[str,Any] | None, list[dict[str,Any]], list[dict[str,Any]]]:
+    """Run one replay-from-seed variant in a child so native crashes stay local."""
+    failures:list[dict[str,Any]]=[]
+    if not isolate:
+        try:
+            result,policy=_run_seed_variant(
+                seed=seed,
+                module_dir=module_dir,
+                armg_root=armg_root,
+                weight=weight,
+                heldout=heldout,
+                boss_sims=boss_sims,
+                forced=forced,
+            )
+            return result,list(policy.records),failures
+        except BaseException as exc:
+            failures.append({
+                "attempt":0,
+                "kind":"python_exception",
+                "error_type":type(exc).__name__,
+                "error":str(exc),
+            })
+            return None,[],failures
+
+    if not hasattr(os,"fork"):
+        raise RuntimeError("isolated replay-from-seed requires os.fork")
+
+    for attempt in range(int(retries)+1):
+        fd,path=tempfile.mkstemp(prefix="sts1-v20-replay-",suffix=".json")
+        os.close(fd)
+        pid=os.fork()
+        if pid==0:
+            try:
+                result,policy=_run_seed_variant(
+                    seed=seed,
+                    module_dir=module_dir,
+                    armg_root=armg_root,
+                    weight=weight,
+                    heldout=heldout,
+                    boss_sims=boss_sims,
+                    forced=forced,
+                )
+                Path(path).write_text(
+                    json.dumps({
+                        "ok":True,
+                        "result":result,
+                        "records":list(policy.records),
+                    },sort_keys=True)+"\n",
+                    encoding="utf-8",
+                )
+                os._exit(0)
+            except BaseException as exc:
+                try:
+                    Path(path).write_text(
+                        json.dumps({
+                            "ok":False,
+                            "error_type":type(exc).__name__,
+                            "error":str(exc),
+                        },sort_keys=True)+"\n",
+                        encoding="utf-8",
+                    )
+                finally:
+                    os._exit(2)
+
+        deadline=time.monotonic()+int(timeout_seconds)
+        status=None
+        timed_out=False
+        while status is None:
+            waited,raw=os.waitpid(pid,os.WNOHANG)
+            if waited==pid:
+                status=raw
+                break
+            if time.monotonic()>=deadline:
+                timed_out=True
+                try:
+                    os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                _,status=os.waitpid(pid,0)
+                break
+            time.sleep(0.05)
+
+        payload=None
+        try:
+            p=Path(path)
+            if p.exists() and p.stat().st_size:
+                payload=json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            failures.append({
+                "attempt":attempt,
+                "kind":"result_decode_error",
+                "error_type":type(exc).__name__,
+                "error":str(exc),
+            })
+        finally:
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+
+        if (
+            not timed_out
+            and status is not None
+            and os.WIFEXITED(status)
+            and os.WEXITSTATUS(status)==0
+            and payload
+            and payload.get("ok") is True
+        ):
+            return dict(payload["result"]),list(payload.get("records") or []),failures
+
+        if timed_out:
+            failure={"attempt":attempt,"kind":"timeout","timeout_seconds":int(timeout_seconds)}
+        elif status is not None and os.WIFSIGNALED(status):
+            sig=int(os.WTERMSIG(status))
+            try:
+                sig_name=signal.Signals(sig).name
+            except Exception:
+                sig_name=str(sig)
+            failure={"attempt":attempt,"kind":"native_signal","signal":sig,"signal_name":sig_name}
+        elif payload and payload.get("ok") is False:
+            failure={
+                "attempt":attempt,
+                "kind":"python_exception",
+                "error_type":payload.get("error_type"),
+                "error":payload.get("error"),
+            }
+        else:
+            failure={
+                "attempt":attempt,
+                "kind":"child_exit",
+                "exit_code":(
+                    int(os.WEXITSTATUS(status))
+                    if status is not None and os.WIFEXITED(status)
+                    else None
+                ),
+            }
+        failures.append(failure)
+
+    return None,[],failures
+
+
 def _replay_teacher_row(
     *,
     seed: int,
@@ -265,36 +418,68 @@ def diagnose_seed_replay(
     max_alternatives: int,
     max_two_step_states: int,
     max_second_alternatives: int,
+    isolate_branches: bool=False,
+    branch_timeout_seconds: int=180,
+    branch_retries: int=1,
 ) -> dict[str, Any]:
-    base, base_policy = _run_seed_variant(
-        seed=seed,
-        module_dir=module_dir,
-        armg_root=armg_root,
-        weight=weight,
-        heldout=heldout,
-        boss_sims=None,
-    )
+    branch_failures:list[dict[str,Any]]=[]
+
+    def run_variant(*, boss_sims:int | None, forced:dict[int,dict[str,Any]] | None=None):
+        result,records,failures=_isolated_run_seed_variant(
+            seed=seed,
+            module_dir=module_dir,
+            armg_root=armg_root,
+            weight=weight,
+            heldout=heldout,
+            boss_sims=boss_sims,
+            forced=forced,
+            isolate=isolate_branches,
+            timeout_seconds=branch_timeout_seconds,
+            retries=branch_retries,
+        )
+        branch_failures.extend(failures)
+        return result,records
+
+    base,base_records=run_variant(boss_sims=None)
+    if base is None:
+        return {
+            "seed":seed,
+            "status":"NATIVE_BASE_REPLAY_FAILURE",
+            "attempted_states":0,
+            "two_step_attempts":0,
+            "native_branch_failures":len(branch_failures),
+            "branch_failure_details":branch_failures,
+            "rescue":None,
+        }
     floor = int(base.get("final_floor") or base.get("max_floor") or 0)
     if str(base.get("outcome", "")).lower() == "victory" or not rollout._near_boss_failure(floor):
         return {
             "seed": seed,
             "status": "NOT_REPRODUCED_AS_NEAR_BOSS_LOSS",
             "base": base,
-            "captured_state_count": len(base_policy.records),
+            "captured_state_count": len(base_records),
             "attempted_states": 0,
             "two_step_attempts": 0,
+            "native_branch_failures":len(branch_failures),
+            "branch_failure_details":branch_failures,
             "rescue": None,
         }
 
     target = rollout._boss_target_floor(floor)
-    baseline50, _ = _run_seed_variant(
-        seed=seed,
-        module_dir=module_dir,
-        armg_root=armg_root,
-        weight=weight,
-        heldout=heldout,
-        boss_sims=50000,
-    )
+    baseline50,_=run_variant(boss_sims=50000)
+    if baseline50 is None:
+        return {
+            "seed":seed,
+            "status":"NATIVE_BASELINE50_FAILURE",
+            "base":base,
+            "target_boss_floor":target,
+            "captured_state_count":len(base_records),
+            "attempted_states":0,
+            "two_step_attempts":0,
+            "native_branch_failures":len(branch_failures),
+            "branch_failure_details":branch_failures,
+            "rescue":None,
+        }
     if _passes_target_boss(baseline50, target):
         return {
             "seed": seed,
@@ -302,14 +487,16 @@ def diagnose_seed_replay(
             "base": base,
             "baseline_50k": baseline50,
             "target_boss_floor": target,
-            "captured_state_count": len(base_policy.records),
+            "captured_state_count": len(base_records),
             "attempted_states": 0,
             "two_step_attempts": 0,
+            "native_branch_failures":len(branch_failures),
+            "branch_failure_details":branch_failures,
             "rescue": None,
         }
 
     records = [
-        row for row in base_policy.records
+        row for row in base_records
         if int(row.get("floor", 0) or 0) <= target
         and len(row.get("descs", [])) >= 2
     ]
@@ -320,14 +507,16 @@ def diagnose_seed_replay(
             "status": "NO_REPLAYABLE_STRATEGIC_STATE",
             "base": base,
             "target_boss_floor": target,
-            "captured_state_count": len(base_policy.records),
+            "captured_state_count": len(base_records),
             "attempted_states": 0,
             "two_step_attempts": 0,
+            "native_branch_failures":len(branch_failures),
+            "branch_failure_details":branch_failures,
             "rescue": None,
         }
 
     attempted = 0
-    first_step_runs: list[tuple[dict[str, Any], int, dict[str, Any], ReplayFromSeedArmG]] = []
+    first_step_runs: list[tuple[dict[str, Any], int, dict[str, Any], list[dict[str,Any]]]] = []
 
     for record in records:
         selected = int(record["selected_index"])
@@ -341,27 +530,15 @@ def diagnose_seed_replay(
             forced = {
                 int(record["branch_index"]): _force_spec(record, alternative)
             }
-            boss10, policy10 = _run_seed_variant(
-                seed=seed,
-                module_dir=module_dir,
-                armg_root=armg_root,
-                weight=weight,
-                heldout=heldout,
-                boss_sims=10000,
-                forced=forced,
-            )
-            first_step_runs.append((record, int(alternative), boss10, policy10))
+            boss10,records10=run_variant(boss_sims=10000,forced=forced)
+            if boss10 is None:
+                continue
+            first_step_runs.append((record,int(alternative),boss10,records10))
             if not _passes_target_boss(boss10, target):
                 continue
-            boss50, _ = _run_seed_variant(
-                seed=seed,
-                module_dir=module_dir,
-                armg_root=armg_root,
-                weight=weight,
-                heldout=heldout,
-                boss_sims=50000,
-                forced=forced,
-            )
+            boss50,_=run_variant(boss_sims=50000,forced=forced)
+            if boss50 is None:
+                continue
             if not _passes_target_boss(boss50, target):
                 continue
             teacher = _replay_teacher_row(
@@ -380,10 +557,12 @@ def diagnose_seed_replay(
                 "base": base,
                 "baseline_50k": baseline50,
                 "target_boss_floor": target,
-                "captured_state_count": len(base_policy.records),
+                "captured_state_count": len(base_records),
                 "candidate_states": len(records),
                 "attempted_states": attempted,
                 "two_step_attempts": 0,
+                "native_branch_failures":len(branch_failures),
+                "branch_failure_details":branch_failures,
                 "rescue": {
                     "decision_floor": int(record["floor"]),
                     "decision_act": int(record["act"]),
@@ -400,10 +579,10 @@ def diagnose_seed_replay(
     two_step_attempts = 0
     # Reuse already-computed first-step 10k replays. Only the nearest
     # max_two_step_states first interventions are eligible for a second change.
-    for record, alternative, first10, first_policy in first_step_runs[:max_two_step_states]:
+    for record, alternative, first10, first_records in first_step_runs[:max_two_step_states]:
         first_idx = int(record["branch_index"])
         subsequent = [
-            row for row in first_policy.records
+            row for row in first_records
             if int(row["branch_index"]) > first_idx
             and int(row.get("floor", 0) or 0) <= target
             and len(row.get("descs", [])) >= 2
@@ -427,26 +606,14 @@ def diagnose_seed_replay(
                 first_idx: _force_spec(record, alternative),
                 int(second_record["branch_index"]): _force_spec(second_record, second_alt),
             }
-            boss10, _ = _run_seed_variant(
-                seed=seed,
-                module_dir=module_dir,
-                armg_root=armg_root,
-                weight=weight,
-                heldout=heldout,
-                boss_sims=10000,
-                forced=forced,
-            )
+            boss10,_=run_variant(boss_sims=10000,forced=forced)
+            if boss10 is None:
+                continue
             if not _passes_target_boss(boss10, target):
                 continue
-            boss50, _ = _run_seed_variant(
-                seed=seed,
-                module_dir=module_dir,
-                armg_root=armg_root,
-                weight=weight,
-                heldout=heldout,
-                boss_sims=50000,
-                forced=forced,
-            )
+            boss50,_=run_variant(boss_sims=50000,forced=forced)
+            if boss50 is None:
+                continue
             if not _passes_target_boss(boss50, target):
                 continue
 
@@ -476,10 +643,12 @@ def diagnose_seed_replay(
                 "base": base,
                 "baseline_50k": baseline50,
                 "target_boss_floor": target,
-                "captured_state_count": len(base_policy.records),
+                "captured_state_count": len(base_records),
                 "candidate_states": len(records),
                 "attempted_states": attempted,
                 "two_step_attempts": two_step_attempts,
+                "native_branch_failures":len(branch_failures),
+                "branch_failure_details":branch_failures,
                 "rescue": {
                     "decision_floor": int(record["floor"]),
                     "decision_act": int(record["act"]),
@@ -504,10 +673,12 @@ def diagnose_seed_replay(
         "base": base,
         "baseline_50k": baseline50,
         "target_boss_floor": target,
-        "captured_state_count": len(base_policy.records),
+        "captured_state_count": len(base_records),
         "candidate_states": len(records),
         "attempted_states": attempted,
         "two_step_attempts": two_step_attempts,
+        "native_branch_failures":len(branch_failures),
+        "branch_failure_details":branch_failures,
         "rescue": None,
     }
 

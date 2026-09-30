@@ -22,7 +22,7 @@ env:
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
   STATE_ARTIFACT: sts1-armg-ppo-v17-winrate-state
-  LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v17-winrate-state
+  LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v16-rescue-state
 
 jobs:
   rollout:
@@ -197,21 +197,24 @@ jobs:
       - name: Migrate state to v1.7 victory-first reward
         run: |
           set -euo pipefail
-          python - "$STATE_DIR/state.json" <<'PY'
+          marker="$RUNNER_TEMP/v17-reward-migrated"
+          rm -f "$marker"
+          python - "$STATE_DIR/state.json" "$marker" <<'PY'
           import json,sys
           from pathlib import Path
-          p=Path(sys.argv[1])
+          p=Path(sys.argv[1]); marker=Path(sys.argv[2])
           s=json.loads(p.read_text(encoding="utf-8"))
           if s.get("training_reward_mode") != "v17_winrate":
               s["training_reward_mode"]="v17_winrate"
               s["stagnation_count"]=0
               s["v17_reward_migration"]=True
               p.write_text(json.dumps(s,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+              marker.write_text("1\n",encoding="utf-8")
               print("PPO_V17_REWARD_MIGRATION_RESET")
           else:
               print("PPO_V17_REWARD_MIGRATION_ALREADY_DONE")
           PY
-          if grep -q '"v17_reward_migration": true' "$STATE_DIR/state.json"; then
+          if [ -f "$marker" ]; then
             rm -f "$STATE_DIR/training-critic.pt" "$STATE_DIR/ppo-replay.npz"
           fi
 

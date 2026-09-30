@@ -1,0 +1,135 @@
+name: STS1 PPO v1.9 Multistep Contracts
+
+on:
+  push:
+    branches:
+      - gpt/sts1-ppo-v19-multistep-win-conversion-20260930
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install test runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+
+      - name: Compile v1.9 path
+        run: |
+          python -m py_compile             src/roguelike_ai/sts1_phase3/simulator.py             scripts/sts1/sts1_armg_ppo_rollout_v14.py             scripts/sts1/sts1_armg_ppo_v14_replay.py             scripts/sts1/sts1_armg_ppo_train_v14_sharded.py
+
+      - name: Unit contracts
+        run: |
+          pytest -q             tests/test_sts1_ppo_v18_win_conversion.py             tests/test_sts1_armg_ppo_v15.py             tests/test_sts1_armg_ppo_v14_replay.py
+
+      - name: Verify v1.9 wiring
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          control=Path("control/sts1-armg-ppo-v15-auto-loop.request").read_text()
+          workflow=Path(".github/workflows/sts1-armg-ppo-v15-population-curriculum.yml").read_text()
+          rollout=Path("scripts/sts1/sts1_armg_ppo_rollout_v14.py").read_text()
+
+          required_control=[
+              "ppo_version=1.9",
+              "reward_mode=v17_winrate",
+              "win_conversion_enabled=1",
+              "win_conversion_primary_mcts=2000",
+              "win_conversion_confirm_mcts=10000",
+              "win_conversion_max_states=6",
+              "win_conversion_max_alternatives=2",
+              "win_conversion_max_second_alternatives=2",
+              "win_conversion_sample_modulus=4",
+          ]
+          for item in required_control:
+              assert item in control, item
+
+          assert "STS1 ArmG PPO v1.9 Multistep Win Conversion" in workflow
+          assert "sts1-armg-ppo-v19-multistep-state" in workflow
+          assert "LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v18-win-conversion-state" in workflow
+          for flag in [
+              "--win-conversion-enabled",
+              "--win-conversion-max-states",
+              "--win-conversion-max-alternatives",
+              "--win-conversion-max-second-alternatives",
+              "--win-conversion-sample-modulus",
+              "--win-conversion-primary-mcts",
+              "--win-conversion-confirm-mcts",
+          ]:
+              assert flag in workflow, flag
+          assert "--extra-heldout-seed-file control/sts1-v16-benchmark-seeds-500.txt" in workflow
+          assert "critical_two_step_boss_conversion" in rollout
+          assert "critical_boss_pass_conversion" in rollout
+          assert "passed_boss" in rollout
+          print("PASS_PPO_V19_WIRING")
+          PY
+
+  simulator-smoke:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install and hydrate
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg-v19-smoke
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Two-game simulator smoke with miner enabled
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_armg_ppo_rollout_v14.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-v19-smoke             --weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt             --out evidence/sts1/v19-smoke             --formal-seed-file control/sts1-v15-dev-seeds-50.txt             --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt             --extra-heldout-seed-file control/sts1-v16-benchmark-seeds-500.txt             --seed-start 2026093019             --games 2             --temperature 1.0             --reward-mode v17_winrate             --checkpoint-id v19-smoke             --worker 0             --parallel-games 1             --max-training-seed-rejections 2             --win-conversion-enabled 1             --win-conversion-max-states 6             --win-conversion-max-alternatives 2             --win-conversion-max-second-alternatives 2             --win-conversion-sample-modulus 1             --win-conversion-primary-mcts 2000             --win-conversion-confirm-mcts 10000
+          test -s evidence/sts1/v19-smoke/rollout.npz
+          test -f evidence/sts1/v19-smoke/win-conversion.jsonl
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          p=Path("evidence/sts1/v19-smoke/win-conversion.jsonl")
+          for line in p.read_text(encoding="utf-8").splitlines():
+              if not line.strip():
+                  continue
+              row=json.loads(line)
+              assert row["source"]=="sts1-ppo-v19-multistep-win-conversion-v1"
+              assert row["combat_policy"]=="mcts_2000"
+              assert row["confirmation_policy"]=="mcts_10000"
+              assert row["type"] in {
+                  "critical_full_win_conversion",
+                  "critical_boss_pass_conversion",
+                  "critical_two_step_boss_conversion",
+                  "critical_two_step_boss_conversion_followup",
+              }
+              rows.append(row)
+          print("PASS_PPO_V19_SIMULATOR_SMOKE", {"conversion_rows":len(rows)})
+          PY

@@ -53,10 +53,10 @@ jobs:
           print("V25_BALANCED_CONTRACT_PASS")
           PY
 
-      - name: Download three verified full-win teachers
+      - name: Download seven verified full-win teachers
         uses: actions/download-artifact@v4
         with:
-          pattern: v25-mine-*
+          pattern: v24-mine-*
           path: evidence/sts1/v25-balanced7-raw
           merge-multiple: true
           github-token: ${{ github.token }}

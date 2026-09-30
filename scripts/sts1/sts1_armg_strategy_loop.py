@@ -47,6 +47,7 @@ from roguelike_ai.sts1_phase3.armg_strategy_evolve import (
     strategy_example_priority,
     strategy_promotion_decision,
 )
+from roguelike_ai.sts1_phase3.human_path_prior import path_prior_score
 from roguelike_ai.sts1_phase3.simulator import (
     ArmGNoncombatPolicy,
     SimulatorRunError,
@@ -1064,6 +1065,59 @@ def _label_selected_candidates(
         _TEACHER_PARALLEL_CONFIG = None
 
 
+def _human_path_alignment(
+    candidate: Mapping[str, Any],
+    *,
+    armg: ArmGNoncombatPolicy,
+    prior: Mapping[str, Any] | None,
+    min_prior_spread: float,
+) -> dict[str, Any]:
+    """Return a Human-path preference only for confident map states."""
+    if prior is None or str(candidate.get("kind")) != "map":
+        return {"eligible": False, "reason": "not_map_or_disabled"}
+    snapshot = candidate.get("snapshot") or {}
+    descs = list(snapshot.get("descs") or [])
+    if len(descs) < 2:
+        return {"eligible": False, "reason": "insufficient_choices"}
+    floor = int(snapshot.get("floor", 0) or 0)
+    hp = snapshot.get("hp")
+    max_hp = snapshot.get("max_hp")
+    gold = snapshot.get("gold")
+    rooms: list[str] = []
+    scores: list[float] = []
+    for desc in descs:
+        room = str((armg.describe_choice("map", desc) or {}).get("room") or "")
+        rooms.append(room)
+        scores.append(
+            path_prior_score(
+                prior,
+                room,
+                floor=floor,
+                hp=hp,
+                max_hp=max_hp,
+                gold=gold,
+            )
+        )
+    spread = max(scores) - min(scores) if scores else 0.0
+    if spread < float(min_prior_spread):
+        return {
+            "eligible": False,
+            "reason": "low_prior_spread",
+            "prior_spread": float(spread),
+            "rooms": rooms,
+            "scores": scores,
+        }
+    best = max(range(len(scores)), key=scores.__getitem__)
+    return {
+        "eligible": True,
+        "reason": "confident",
+        "human_best_index": int(best),
+        "prior_spread": float(spread),
+        "rooms": rooms,
+        "scores": scores,
+    }
+
+
 def _collect_dataset(
     *,
     seeds: Sequence[int],
@@ -1082,6 +1136,9 @@ def _collect_dataset(
     collection_workers: int,
     parallel_timeout_seconds: int,
     parallel_parity_probes: int,
+    human_path_prior: Mapping[str, Any] | None = None,
+    human_path_min_spread: float = 0.20,
+    human_path_agreement_boost: float = 0.75,
 ) -> dict[str, Any]:
     """Scout cheaply first, then spend MCTS only on high-value Strategy states."""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1152,6 +1209,15 @@ def _collect_dataset(
                         separators=(",", ":"),
                     ).encode("utf-8")
                 ).hexdigest()
+                human_alignment = _human_path_alignment(
+                    {
+                        "kind": str(kind),
+                        "snapshot": snapshot,
+                    },
+                    armg=armg,
+                    prior=human_path_prior,
+                    min_prior_spread=human_path_min_spread,
+                )
                 candidates.append(
                     {
                         "identity": identity,
@@ -1169,6 +1235,7 @@ def _collect_dataset(
                             choices=choices,
                         ),
                         "current_armg_index": current_index,
+                        "human_path_alignment": human_alignment,
                         "gc": gc.clone(),
                     }
                 )
@@ -1230,10 +1297,24 @@ def _collect_dataset(
             example["prelabel_priority"] = float(candidate["prelabel_priority"])
             example["prelabel_uncertainty"] = dict(candidate["uncertainty"])
             example["state_bucket"] = str(candidate["state_bucket"])
+            human_alignment = dict(candidate.get("human_path_alignment") or {})
+            human_agreement = (
+                bool(human_alignment.get("eligible"))
+                and int(human_alignment.get("human_best_index", -1))
+                == int(example["teacher_best_index"])
+            )
+            example["human_path_alignment"] = human_alignment
+            example["human_path_agreement"] = human_agreement
+            if human_agreement:
+                example["confidence_weight"] = max(
+                    float(example.get("confidence_weight", 0.0)),
+                    min(1.0, 0.50 + float(human_path_agreement_boost)),
+                )
             example["priority"] = min(
                 4.0,
                 float(example["priority"])
-                + 0.25 * float(candidate["prelabel_priority"]),
+                + 0.25 * float(candidate["prelabel_priority"])
+                + (float(human_path_agreement_boost) if human_agreement else 0.0),
             )
             examples.append(example)
             selected_by_seed[int(candidate["seed"])] += 1
@@ -1275,6 +1356,14 @@ def _collect_dataset(
         "teacher_agreement": agreement,
         "mistake_examples": mistake_examples,
         "high_uncertainty_examples": high_uncertainty,
+        "human_path_eligible": sum(
+            bool((row.get("human_path_alignment") or {}).get("eligible"))
+            for row in examples
+        ),
+        "human_path_agreements": sum(
+            bool(row.get("human_path_agreement"))
+            for row in examples
+        ),
         "mean_prelabel_priority": (
             sum(float(row.get("prelabel_priority", 0.0)) for row in examples)
             / len(examples)
@@ -2012,6 +2101,9 @@ def main() -> int:
     parser.add_argument("--max-replay-examples", type=int, default=10000)
     parser.add_argument("--shop-max-fraction", type=float, default=0.25)
     parser.add_argument("--max-stagnation", type=int, default=5)
+    parser.add_argument("--human-path-prior", type=Path)
+    parser.add_argument("--human-path-min-spread", type=float, default=0.20)
+    parser.add_argument("--human-path-agreement-boost", type=float, default=0.75)
     parser.add_argument("--elite-mining-seeds", type=int, default=2)
     parser.add_argument("--elite-examples-per-seed", type=int, default=2)
     parser.add_argument("--elite-min-quality-margin", type=float, default=1.0)
@@ -2060,6 +2152,15 @@ def main() -> int:
         )
     dev30 = dev_all[:30]
     dev_confirm20 = dev_all[30:]
+
+    human_path_prior: dict[str, Any] | None = None
+    if args.human_path_prior is not None:
+        payload = json.loads(args.human_path_prior.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != "sts1-human-path-prior-v1":
+            raise RuntimeError("human path prior schema mismatch")
+        human_path_prior = payload
+    if args.human_path_min_spread < 0 or args.human_path_agreement_boost < 0:
+        raise RuntimeError("human path assist thresholds must be non-negative")
 
     if not args.armg_base_weight.is_file():
         raise RuntimeError(f"ArmG base weight missing: {args.armg_base_weight}")
@@ -2127,6 +2228,9 @@ def main() -> int:
             collection_workers=args.collection_workers,
             parallel_timeout_seconds=args.parallel_teacher_timeout_seconds,
             parallel_parity_probes=args.parallel_parity_probes,
+            human_path_prior=human_path_prior,
+            human_path_min_spread=args.human_path_min_spread,
+            human_path_agreement_boost=args.human_path_agreement_boost,
         )
         replay_report = _merge_replay(
             replay_path,

@@ -745,6 +745,16 @@ def run_simulator_game(
                     choice_descriptions = [repr(value) for value in descs]
                     deck_before = armg_policy.deck_snapshot(gc)
                     training_vector = armg_policy.training_vector_snapshot(gc, descs)
+                    capture = getattr(armg_policy, "capture_conversion_state", None)
+                    if callable(capture) and selected_index >= 0:
+                        capture(
+                            gc=gc,
+                            sts=sts,
+                            kind=kind,
+                            selected_index=selected_index,
+                            descs=descs,
+                            scores=scores,
+                        )
                     if selected_index < 0:
                         gc.skip_reward_cards()
                         choice = "armg:reward:skip_empty"

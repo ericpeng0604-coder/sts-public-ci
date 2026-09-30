@@ -623,6 +623,24 @@ def resolve_simulator_seed(
     return ui_seed, simulator_seed
 
 
+def _combat_mcts_budget_for_floor(
+    floor: int,
+    *,
+    base_sims: int | None,
+    late_sims: int | None = None,
+    late_floor: int = 50,
+    boss_sims: int | None = None,
+    boss_floors: Sequence[int] = (16, 33, 50),
+) -> int | None:
+    """Choose a search budget without increasing ordinary-combat cost."""
+    active = base_sims
+    if boss_sims is not None and int(floor) in {int(v) for v in boss_floors}:
+        return int(boss_sims)
+    if late_sims is not None and int(floor) >= int(late_floor):
+        return int(late_sims)
+    return active
+
+
 def run_simulator_game(
     *,
     student: Any,
@@ -637,6 +655,8 @@ def run_simulator_game(
     hybrid_mcts_budgets: Sequence[int] | None = None,
     combat_mcts_late_sims: int | None = None,
     combat_mcts_late_floor: int = 50,
+    combat_mcts_boss_sims: int | None = None,
+    combat_mcts_boss_floors: Sequence[int] = (16, 33, 50),
     combat_mcts_exploration: float | None = None,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
@@ -669,12 +689,21 @@ def run_simulator_game(
         raise SimulatorRunError("choose either one MCTS budget or consensus budgets, not both")
     if combat_mcts_late_sims is not None and consensus_budgets:
         raise SimulatorRunError("late MCTS schedule cannot be combined with consensus budgets")
+    if combat_mcts_boss_sims is not None and consensus_budgets:
+        raise SimulatorRunError("Boss MCTS schedule cannot be combined with consensus budgets")
     if combat_mcts_late_sims is not None and combat_mcts_sims is None:
         raise SimulatorRunError("late MCTS schedule requires --combat-mcts-sims as the base budget")
+    if combat_mcts_boss_sims is not None and combat_mcts_sims is None:
+        raise SimulatorRunError("Boss MCTS schedule requires a base combat MCTS budget")
     if combat_mcts_sims is not None and combat_mcts_sims < 1:
         raise SimulatorRunError("combat MCTS simulations must be positive")
     if combat_mcts_late_sims is not None and combat_mcts_late_sims < 1:
         raise SimulatorRunError("late combat MCTS simulations must be positive")
+    if combat_mcts_boss_sims is not None and combat_mcts_boss_sims < 1:
+        raise SimulatorRunError("Boss combat MCTS simulations must be positive")
+    boss_floor_set = tuple(sorted({int(v) for v in combat_mcts_boss_floors}))
+    if any(v < 1 for v in boss_floor_set):
+        raise SimulatorRunError("Boss MCTS floors must be positive")
     if combat_mcts_late_floor < 1:
         raise SimulatorRunError("late combat MCTS floor must be positive")
     if combat_mcts_exploration is not None and combat_mcts_exploration <= 0:
@@ -839,12 +868,14 @@ def run_simulator_game(
                             projected_legal_actions=public_actions,
                         )
                     floor_now = int(_value(gc, "floor_num", 0) or 0)
-                    active_mcts_sims = combat_mcts_sims
-                    if (
-                        combat_mcts_late_sims is not None
-                        and floor_now >= combat_mcts_late_floor
-                    ):
-                        active_mcts_sims = combat_mcts_late_sims
+                    active_mcts_sims = _combat_mcts_budget_for_floor(
+                        floor_now,
+                        base_sims=combat_mcts_sims,
+                        late_sims=combat_mcts_late_sims,
+                        late_floor=combat_mcts_late_floor,
+                        boss_sims=combat_mcts_boss_sims,
+                        boss_floors=boss_floor_set,
+                    )
                     started = time.perf_counter()
                     vote_bits: list[int] = []
                     vote_budgets: list[int] = []

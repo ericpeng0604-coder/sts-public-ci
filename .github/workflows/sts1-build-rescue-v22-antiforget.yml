@@ -54,6 +54,31 @@ jobs:
           missing=[x for x in required if x not in p]
           if missing:
               raise SystemExit(f"missing anti-forgetting contract: {missing}")
+          import importlib.util
+          spec=importlib.util.spec_from_file_location("v22","scripts/sts1/sts1_build_rescue_bc_v22.py")
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          before={"winner_top1":0.81}
+          good={
+              "parent_top1_agreement":0.990,
+              "parent_high_conf_top1_agreement":1.0,
+              "parent_high_conf_decisions":1000,
+              "parent_kl":1e-6,
+              "winner_top1":0.81,
+          }
+          assert mod._retention_ok(
+              good,before,min_parent_agreement=0.995,max_parent_kl=0.002,max_winner_drop=0.01
+          )
+          bad=dict(good)
+          bad["parent_high_conf_top1_agreement"]=0.994
+          assert not mod._retention_ok(
+              bad,before,min_parent_agreement=0.995,max_parent_kl=0.002,max_winner_drop=0.01
+          )
+          too_small=dict(good)
+          too_small["parent_high_conf_decisions"]=255
+          assert not mod._retention_ok(
+              too_small,before,min_parent_agreement=0.995,max_parent_kl=0.002,max_winner_drop=0.01
+          )
           print("V22_CONTRACT_PASS")
           PY
 

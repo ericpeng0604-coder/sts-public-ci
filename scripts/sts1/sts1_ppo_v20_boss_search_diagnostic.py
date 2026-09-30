@@ -12,8 +12,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from roguelike_ai.sts1_phase3.simulator import ArmGNoncombatPolicy, _load_sts, run_simulator_game
-
 BOSS_FLOORS = (16, 33, 50)
 MODES = {
     "base_2k": None,
@@ -42,6 +40,16 @@ def _read_seeds(path: Path) -> list[int]:
     return seeds
 
 
+def _load_simulator_runtime():
+    # Aggregate mode only reads JSON and should not need Torch/simulator imports.
+    from roguelike_ai.sts1_phase3.simulator import (
+        ArmGNoncombatPolicy,
+        _load_sts,
+        run_simulator_game,
+    )
+    return ArmGNoncombatPolicy, _load_sts, run_simulator_game
+
+
 def _one_mode(
     *,
     seed: int,
@@ -52,6 +60,7 @@ def _one_mode(
     output_dir: Path,
     heldout: list[int],
 ) -> dict[str, Any]:
+    ArmGNoncombatPolicy, _load_sts, run_simulator_game = _load_simulator_runtime()
     sts=_load_sts(module_dir)
     policy=ArmGNoncombatPolicy(root=armg_root, weight_path=weight)
     boss_sims=MODES[mode]

@@ -35,6 +35,8 @@ PROFILES = {
     "escape": Profile("escape", 100, 1.10, 6, 4.5e-5, 0.16, 0.012, 0.0030, 0.012),
     "wide_explore": Profile("wide_explore", 100, 1.12, 5, 4e-5, 0.15, 0.010, 0.0040, 0.010),
     "near_miss_refine": Profile("near_miss_refine", 80, 0.98, 6, 2.5e-5, 0.12, 0.008, 0.0005, 0.030),
+    "teacher_reanchor": Profile("teacher_reanchor", 80, 1.00, 4, 2.5e-5, 0.15, 0.010, 0.0010, 0.025),
+    "rescue_explore": Profile("rescue_explore", 100, 1.08, 5, 3.5e-5, 0.18, 0.014, 0.0025, 0.015),
 }
 
 
@@ -102,6 +104,12 @@ def choose_profile(state: dict[str, Any]) -> Profile:
     # refinement so a failed exploration profile is not repeated forever.
     win_delta = _last_win_delta(state)
     floor_delta = _last_floor_delta(state)
+    if stagnation >= 12:
+        # After a dozen failed rounds, stop repeating the same wide/refine pair.
+        # Re-anchor harder to verified Strategy Teacher disagreements on one
+        # round, then deliberately explore on the next. This changes the data
+        # signal as well as PPO hyperparameters, instead of only nudging PPO.
+        return PROFILES["teacher_reanchor"] if stagnation % 2 == 0 else PROFILES["rescue_explore"]
     if win_delta >= 0 and floor_delta >= 0.25:
         return PROFILES["near_miss_refine"]
     if stagnation % 2 == 1:
@@ -149,6 +157,15 @@ def adapt(
         if key not in control_order:
             control_order.append(key)
 
+    stagnation = int(state.get("stagnation_count", 0))
+    if stagnation >= 12:
+        if profile.name == "teacher_reanchor":
+            updated["strategy_teacher_coef"] = "0.05"
+            updated["strategy_teacher_max_examples"] = "1024"
+        else:
+            updated["strategy_teacher_coef"] = "0.025"
+            updated["strategy_teacher_max_examples"] = "768"
+
     updated.update({
         "games_per_worker": str(profile.games_per_worker),
         "temperature": f"{profile.temperature:g}",
@@ -184,6 +201,7 @@ def adapt(
         "gate_policy_changed": True,
         "gate_policy_note": "Dev Parent accumulates; strict Final 30/50 remains unchanged",
         "production_champion_changed": False,
+        "rescue_mode": int(state.get("stagnation_count", 0)) >= 12,
         "strategy_teacher": {
             "coef": updated["strategy_teacher_coef"],
             "max_examples": updated["strategy_teacher_max_examples"],

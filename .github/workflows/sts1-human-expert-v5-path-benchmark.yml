@@ -25,7 +25,7 @@ env:
   EXPERT_DATA_SHA: '097aaf3564c2247835162d267cbc7c55d2c9039e'
 
 concurrency:
-  group: sts1-human-expert-v5-path-benchmark
+  group: sts1-human-expert-v5-path-diagnostic-v2
   cancel-in-progress: true
 
 jobs:

@@ -35,6 +35,7 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
+from roguelike_ai.sts1_phase3.human_path_prior import path_prior_score
 from roguelike_ai.sts1_phase3.armg_strategy_evolve import (
     DEV_STRATEGY_GATE,
     FRESH_STRATEGY_GATE,
@@ -255,6 +256,77 @@ def _teacher_mix_weight(confidence: float, *, min_teacher_confidence: float) -> 
     if not 0.0 <= min_teacher_confidence <= 1.0:
         raise RuntimeError("minimum teacher confidence must be in [0, 1]")
     return confidence if confidence >= min_teacher_confidence else 0.0
+
+
+def _human_path_probe(
+    *,
+    snapshot: Mapping[str, Any],
+    descs: Sequence[Any],
+    raw_scores: Sequence[float],
+    armg: ArmGNoncombatPolicy,
+    prior: Mapping[str, Any] | None,
+    disagreement_bonus: float,
+) -> dict[str, Any]:
+    """Use human path preference only to decide which map states deserve Teacher MCTS.
+
+    This never becomes a training label. The exact terminal branch rollout remains
+    the only Teacher target, so noisy human preferences cannot directly change the
+    learned action.
+    """
+    if disagreement_bonus < 0 or not math.isfinite(float(disagreement_bonus)):
+        raise RuntimeError("human path disagreement bonus must be finite and non-negative")
+    if prior is None or str(snapshot.get("kind")) != "map" or len(descs) < 2:
+        return {
+            "active": False,
+            "disagreement": False,
+            "priority_bonus": 0.0,
+            "prior_spread": 0.0,
+            "armg_index": None,
+            "human_index": None,
+            "rooms": [],
+        }
+
+    floor = int(snapshot.get("floor", 0) or 0)
+    hp = snapshot.get("hp")
+    max_hp = snapshot.get("max_hp")
+    gold = snapshot.get("gold")
+    rooms: list[str] = []
+    prior_scores: list[float] = []
+    for desc in descs:
+        semantic = armg.describe_choice("map", desc)
+        room = str(semantic.get("room") or "")
+        rooms.append(room)
+        prior_scores.append(
+            path_prior_score(
+                prior,
+                room,
+                floor=floor,
+                hp=hp,
+                max_hp=max_hp,
+                gold=gold,
+            )
+        )
+
+    if not raw_scores or len(raw_scores) != len(prior_scores):
+        raise RuntimeError("human path probe score/choice length mismatch")
+    armg_index = max(range(len(raw_scores)), key=lambda i: float(raw_scores[i]))
+    human_index = max(range(len(prior_scores)), key=lambda i: float(prior_scores[i]))
+    prior_spread = max(prior_scores) - min(prior_scores)
+    disagreement = human_index != armg_index
+    # Reward disagreement more when the human prior itself is decisive, but keep
+    # the influence bounded. MCTS terminal rollout still decides the target.
+    confidence = min(1.0, max(0.0, prior_spread))
+    priority_bonus = float(disagreement_bonus) * confidence if disagreement else 0.0
+    return {
+        "active": True,
+        "disagreement": bool(disagreement),
+        "priority_bonus": float(priority_bonus),
+        "prior_spread": float(prior_spread),
+        "armg_index": int(armg_index),
+        "human_index": int(human_index),
+        "rooms": rooms,
+        "prior_scores": [float(v) for v in prior_scores],
+    }
 
 
 def _select_teacher_candidates(
@@ -1082,6 +1154,8 @@ def _collect_dataset(
     collection_workers: int,
     parallel_timeout_seconds: int,
     parallel_parity_probes: int,
+    human_path_prior: Mapping[str, Any] | None = None,
+    human_path_disagreement_bonus: float = 0.0,
 ) -> dict[str, Any]:
     """Scout cheaply first, then spend MCTS only on high-value Strategy states."""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1089,6 +1163,8 @@ def _collect_dataset(
     games: list[dict[str, Any]] = []
     skipped_wide = 0
     skipped_single = 0
+    human_map_candidates = 0
+    human_map_disagreements = 0
 
     # Phase A: scout trajectories under the current Strategy. This is cheap
     # relative to terminal branch labeling and visits states the learner
@@ -1139,7 +1215,24 @@ def _collect_dataset(
                 snapshot = _choice_snapshot(gc, armg)
                 _, _, scores = armg.score_choices(gc)
                 uncertainty = _choice_uncertainty(scores)
+                raw_scores = [float(v) for v in scores.tolist()]
                 current_index = int(torch.argmax(scores).item())
+                human_probe = _human_path_probe(
+                    snapshot=snapshot,
+                    descs=descs,
+                    raw_scores=raw_scores,
+                    armg=armg,
+                    prior=human_path_prior,
+                    disagreement_bonus=human_path_disagreement_bonus,
+                )
+                if human_probe["active"]:
+                    human_map_candidates += 1
+                    human_map_disagreements += int(bool(human_probe["disagreement"]))
+                base_priority = _prelabel_priority(
+                    snapshot,
+                    uncertainty,
+                    choices=choices,
+                )
                 bucket = _state_bucket(snapshot, choices=choices)
                 identity = hashlib.sha256(
                     json.dumps(
@@ -1163,11 +1256,12 @@ def _collect_dataset(
                         "snapshot": snapshot,
                         "state_bucket": bucket,
                         "uncertainty": uncertainty,
-                        "prelabel_priority": _prelabel_priority(
-                            snapshot,
-                            uncertainty,
-                            choices=choices,
+                        "prelabel_priority": (
+                            float(base_priority)
+                            + float(human_probe["priority_bonus"])
                         ),
+                        "base_prelabel_priority": float(base_priority),
+                        "human_path_probe": human_probe,
                         "current_armg_index": current_index,
                         "gc": gc.clone(),
                     }
@@ -1229,6 +1323,7 @@ def _collect_dataset(
                 raise RuntimeError("Strategy scout/Teacher current-choice drift")
             example["prelabel_priority"] = float(candidate["prelabel_priority"])
             example["prelabel_uncertainty"] = dict(candidate["uncertainty"])
+            example["human_path_probe"] = dict(candidate.get("human_path_probe") or {})
             example["state_bucket"] = str(candidate["state_bucket"])
             example["priority"] = min(
                 4.0,
@@ -1275,6 +1370,20 @@ def _collect_dataset(
         "teacher_agreement": agreement,
         "mistake_examples": mistake_examples,
         "high_uncertainty_examples": high_uncertainty,
+        "human_path_mining": {
+            "enabled": human_path_prior is not None and human_path_disagreement_bonus > 0,
+            "map_candidates": int(human_map_candidates),
+            "map_disagreements": int(human_map_disagreements),
+            "disagreement_rate": (
+                float(human_map_disagreements) / human_map_candidates
+                if human_map_candidates else 0.0
+            ),
+            "disagreement_bonus": float(human_path_disagreement_bonus),
+            "selected_disagreements": sum(
+                int(bool((row.get("human_path_probe") or {}).get("disagreement", False)))
+                for row in examples
+            ),
+        },
         "mean_prelabel_priority": (
             sum(float(row.get("prelabel_priority", 0.0)) for row in examples)
             / len(examples)
@@ -2003,6 +2112,8 @@ def main() -> int:
     parser.add_argument("--collection-workers", type=int, default=1)
     parser.add_argument("--parallel-teacher-timeout-seconds", type=int, default=2400)
     parser.add_argument("--parallel-parity-probes", type=int, default=0)
+    parser.add_argument("--human-path-prior", type=Path)
+    parser.add_argument("--human-path-disagreement-bonus", type=float, default=0.0)
     parser.add_argument("--max-game-steps", type=int, default=600)
     parser.add_argument("--max-battle-steps", type=int, default=1200)
     parser.add_argument("--temperature", type=float, default=2.0)
@@ -2025,6 +2136,13 @@ def main() -> int:
         raise RuntimeError("rounds and training-seeds must be positive")
     if args.combat_mcts_sims < 1:
         raise RuntimeError("combat-mcts-sims must be positive")
+    if args.human_path_disagreement_bonus < 0 or not math.isfinite(args.human_path_disagreement_bonus):
+        raise RuntimeError("human-path-disagreement-bonus must be finite and non-negative")
+    human_path_prior_payload: dict[str, Any] | None = None
+    if args.human_path_prior is not None:
+        human_path_prior_payload = json.loads(args.human_path_prior.read_text(encoding="utf-8"))
+        if human_path_prior_payload.get("schema_version") != "sts1-human-path-prior-v1":
+            raise RuntimeError("human path prior schema mismatch")
     if args.eval_workers < 1:
         raise RuntimeError("eval-workers must be positive")
     if (
@@ -2127,6 +2245,8 @@ def main() -> int:
             collection_workers=args.collection_workers,
             parallel_timeout_seconds=args.parallel_teacher_timeout_seconds,
             parallel_parity_probes=args.parallel_parity_probes,
+            human_path_prior=human_path_prior_payload,
+            human_path_disagreement_bonus=args.human_path_disagreement_bonus,
         )
         replay_report = _merge_replay(
             replay_path,

@@ -83,14 +83,17 @@ jobs:
           python - <<'PY'
           import json
           p=json.load(open("evidence/sts1/human-expert-v5-path/v5-path-benchmark.json", encoding="utf-8"))
-          assert p["schema_version"]=="sts1-human-expert-v5-path-benchmark-v1"
+          assert p["schema_version"]=="sts1-human-expert-v5-path-benchmark-v2"
           assert p["combat_policy"]=="mcts_2000"
           assert p["production_champion_replaced"] is False
           assert p["path_dataset"]["example_count"] >= 4000
           assert p["dev30"]["seeds"] == 30
+          if p["dev30"]["status"] == "PASS":
+              assert p["dev_confirm20"]["seeds"] == 20
           print("PASS_V5_BENCHMARK", json.dumps({
               "selected_path_strength":p["selected_path_strength"],
               "dev30":p["dev30"],
+              "dev_confirm20":p["dev_confirm20"],
               "hidden50":p["hidden50"],
               "fresh100":p["fresh100"],
               "confirm500":p["confirm500"],

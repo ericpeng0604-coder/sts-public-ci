@@ -290,7 +290,7 @@ def main() -> int:
                 components.append(a.distill_coef * torch.stack(distill_terms).mean())
 
             l2 = None
-            for name, param in actor.state_dict().items():
+            for name, param in actor.named_parameters():
                 term = ((param - parent_params[name]) ** 2).mean()
                 l2 = term if l2 is None else l2 + term
             if l2 is not None and a.param_anchor_coef > 0:

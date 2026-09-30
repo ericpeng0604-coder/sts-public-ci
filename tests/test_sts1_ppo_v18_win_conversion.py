@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).parents[1]
 ROLLOUT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_rollout_v14.py"
 
-SPEC = importlib.util.spec_from_file_location("sts1_ppo_v18_rollout_test", ROLLOUT)
+SPEC = importlib.util.spec_from_file_location("sts1_ppo_v19_rollout_test", ROLLOUT)
 assert SPEC and SPEC.loader
 mod = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = mod
@@ -32,20 +32,39 @@ def _record():
     }
 
 
+def _result(*, passed: bool, victory: bool = False, second=None):
+    return {
+        "victory": victory,
+        "passed_boss": passed,
+        "target_boss_floor": 50,
+        "final_floor": 51 if passed else 50,
+        "second_intervention": second,
+    }
+
+
 def test_near_boss_failure_targets_all_three_acts():
     assert mod._near_boss_failure(16)
     assert mod._near_boss_failure(32)
     assert mod._near_boss_failure(50)
     assert not mod._near_boss_failure(40)
+    assert mod._boss_target_floor(32) == 33
 
 
-def test_win_conversion_requires_confirmed_loss_to_confirmed_win(monkeypatch: pytest.MonkeyPatch):
+def test_one_step_boss_pass_is_valid_conversion(monkeypatch: pytest.MonkeyPatch):
     calls = []
 
-    def fake_force(record, *, choice_index, sts, policy, mcts_sims):
-        calls.append((choice_index, mcts_sims))
-        # Original choice 0 loses at both budgets. Alternative 1 wins at both.
-        return {"victory": choice_index == 1, "final_floor": 51 if choice_index == 1 else 50}
+    def fake_force(
+        record,
+        *,
+        choice_index,
+        sts,
+        policy,
+        mcts_sims,
+        target_floor,
+        second_alternative_rank=None,
+    ):
+        calls.append((choice_index, mcts_sims, second_alternative_rank))
+        return _result(passed=choice_index == 1)
 
     monkeypatch.setattr(mod, "_force_choice_and_finish", fake_force)
     policy = type("P", (), {"conversion_states": [_record()]})()
@@ -54,29 +73,52 @@ def test_win_conversion_requires_confirmed_loss_to_confirmed_win(monkeypatch: py
         policy=policy,
         sts=object(),
         final_floor=50,
-        max_states=2,
-        max_alternatives=3,
+        seed=123,
+        max_states=6,
+        max_alternatives=2,
+        max_second_alternatives=2,
     )
 
     assert len(rows) == 1
     row = rows[0]
+    assert row["type"] == "critical_boss_pass_conversion"
     assert row["source"] == mod.CONVERSION_SCHEMA
-    assert row["current_armg_index"] == 0
+    assert row["seed"] == 123
     assert row["teacher_best_index"] == 1
-    assert row["target_probs"] == [0.0, 1.0, 0.0]
-    assert row["confidence_weight"] == 1.0
-    assert row["teacher_consensus_fraction"] == 1.0
-    assert row["combat_policy"] == "mcts_2000"
-    assert row["confirmation_policy"] == "mcts_10000"
-    assert (0, 2000) in calls and (0, 10000) in calls
-    assert (1, 2000) in calls and (1, 10000) in calls
+    assert row["priority"] == 4.0
+    assert (0, 2000, None) in calls
+    assert (0, 10000, None) in calls
+    assert (1, 2000, None) in calls
+    assert (1, 10000, None) in calls
 
 
-def test_no_conversion_when_original_choice_survives_confirm_budget(monkeypatch: pytest.MonkeyPatch):
-    def fake_force(record, *, choice_index, sts, policy, mcts_sims):
-        if choice_index == 0 and mcts_sims == 10000:
-            return {"victory": True, "final_floor": 51}
-        return {"victory": False, "final_floor": 50}
+def test_two_step_conversion_emits_both_teaching_decisions(monkeypatch: pytest.MonkeyPatch):
+    second = {
+        "kind": "shop",
+        "floor": 49,
+        "act": 3,
+        "obs": [2.0, 3.0],
+        "descs": [[0.0], [1.0]],
+        "current_armg_index": 0,
+        "teacher_best_index": 1,
+        "target_probs": [0.0, 1.0],
+    }
+
+    def fake_force(
+        record,
+        *,
+        choice_index,
+        sts,
+        policy,
+        mcts_sims,
+        target_floor,
+        second_alternative_rank=None,
+    ):
+        if choice_index == 0:
+            return _result(passed=False)
+        if second_alternative_rank == 0:
+            return _result(passed=True, second=second)
+        return _result(passed=False)
 
     monkeypatch.setattr(mod, "_force_choice_and_finish", fake_force)
     policy = type("P", (), {"conversion_states": [_record()]})()
@@ -85,8 +127,39 @@ def test_no_conversion_when_original_choice_survives_confirm_budget(monkeypatch:
         policy=policy,
         sts=object(),
         final_floor=50,
+        seed=456,
+        max_states=6,
+        max_alternatives=1,
+        max_second_alternatives=1,
     )
-    assert rows == []
+
+    assert len(rows) == 2
+    assert rows[0]["type"] == "critical_two_step_boss_conversion"
+    assert rows[0]["teacher_best_index"] == 1
+    assert rows[1]["type"] == "critical_two_step_boss_conversion_followup"
+    assert rows[1]["kind"] == "shop"
+    assert rows[1]["teacher_best_index"] == 1
+    assert all(row["seed"] == 456 for row in rows)
+
+
+def test_no_conversion_when_original_choice_already_passes_boss(monkeypatch: pytest.MonkeyPatch):
+    def fake_force(
+        record,
+        *,
+        choice_index,
+        sts,
+        policy,
+        mcts_sims,
+        target_floor,
+        second_alternative_rank=None,
+    ):
+        if choice_index == 0 and mcts_sims == 10000:
+            return _result(passed=True)
+        return _result(passed=False)
+
+    monkeypatch.setattr(mod, "_force_choice_and_finish", fake_force)
+    policy = type("P", (), {"conversion_states": [_record()]})()
+    assert mod._mine_win_conversions(policy=policy, sts=object(), final_floor=50) == []
 
 
 def test_no_conversion_mining_for_non_boss_loss(monkeypatch: pytest.MonkeyPatch):

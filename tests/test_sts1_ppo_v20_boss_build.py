@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import signal
 import sys
 from pathlib import Path
 
@@ -200,3 +202,40 @@ def test_second_step_must_pass_both_boss_budgets(monkeypatch: pytest.MonkeyPatch
     )
     assert row["status"]=="NO_EARLY_BUILD_RESCUE"
     assert row["rescue"] is None
+
+
+def test_isolated_branch_survives_sigsegv(monkeypatch: pytest.MonkeyPatch):
+    def crash(*args, **kwargs):
+        os.kill(os.getpid(), signal.SIGSEGV)
+
+    monkeypatch.setattr(build_mod.rollout, "_force_choice_and_finish", crash)
+    result, failures = build_mod._isolated_force_choice_and_finish(
+        {},
+        sts=object(),
+        policy=object(),
+        timeout_seconds=10,
+        retries=0,
+        isolate=True,
+    )
+    assert result is None
+    assert failures
+    assert failures[-1]["kind"] == "native_signal"
+    assert failures[-1]["signal"] == int(signal.SIGSEGV)
+
+
+def test_isolated_branch_returns_success(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        build_mod.rollout,
+        "_force_choice_and_finish",
+        lambda *args, **kwargs: {"passed_boss": True, "victory": False},
+    )
+    result, failures = build_mod._isolated_force_choice_and_finish(
+        {},
+        sts=object(),
+        policy=object(),
+        timeout_seconds=10,
+        retries=0,
+        isolate=True,
+    )
+    assert result == {"passed_boss": True, "victory": False}
+    assert failures == []

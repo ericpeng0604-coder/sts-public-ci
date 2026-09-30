@@ -1,0 +1,59 @@
+{
+  "boss_floors": [16, 33, 50],
+  "games_per_mode": 50,
+  "modes": {
+    "base_2k": {
+      "mean_final_floor": 40.38,
+      "median_final_floor": 41.5,
+      "win_rate": 0.12,
+      "wins": 6
+    },
+    "boss_10k": {
+      "mean_final_floor": 41.1,
+      "median_final_floor": 45.5,
+      "win_rate": 0.16,
+      "wins": 8
+    },
+    "boss_50k": {
+      "mean_final_floor": 40.4,
+      "median_final_floor": 43.0,
+      "win_rate": 0.16,
+      "wins": 8
+    }
+  },
+  "not_rescued_by_boss_50k": {
+    "count": 40,
+    "fraction_of_baseline_losses": 0.9090909090909091,
+    "seeds": [
+      36478011, 190567680, 388733061, 711099439, 909136291,
+      220682708, 407994558, 919159433, 434145318, 753056956,
+      936753763, 292341318, 434519731, 808101866, 937579329,
+      82434163, 321103947, 469494371, 815119230, 946665409,
+      85904294, 341684210, 523373928, 845474044, 950386020,
+      118957286, 572162032, 848824510, 951573210, 139632048,
+      620908546, 857886683, 367225452, 668174005, 879595393,
+      981274517, 174304798, 382121796, 889064010, 993164492
+    ]
+  },
+  "paired_rescues": {
+    "boss_10k": {
+      "net_win_delta": 2,
+      "regressed_seeds": [74056706],
+      "regressed_wins": 1,
+      "rescue_fraction_of_baseline_losses": 0.06818181818181818,
+      "rescued_losses": 3,
+      "rescued_seeds": [919159433, 845474044, 357136893]
+    },
+    "boss_50k": {
+      "net_win_delta": 2,
+      "regressed_seeds": [74327186, 680768576],
+      "regressed_wins": 2,
+      "rescue_fraction_of_baseline_losses": 0.09090909090909091,
+      "rescued_losses": 4,
+      "rescued_seeds": [37788393, 748271783, 357136893, 952299191]
+    }
+  },
+  "schema_version": "sts1-ppo-v20-boss-search-diagnostic-v1",
+  "source_run_id": 36677610709,
+  "weight_sha256": "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0"
+}

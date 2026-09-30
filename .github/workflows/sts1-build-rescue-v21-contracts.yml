@@ -1,0 +1,102 @@
+name: STS1 Build Rescue v2.1 Contracts
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v21-teacher-loop-20260930
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  G7_STATE_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  V20_AGG_ARTIFACT_ID: '11081959641'
+
+concurrency:
+  group: sts1-build-rescue-v21-contracts
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+      - name: Install test runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+      - name: Compile v2.1 path
+        run: |
+          python -m py_compile \
+            scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py \
+            scripts/sts1/sts1_build_rescue_bc_v21.py \
+            scripts/sts1/sts1_build_rescue_gate_v21.py
+      - name: Unit contracts
+        run: |
+          pytest -q \
+            tests/test_sts1_build_rescue_v21.py \
+            tests/test_sts1_ppo_v20_boss_build.py \
+            tests/test_sts1_ppo_v18_win_conversion.py
+      - name: Download frozen G7 and verified v2.0 teachers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/v20.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$V20_AGG_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/v20"
+          unzip -q "$RUNNER_TEMP/v20.zip" -d "$RUNNER_TEMP/v20"
+          test -s "$RUNNER_TEMP/v20/candidate-teacher.jsonl"
+      - name: Hydrate ArmG
+        run: |
+          set -euo pipefail
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          root=.cache/sts1-v21-contract
+          mkdir -p "$root"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: Real Build-only BC smoke on 5 verified teachers
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python scripts/sts1/sts1_build_rescue_bc_v21.py \
+            --armg-root .cache/sts1-v21-contract \
+            --base-weight "$parent" \
+            --elite-replay "$elite" \
+            --rescue-replay "$RUNNER_TEMP/v20/candidate-teacher.jsonl" \
+            --output "$RUNNER_TEMP/v21-smoke.pt" \
+            --report "$RUNNER_TEMP/v21-smoke.json" \
+            --epochs 1 \
+            --elite-max-decisions 128 \
+            --rescue-repeats 4 \
+            --threads 2
+          test -s "$RUNNER_TEMP/v21-smoke.pt"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path(os.environ["RUNNER_TEMP"])/"v21-smoke.json"
+          r=json.loads(p.read_text())
+          assert r["verified_rescue_examples"]==5
+          assert r["after"]["rescue"]["loss"] < r["before"]["rescue"]["loss"]
+          assert r["after"]["elite"]["parent_kl"] <= 0.08
+          print("PASS_BUILD_RESCUE_V21_REAL_BC_SMOKE")
+          PY

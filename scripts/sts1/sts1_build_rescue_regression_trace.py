@@ -15,8 +15,11 @@ import math
 from pathlib import Path
 from typing import Any
 
-from roguelike_ai.sts1_phase3.simulator import _load_sts, run_simulator_game
-from sts1_ppo_v20_build_trajectory_diagnostic import ReplayFromSeedArmG
+from roguelike_ai.sts1_phase3.simulator import (
+    ArmGNoncombatPolicy,
+    _load_sts,
+    run_simulator_game,
+)
 
 
 SCHEMA = "sts1-build-preservation-v1"
@@ -41,6 +44,36 @@ def _safe(row: dict[str, Any]) -> bool:
     )
 
 
+class TracingArmG(ArmGNoncombatPolicy):
+    """Production ArmG policy with read-only strategic decision tracing."""
+
+    def __init__(self, *, root: Path, weight_path: Path) -> None:
+        super().__init__(root=root, weight_path=weight_path)
+        self.records: list[dict[str, Any]] = []
+        self.branch_index = 0
+
+    def decide(self, gc: Any, sts: Any):
+        kind, selected, descs, execs, scores = super().decide(gc, sts)
+        if selected >= 0 and len(descs) >= 2:
+            snapshot = self.training_vector_snapshot(gc, descs)
+            semantics = [self.describe_choice(kind, d) for d in descs]
+            self.records.append({
+                "branch_index": int(self.branch_index),
+                "kind": str(kind),
+                "selected_index": int(selected),
+                "scores": [float(v) for v in scores],
+                "floor": int(getattr(gc, "floor_num", 0) or 0),
+                "act": int(getattr(gc, "act", 0) or 0),
+                "hp": int(getattr(gc, "cur_hp", 0) or 0),
+                "max_hp": int(getattr(gc, "max_hp", 1) or 1),
+                "obs": list(snapshot["obs_412"]),
+                "descs": [list(row) for row in snapshot["candidate_desc_368"]],
+                "semantics": semantics,
+            })
+            self.branch_index += 1
+        return kind, selected, descs, execs, scores
+
+
 def _run(
     *,
     seed: int,
@@ -50,11 +83,9 @@ def _run(
     heldout: list[int],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     sts = _load_sts(module_dir)
-    policy = ReplayFromSeedArmG(
+    policy = TracingArmG(
         root=armg_root,
         weight_path=weight,
-        seed=seed,
-        forced=None,
     )
     result = run_simulator_game(
         student=None,
@@ -125,6 +156,9 @@ def _first_divergence(parent: list[dict[str, Any]], cand: list[dict[str, Any]]) 
                 "parent_prob_gap": gap,
                 "parent_hp": int(p.get("hp", 0) or 0),
                 "candidate_hp": int(c.get("hp", 0) or 0),
+                "parent_choice": p.get("semantics", [None] * len(p["descs"]))[int(p["selected_index"])],
+                "candidate_choice": c.get("semantics", [None] * len(c["descs"]))[int(c["selected_index"])],
+                "candidate_semantics": p.get("semantics", []),
                 "obs": p["obs"],
                 "descs": p["descs"],
             }

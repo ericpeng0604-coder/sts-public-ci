@@ -161,3 +161,10 @@ def test_rescue_focus_weight_boosts_only_current_teacher_rows(tmp_path) -> None:
         focus_ids=focus_ids,
         focus_weight=6.0,
     ) == 1.0
+
+
+def test_strategy_v6_dev_confirmation_gate_is_twenty_seed_non_regression() -> None:
+    gate = m.DEV_CONFIRM_20_GATE
+    assert gate.expected_seed_count == 20
+    assert gate.min_win_delta == 0
+    assert gate.min_floor_delta == 0.0

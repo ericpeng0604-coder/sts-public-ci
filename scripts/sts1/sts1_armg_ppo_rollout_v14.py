@@ -66,7 +66,7 @@ class SamplingArmG(ArmGNoncombatPolicy):
             }
         )
         # Conversion mining only needs the most recent strategic decisions.
-        self.conversion_states = self.conversion_states[-6:]
+        self.conversion_states = self.conversion_states[-8:]
 
     def decide(self, gc: Any, sts: Any):
         kind, descs, execs = self.choices(gc)
@@ -84,26 +84,51 @@ class SamplingArmG(ArmGNoncombatPolicy):
 
 
 BOSS_FLOORS = (16, 33, 50)
-CONVERSION_SCHEMA = "sts1-ppo-v18-win-conversion-v1"
+CONVERSION_SCHEMA = "sts1-ppo-v19-multistep-win-conversion-v1"
 
 
 def _near_boss_failure(final_floor: int, *, tolerance: int = 1) -> bool:
     return any(abs(int(final_floor) - boss) <= tolerance for boss in BOSS_FLOORS)
 
 
-def _deterministic_armg_step(policy: SamplingArmG, gc: Any, sts: Any) -> None:
+def _boss_target_floor(final_floor: int) -> int:
+    candidates = sorted(BOSS_FLOORS, key=lambda boss: abs(int(final_floor) - boss))
+    target = int(candidates[0])
+    if abs(int(final_floor) - target) > 1:
+        raise RuntimeError(f"floor {final_floor} is not a near-Boss failure")
+    return target
+
+
+def _passed_target_boss(gc: Any, sts: Any, target_floor: int) -> bool:
+    if gc.outcome == sts.GameOutcome.PLAYER_VICTORY:
+        return True
+    return int(getattr(gc, "floor_num", 0) or 0) > int(target_floor)
+
+
+def _choice_snapshot(policy: SamplingArmG, gc: Any, kind: str, descs: list[Any]) -> dict[str, Any]:
+    snap = policy.training_vector_snapshot(gc, descs)
+    _, _, scores = policy.score_choices(gc)
+    return {
+        "kind": str(kind),
+        "floor": int(getattr(gc, "floor_num", 0) or 0),
+        "act": int(getattr(gc, "act", 0) or 0),
+        "obs": list(snap["obs_412"]),
+        "descs": [list(row) for row in snap["candidate_desc_368"]],
+        "scores": [float(v) for v in scores.tolist()],
+    }
+
+
+def _deterministic_armg_choice(policy: SamplingArmG, gc: Any, sts: Any) -> tuple[str, int, list[Any], list[Any], list[float]]:
     kind, descs, execs = policy.choices(gc)
     if not descs:
         if gc.screen_state == sts.ScreenState.REWARDS:
-            gc.skip_reward_cards()
-            return
+            return "reward_empty", -1, [], [], []
         raise RuntimeError(f"conversion replay exposed no ArmG choice: {gc.screen_state}")
     if len(descs) == 1:
-        index = 0
-    else:
-        _, _, scores = policy.score_choices(gc)
-        index = int(policy.torch.argmax(scores).item())
-    execs[index](gc)
+        return str(kind), 0, descs, execs, [0.0]
+    _, _, scores = policy.score_choices(gc)
+    raw = [float(v) for v in scores.tolist()]
+    return str(kind), int(policy.torch.argmax(scores).item()), descs, execs, raw
 
 
 def _finish_conversion_branch(
@@ -112,17 +137,25 @@ def _finish_conversion_branch(
     sts: Any,
     policy: SamplingArmG,
     mcts_sims: int,
+    target_floor: int,
+    second_alternative_rank: int | None = None,
     max_game_steps: int = 600,
     max_battle_steps: int = 800,
 ) -> dict[str, Any]:
+    """Finish from a cloned state; optionally alter the next multi-choice decision."""
     agent = sts.Agent()
     _set_pauses(agent)
     game_steps = 0
+    second_intervention = None
+
     while gc.outcome == sts.GameOutcome.UNDECIDED and game_steps < max_game_steps:
+        if _passed_target_boss(gc, sts, target_floor):
+            break
         game_steps += 1
         agent.playout(gc)
-        if gc.outcome != sts.GameOutcome.UNDECIDED:
+        if gc.outcome != sts.GameOutcome.UNDECIDED or _passed_target_boss(gc, sts, target_floor):
             break
+
         if gc.screen_state == sts.ScreenState.BATTLE:
             battle = sts.BattleContext()
             battle.init(gc)
@@ -139,14 +172,45 @@ def _finish_conversion_branch(
             if battle.outcome == sts.Outcome.UNDECIDED:
                 raise RuntimeError("conversion battle step bound reached")
             battle.exit_battle(gc)
-        else:
-            _deterministic_armg_step(policy, gc, sts)
+            continue
 
-    if gc.outcome == sts.GameOutcome.UNDECIDED:
+        kind, current, descs, execs, scores = _deterministic_armg_choice(policy, gc, sts)
+        if current < 0:
+            gc.skip_reward_cards()
+            continue
+
+        if second_alternative_rank is not None and second_intervention is None and len(descs) > 1:
+            alternatives = [i for i in range(len(descs)) if i != current]
+            alternatives.sort(
+                key=lambda i: float(scores[i]) if i < len(scores) else -1e30,
+                reverse=True,
+            )
+            if alternatives:
+                rank = min(int(second_alternative_rank), len(alternatives) - 1)
+                forced = int(alternatives[rank])
+                snap = _choice_snapshot(policy, gc, kind, descs)
+                target = [0.0] * len(descs)
+                target[forced] = 1.0
+                second_intervention = {
+                    **snap,
+                    "current_armg_index": int(current),
+                    "teacher_best_index": forced,
+                    "target_probs": target,
+                }
+                execs[forced](gc)
+                continue
+
+        execs[current](gc)
+
+    passed = _passed_target_boss(gc, sts, target_floor)
+    if not passed and gc.outcome == sts.GameOutcome.UNDECIDED and game_steps >= max_game_steps:
         raise RuntimeError("conversion game step bound reached")
     return {
         "victory": bool(gc.outcome == sts.GameOutcome.PLAYER_VICTORY),
+        "passed_boss": bool(passed),
+        "target_boss_floor": int(target_floor),
         "final_floor": int(getattr(gc, "floor_num", 0) or 0),
+        "second_intervention": second_intervention,
     }
 
 
@@ -157,6 +221,8 @@ def _force_choice_and_finish(
     sts: Any,
     policy: SamplingArmG,
     mcts_sims: int,
+    target_floor: int,
+    second_alternative_rank: int | None = None,
 ) -> dict[str, Any]:
     branch = record["gc"].clone()
     kind, descs, execs = policy.choices(branch)
@@ -171,7 +237,83 @@ def _force_choice_and_finish(
         sts=sts,
         policy=policy,
         mcts_sims=mcts_sims,
+        target_floor=target_floor,
+        second_alternative_rank=second_alternative_rank,
     )
+
+
+def _conversion_row(
+    *,
+    record: dict[str, Any],
+    selected: int,
+    alternative: int,
+    seed: int | None,
+    conversion_type: str,
+    priority: float,
+    baseline_2k: dict[str, Any],
+    baseline_10k: dict[str, Any],
+    alt_2k: dict[str, Any],
+    alt_10k: dict[str, Any],
+) -> dict[str, Any]:
+    target = [0.0] * len(record["descs"])
+    target[int(alternative)] = 1.0
+    return {
+        "schema_version": "sts1-armg-strategy-branch-dataset-v1",
+        "type": conversion_type,
+        "source": CONVERSION_SCHEMA,
+        "seed": seed,
+        "floor": int(record["floor"]),
+        "act": int(record["act"]),
+        "kind": str(record["kind"]),
+        "obs": record["obs"],
+        "descs": record["descs"],
+        "current_armg_index": int(selected),
+        "teacher_best_index": int(alternative),
+        "target_probs": target,
+        "priority": float(priority),
+        "teacher_margin": 12.0,
+        "confidence_weight": 1.0,
+        "teacher_consensus_fraction": 1.0,
+        "combat_policy": "mcts_2000",
+        "confirmation_policy": "mcts_10000",
+        "baseline_confirmed_loss": {
+            "mcts_2000": baseline_2k,
+            "mcts_10000": baseline_10k,
+        },
+        "alternative_confirmed_progress": {
+            "mcts_2000": alt_2k,
+            "mcts_10000": alt_10k,
+        },
+    }
+
+
+def _second_conversion_row(
+    *,
+    intervention: dict[str, Any],
+    seed: int | None,
+    target_floor: int,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "sts1-armg-strategy-branch-dataset-v1",
+        "type": "critical_two_step_boss_conversion_followup",
+        "source": CONVERSION_SCHEMA,
+        "seed": seed,
+        "floor": int(intervention["floor"]),
+        "act": int(intervention["act"]),
+        "kind": str(intervention["kind"]),
+        "obs": intervention["obs"],
+        "descs": intervention["descs"],
+        "current_armg_index": int(intervention["current_armg_index"]),
+        "teacher_best_index": int(intervention["teacher_best_index"]),
+        "target_probs": intervention["target_probs"],
+        "priority": 4.5,
+        "teacher_margin": 10.0,
+        "confidence_weight": 1.0,
+        "teacher_consensus_fraction": 1.0,
+        "combat_policy": "mcts_2000",
+        "confirmation_policy": "mcts_10000",
+        "target_boss_floor": int(target_floor),
+    }
 
 
 def _mine_win_conversions(
@@ -179,32 +321,45 @@ def _mine_win_conversions(
     policy: SamplingArmG,
     sts: Any,
     final_floor: int,
-    max_states: int = 2,
-    max_alternatives: int = 3,
+    seed: int | None = None,
+    max_states: int = 6,
+    max_alternatives: int = 2,
+    max_second_alternatives: int = 2,
 ) -> list[dict[str, Any]]:
-    """Find high-confidence one-decision changes that flip a near-Boss loss to wins."""
+    """Mine one- and two-step changes that reliably convert a Boss loss into progress."""
     if not _near_boss_failure(final_floor):
         return []
 
-    mined: list[dict[str, Any]] = []
+    target_floor = _boss_target_floor(final_floor)
     checked_states = 0
+
     for record in reversed(policy.conversion_states):
         if checked_states >= max_states:
             break
         if len(record["descs"]) < 2:
             continue
         checked_states += 1
-
         selected = int(record["selected_index"])
+
         baseline_2k = _force_choice_and_finish(
-            record, choice_index=selected, sts=sts, policy=policy, mcts_sims=2000
+            record,
+            choice_index=selected,
+            sts=sts,
+            policy=policy,
+            mcts_sims=2000,
+            target_floor=target_floor,
         )
-        if baseline_2k["victory"]:
+        if baseline_2k["passed_boss"]:
             continue
         baseline_10k = _force_choice_and_finish(
-            record, choice_index=selected, sts=sts, policy=policy, mcts_sims=10000
+            record,
+            choice_index=selected,
+            sts=sts,
+            policy=policy,
+            mcts_sims=10000,
+            target_floor=target_floor,
         )
-        if baseline_10k["victory"]:
+        if baseline_10k["passed_boss"]:
             continue
 
         alternatives = [i for i in range(len(record["descs"])) if i != selected]
@@ -212,54 +367,96 @@ def _mine_win_conversions(
             key=lambda i: float(record["scores"][i]) if i < len(record["scores"]) else -1e30,
             reverse=True,
         )
+
         for alternative in alternatives[:max_alternatives]:
             alt_2k = _force_choice_and_finish(
-                record, choice_index=alternative, sts=sts, policy=policy, mcts_sims=2000
+                record,
+                choice_index=alternative,
+                sts=sts,
+                policy=policy,
+                mcts_sims=2000,
+                target_floor=target_floor,
             )
-            if not alt_2k["victory"]:
-                continue
             alt_10k = _force_choice_and_finish(
-                record, choice_index=alternative, sts=sts, policy=policy, mcts_sims=10000
+                record,
+                choice_index=alternative,
+                sts=sts,
+                policy=policy,
+                mcts_sims=10000,
+                target_floor=target_floor,
             )
-            if not alt_10k["victory"]:
-                continue
+            if alt_2k["passed_boss"] and alt_10k["passed_boss"]:
+                priority = 5.0 if alt_2k["victory"] and alt_10k["victory"] else 4.0
+                ctype = (
+                    "critical_full_win_conversion"
+                    if priority == 5.0
+                    else "critical_boss_pass_conversion"
+                )
+                return [
+                    _conversion_row(
+                        record=record,
+                        selected=selected,
+                        alternative=alternative,
+                        seed=seed,
+                        conversion_type=ctype,
+                        priority=priority,
+                        baseline_2k=baseline_2k,
+                        baseline_10k=baseline_10k,
+                        alt_2k=alt_2k,
+                        alt_10k=alt_10k,
+                    )
+                ]
 
-            target = [0.0] * len(record["descs"])
-            target[alternative] = 1.0
-            mined.append(
-                {
-                    "schema_version": "sts1-armg-strategy-branch-dataset-v1",
-                    "type": "critical_win_conversion",
-                    "source": CONVERSION_SCHEMA,
-                    "seed": None,
-                    "floor": int(record["floor"]),
-                    "act": int(record["act"]),
-                    "kind": str(record["kind"]),
-                    "obs": record["obs"],
-                    "descs": record["descs"],
-                    "current_armg_index": selected,
-                    "teacher_best_index": int(alternative),
-                    "target_probs": target,
-                    "priority": 5.0,
-                    "teacher_margin": 12.0,
-                    "confidence_weight": 1.0,
-                    "teacher_consensus_fraction": 1.0,
-                    "combat_policy": "mcts_2000",
-                    "confirmation_policy": "mcts_10000",
-                    "baseline_confirmed_loss": {
-                        "mcts_2000": baseline_2k,
-                        "mcts_10000": baseline_10k,
-                    },
-                    "alternative_confirmed_win": {
-                        "mcts_2000": alt_2k,
-                        "mcts_10000": alt_10k,
-                    },
-                }
-            )
-            # One verified flip per original game is enough; avoid runaway MCTS cost.
-            return mined
-    return mined
+            # If one change is insufficient, alter the next strategic choice too.
+            for second_rank in range(max_second_alternatives):
+                two_2k = _force_choice_and_finish(
+                    record,
+                    choice_index=alternative,
+                    sts=sts,
+                    policy=policy,
+                    mcts_sims=2000,
+                    target_floor=target_floor,
+                    second_alternative_rank=second_rank,
+                )
+                if not two_2k["passed_boss"]:
+                    continue
+                two_10k = _force_choice_and_finish(
+                    record,
+                    choice_index=alternative,
+                    sts=sts,
+                    policy=policy,
+                    mcts_sims=10000,
+                    target_floor=target_floor,
+                    second_alternative_rank=second_rank,
+                )
+                if not two_10k["passed_boss"]:
+                    continue
 
+                first = _conversion_row(
+                    record=record,
+                    selected=selected,
+                    alternative=alternative,
+                    seed=seed,
+                    conversion_type="critical_two_step_boss_conversion",
+                    priority=4.5,
+                    baseline_2k=baseline_2k,
+                    baseline_10k=baseline_10k,
+                    alt_2k=two_2k,
+                    alt_10k=two_10k,
+                )
+                second = two_10k.get("second_intervention") or two_2k.get("second_intervention")
+                rows = [first]
+                if second is not None:
+                    rows.append(
+                        _second_conversion_row(
+                            intervention=second,
+                            seed=seed,
+                            target_floor=target_floor,
+                        )
+                    )
+                return rows
+
+    return []
 
 def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> dict[str, Any]:
     (
@@ -411,6 +608,10 @@ def _collect_one(task: tuple[str, str, str, int, float, str, int, int, str]) -> 
             policy=policy,
             sts=sts,
             final_floor=final_floor,
+            seed=int(seed),
+            max_states=6,
+            max_alternatives=2,
+            max_second_alternatives=2,
         )
         for row in win_conversions:
             row["seed"] = int(seed)

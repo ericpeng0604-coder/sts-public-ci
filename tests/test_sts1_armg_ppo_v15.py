@@ -486,3 +486,46 @@ def test_v16_rescue_replay_mixes_wins_deep_losses_and_recent_data():
     assert {1, 2, 3}.issubset(seeds)
     assert any(int(game["final_floor"]) >= 48 and not game["victory"] for game in selected)
     assert any(int(game["source_round"]) >= 100 and not game["victory"] for game in selected)
+
+
+GATE_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v14_gate.py"
+GATE_SPEC = importlib.util.spec_from_file_location(
+    "sts1_armg_ppo_v14_gate_v16_test",
+    GATE_SCRIPT,
+)
+assert GATE_SPEC and GATE_SPEC.loader
+gate_mod = importlib.util.module_from_spec(GATE_SPEC)
+sys.modules[GATE_SPEC.name] = gate_mod
+GATE_SPEC.loader.exec_module(gate_mod)
+
+
+def _gate_run(seed: int, *, win: bool, floor: int):
+    return {
+        "seed": seed,
+        "result": "PASS_SIMULATOR_COMPLETE_RUN",
+        "outcome": "victory" if win else "defeat",
+        "final_floor": floor,
+        "illegal_action_count": 0,
+        "crash_count": 0,
+        "timeout_count": 0,
+        "remote_error_count": 0,
+    }
+
+
+def test_v16_dev_gate_does_not_promote_floor_only_improvement():
+    parent = [_gate_run(seed, win=seed <= 4, floor=30) for seed in range(1, 31)]
+    candidate = [_gate_run(seed, win=seed <= 4, floor=45) for seed in range(1, 31)]
+    result = gate_mod._dev_gate(parent, candidate)
+    assert result["win_delta"] == 0
+    assert result["mean_paired_floor_delta"] > 0
+    assert result["status"] == "HOLD"
+    assert "no_dev_win_improvement" in result["reasons"]
+
+
+def test_v16_dev_gate_promotes_real_win_improvement():
+    parent = [_gate_run(seed, win=seed <= 4, floor=30) for seed in range(1, 31)]
+    candidate = [_gate_run(seed, win=seed <= 5, floor=30) for seed in range(1, 31)]
+    result = gate_mod._dev_gate(parent, candidate)
+    assert result["win_delta"] == 1
+    assert result["status"] == "PASS"
+    assert result["decision"] == "ADOPT_PARENT"

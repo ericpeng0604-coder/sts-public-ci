@@ -1,0 +1,139 @@
+name: STS1 PPO v1.8 Win Conversion Contracts
+
+on:
+  push:
+    branches:
+      - gpt/sts1-ppo-v18-critical-win-conversion-20260930
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install test runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+
+      - name: Compile v1.8 path
+        run: |
+          python -m py_compile \
+            src/roguelike_ai/sts1_phase3/simulator.py \
+            scripts/sts1/sts1_armg_ppo_rollout_v14.py \
+            scripts/sts1/sts1_armg_ppo_v14_replay.py \
+            scripts/sts1/sts1_armg_ppo_train_v14_sharded.py
+
+      - name: Unit contracts
+        run: |
+          pytest -q \
+            tests/test_sts1_ppo_v18_win_conversion.py \
+            tests/test_sts1_armg_ppo_v15.py \
+            tests/test_sts1_armg_ppo_v14_replay.py
+
+      - name: Verify v1.8 invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          control=Path("control/sts1-armg-ppo-v15-auto-loop.request").read_text()
+          workflow=Path(".github/workflows/sts1-armg-ppo-v15-population-curriculum.yml").read_text()
+          rollout=Path("scripts/sts1/sts1_armg_ppo_rollout_v14.py").read_text()
+          simulator=Path("src/roguelike_ai/sts1_phase3/simulator.py").read_text()
+
+          for item in [
+              "ppo_version=1.8",
+              "reward_mode=v17_winrate",
+              "win_conversion_enabled=1",
+              "win_conversion_primary_mcts=2000",
+              "win_conversion_confirm_mcts=10000",
+              "mcts_sims=2000",
+          ]:
+              assert item in control, item
+
+          assert "STS1 ArmG PPO v1.8 Critical Win Conversion" in workflow
+          assert "sts1-armg-ppo-v18-win-conversion-state" in workflow
+          assert "LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v17-winrate-state" in workflow
+          assert "win-conversion.jsonl" in workflow
+          assert "PPO_V18_WIN_CONVERSIONS_MERGED" in workflow
+          assert 'v="v17_winrate"' in workflow
+          assert "--extra-heldout-seed-file control/sts1-v16-benchmark-seeds-500.txt" in workflow
+          assert "_mine_win_conversions" in rollout
+          assert 'confirmation_policy": "mcts_10000"' in rollout
+          assert "capture_conversion_state" in simulator
+          print("PASS_PPO_V18_INVARIANTS")
+          PY
+
+  simulator-smoke:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install and hydrate
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg-v18-smoke
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: One-game real simulator smoke
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_armg_ppo_rollout_v14.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-armg-v18-smoke \
+            --weight external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt \
+            --out evidence/sts1/v18-smoke \
+            --formal-seed-file control/sts1-v15-dev-seeds-50.txt \
+            --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+            --extra-heldout-seed-file control/sts1-v16-benchmark-seeds-500.txt \
+            --seed-start 2026093018 \
+            --games 1 \
+            --temperature 1.0 \
+            --reward-mode v17_winrate \
+            --checkpoint-id v18-smoke \
+            --worker 0 \
+            --parallel-games 1 \
+            --max-training-seed-rejections 2
+          test -s evidence/sts1/v18-smoke/rollout.npz
+          test -f evidence/sts1/v18-smoke/win-conversion.jsonl
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("evidence/sts1/v18-smoke/win-conversion.jsonl")
+          for line in p.read_text(encoding="utf-8").splitlines():
+              if not line.strip():
+                  continue
+              row=json.loads(line)
+              assert row["source"]=="sts1-ppo-v18-win-conversion-v1"
+              assert row["combat_policy"]=="mcts_2000"
+              assert row["confirmation_policy"]=="mcts_10000"
+          print("PASS_PPO_V18_SIMULATOR_SMOKE")
+          PY

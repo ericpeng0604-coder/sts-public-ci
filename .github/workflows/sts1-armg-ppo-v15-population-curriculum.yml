@@ -1,10 +1,10 @@
-name: STS1 ArmG PPO v1.8 Critical Win Conversion
+name: STS1 ArmG PPO v1.9 Multistep Win Conversion
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - gpt/sts1-ppo-v18-critical-win-conversion-20260930
+      - gpt/sts1-ppo-v19-multistep-win-conversion-20260930
     paths:
       - control/sts1-v15-run.trigger
 
@@ -14,15 +14,15 @@ permissions:
   issues: write
 
 concurrency:
-  group: sts1-armg-ppo-v18-critical-win-conversion
+  group: sts1-armg-ppo-v19-multistep-win-conversion
   cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: '1'
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
-  STATE_ARTIFACT: sts1-armg-ppo-v18-win-conversion-state
-  LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v17-winrate-state
+  STATE_ARTIFACT: sts1-armg-ppo-v19-multistep-state
+  LEGACY_STATE_ARTIFACT: sts1-armg-ppo-v18-win-conversion-state
 
 jobs:
   rollout:
@@ -49,6 +49,11 @@ jobs:
           echo "PPO_RNG_SEED=$rng_seed" >> "$GITHUB_ENV"
           echo "PPO_TEMPERATURE=$temperature" >> "$GITHUB_ENV"
           echo "PPO_REWARD_MODE=$reward_mode" >> "$GITHUB_ENV"
+          echo "PPO_WIN_CONVERSION_ENABLED=${win_conversion_enabled:-1}" >> "$GITHUB_ENV"
+          echo "PPO_WIN_CONVERSION_MAX_STATES=${win_conversion_max_states:-6}" >> "$GITHUB_ENV"
+          echo "PPO_WIN_CONVERSION_MAX_ALTS=${win_conversion_max_alternatives:-2}" >> "$GITHUB_ENV"
+          echo "PPO_WIN_CONVERSION_MAX_SECOND=${win_conversion_max_second_alternatives:-2}" >> "$GITHUB_ENV"
+          echo "PPO_WIN_CONVERSION_SAMPLE_MODULUS=${win_conversion_sample_modulus:-4}" >> "$GITHUB_ENV"
 
       - name: Install and hydrate
         run: |
@@ -98,7 +103,7 @@ jobs:
           print("PPO_V14_STATE_INTEGRITY_PASS", sys.argv[2])
           PY
           echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
-          echo "CHECKPOINT_ID=armg-ppo-v18-$sha" >> "$GITHUB_ENV"
+          echo "CHECKPOINT_ID=armg-ppo-v19-$sha" >> "$GITHUB_ENV"
 
       - name: Collect fresh v1.5 rollout shard
         run: |
@@ -127,7 +132,12 @@ jobs:
             --checkpoint-id "$CHECKPOINT_ID" \
             --worker "$worker" \
             --parallel-games 2 \
-            --max-training-seed-rejections 8
+            --max-training-seed-rejections 8 \
+            --win-conversion-enabled "$PPO_WIN_CONVERSION_ENABLED" \
+            --win-conversion-max-states "$PPO_WIN_CONVERSION_MAX_STATES" \
+            --win-conversion-max-alternatives "$PPO_WIN_CONVERSION_MAX_ALTS" \
+            --win-conversion-max-second-alternatives "$PPO_WIN_CONVERSION_MAX_SECOND" \
+            --win-conversion-sample-modulus "$PPO_WIN_CONVERSION_SAMPLE_MODULUS"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -194,7 +204,7 @@ jobs:
           print("PPO_V15_STATE_INTEGRITY_PASS", sys.argv[2])
           PY
           echo "STATE_DIR=$state" >> "$GITHUB_ENV"
-          echo "CHECKPOINT_ID=armg-ppo-v18-$sha" >> "$GITHUB_ENV"
+          echo "CHECKPOINT_ID=armg-ppo-v19-$sha" >> "$GITHUB_ENV"
 
       - name: Migrate state to clean v1.8 victory-first reward
         run: |
@@ -313,7 +323,7 @@ jobs:
               rows.append(row)
           mistakes=[r for r in rows if int(r["current_armg_index"]) != int(r["teacher_best_index"])]
           kinds=Counter(str(r.get("kind","unknown")) for r in mistakes)
-          conversions=[r for r in rows if r.get("source")=="sts1-ppo-v18-win-conversion-v1"]
+          conversions=[r for r in rows if r.get("source")=="sts1-ppo-v19-multistep-win-conversion-v1"]
           meta={
               "schema_version":"sts1-ppo-v15-strategy-teacher-pin-v1",
               "artifact_id":int(sys.argv[2]),
@@ -662,7 +672,7 @@ jobs:
           sha="$(sha256sum "$state/offline-champion.pt" | awk '{print $1}')"
           echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
           echo "STATE_DIR=$state" >> "$GITHUB_ENV"
-          echo "CHECKPOINT_ID=armg-ppo-v18-$sha" >> "$GITHUB_ENV"
+          echo "CHECKPOINT_ID=armg-ppo-v19-$sha" >> "$GITHUB_ENV"
           for name in A B C D; do
             test -f "evidence/sts1/ppo-v15-population/$name/actor.pt"
             test -f "evidence/sts1/ppo-v15-population/$name/critic.pt"
@@ -717,7 +727,7 @@ jobs:
       - name: Upload durable v1.5 state
         uses: actions/upload-artifact@v4
         with:
-          name: sts1-armg-ppo-v18-win-conversion-state
+          name: sts1-armg-ppo-v19-multistep-state
           path: |
             ${{ runner.temp }}/ppo-v15-state/state.json
             ${{ runner.temp }}/ppo-v15-state/offline-champion.pt
@@ -771,7 +781,7 @@ jobs:
           should_continue=1
 
           if [ "$ROLLOUT_RESULT" = "success" ] && [ "$TRAIN_GATE_RESULT" = "success" ]; then
-            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-ppo-v18-win-conversion-state") | .id' | head -n1)"
+            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-ppo-v19-multistep-state") | .id' | head -n1)"
             test -n "$artifact_id"
             curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/state.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
             mkdir -p "$RUNNER_TEMP/state"
@@ -800,7 +810,7 @@ jobs:
               if k=="retry_count":
                   v="0"
               if k=="ppo_version":
-                  v="1.8"
+                  v="1.9"
               if k=="reward_mode":
                   v="v17_winrate"
               if k=="win_conversion_enabled":
@@ -817,8 +827,10 @@ jobs:
               "win_conversion_enabled":"1",
               "win_conversion_primary_mcts":"2000",
               "win_conversion_confirm_mcts":"10000",
-              "win_conversion_max_states":"2",
-              "win_conversion_max_alternatives":"3",
+              "win_conversion_max_states":"6",
+              "win_conversion_max_alternatives":"2",
+              "win_conversion_max_second_alternatives":"2",
+              "win_conversion_sample_modulus":"4",
               "candidate_threads":"4",
           }
           for k,v in defaults.items():
@@ -856,10 +868,10 @@ jobs:
             fi
             if [ "${rescue_stop_stagnation:-0}" -gt 0 ] && [ "$STAG" -ge "$rescue_stop_stagnation" ]; then
               should_continue=0
-              echo "PPO_V18_AUTO_PAUSE_STAGNATION current=$STAG limit=$rescue_stop_stagnation"
+              echo "PPO_V19_AUTO_PAUSE_STAGNATION current=$STAG limit=$rescue_stop_stagnation"
             fi
 
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.8 Critical Win Conversion — Round %s\n\n- Run：%s\n- Training Parent：**%s**\n- Parent generation：%s\n- Dev wins：Candidate %s / Parent %s\n- Final Gate：**%s**\n- Stagnation：%s\n- Fresh games：%s\n- PPO replay：%s games\n- Same-parent pool：%s games\n- Elite archive：%s games\n- Stale replay rejected：%s\n- 4-Candidate + Curriculum：**enabled**\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）\n- 下一輪：**%s**' \
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.9 Multistep Win Conversion — Round %s\n\n- Run：%s\n- Training Parent：**%s**\n- Parent generation：%s\n- Dev wins：Candidate %s / Parent %s\n- Final Gate：**%s**\n- Stagnation：%s\n- Fresh games：%s\n- PPO replay：%s games\n- Same-parent pool：%s games\n- Elite archive：%s games\n- Stale replay rejected：%s\n- 4-Candidate + Curriculum：**enabled**\n- 正式 Champion：**未修改**（仍需真實遊戲 Gate）\n- 下一輪：**%s**' \
               "$ROUND" "$run_url" "$DECISION" "$PGEN" "$DEV_WINS" "$PARENT_WINS" "$READY" "$STAG" "$R_FRESH" "$R_TRAIN" "$R_POOL" "$R_ELITE" "$R_STALE" \
               "$([ "$should_continue" -eq 1 ] && echo CONTINUE || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
@@ -881,7 +893,7 @@ jobs:
               elif k=="reason":
                   v="auto_retry_after_failure"
               elif k=="ppo_version":
-                  v="1.8"
+                  v="1.9"
               elif k=="reward_mode":
                   v="v17_winrate"
               elif k=="win_conversion_enabled":
@@ -898,8 +910,10 @@ jobs:
               "win_conversion_enabled":"1",
               "win_conversion_primary_mcts":"2000",
               "win_conversion_confirm_mcts":"10000",
-              "win_conversion_max_states":"2",
-              "win_conversion_max_alternatives":"3",
+              "win_conversion_max_states":"6",
+              "win_conversion_max_alternatives":"2",
+              "win_conversion_max_second_alternatives":"2",
+              "win_conversion_sample_modulus":"4",
               "candidate_threads":"4",
           }
           for k,v in defaults.items():
@@ -910,7 +924,7 @@ jobs:
             if [ "$next_retry" -gt "$max_retries" ]; then
               should_continue=0
             fi
-            printf -v body '@ericpeng0604-coder\n\n## PPO v1.8 Critical Win Conversion — technical failure\n\n- Run：%s\n- Rollout：**%s**\n- Train/Gate：**%s**\n- Retry：%s/%s\n- 參數：**原樣重試，不把技術錯誤算成 stagnation**\n- 下一輪：**%s**' \
+            printf -v body '@ericpeng0604-coder\n\n## PPO v1.9 Multistep Win Conversion — technical failure\n\n- Run：%s\n- Rollout：**%s**\n- Train/Gate：**%s**\n- Retry：%s/%s\n- 參數：**原樣重試，不把技術錯誤算成 stagnation**\n- 下一輪：**%s**' \
               "$run_url" "$ROLLOUT_RESULT" "$TRAIN_GATE_RESULT" "$next_retry" "$max_retries" \
               "$([ "$should_continue" -eq 1 ] && echo RETRY || echo PAUSE)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$report_issue/comments" -f body="$body"
@@ -922,7 +936,7 @@ jobs:
           sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$GITHUB_REF_NAME" --jq '.sha')"
           encoded="$(base64 -w0 "$RUNNER_TEMP/next.request")"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
-            -f message="control(sts1): continue PPO v1.8 critical win conversion" \
+            -f message="control(sts1): continue PPO v1.9 multistep win conversion" \
             -f content="$encoded" \
             -f sha="$sha" \
             -f branch="$GITHUB_REF_NAME" >/dev/null

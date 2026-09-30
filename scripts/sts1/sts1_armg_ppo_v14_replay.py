@@ -334,10 +334,22 @@ def _select_rescue_replay(
     recent_losses = sorted(non_boss_losses, key=_recent_key, reverse=True)
 
     # 40% proven wins, 35% Boss failures, 15% other deep losses, 10% recency.
-    # Missing buckets spill into the fallback below, keeping the replay full.
-    win_quota = (max_games * 4) // 10
-    boss_quota = (max_games * 35) // 100
-    deep_quota = (max_games * 15) // 100
+    # Use rounded quotas and guarantee at least one high-value example in small
+    # replay batches so integer truncation can never drop the only win.
+    win_quota = round(max_games * 0.40)
+    boss_quota = round(max_games * 0.35)
+    deep_quota = round(max_games * 0.15)
+    if winners and max_games >= 1:
+        win_quota = max(1, win_quota)
+    if boss_failures and max_games >= 2:
+        boss_quota = max(1, boss_quota)
+    while win_quota + boss_quota + deep_quota > max_games:
+        if deep_quota > 0:
+            deep_quota -= 1
+        elif boss_quota > (1 if boss_failures and max_games >= 2 else 0):
+            boss_quota -= 1
+        else:
+            win_quota -= 1
     recent_quota = max_games - win_quota - boss_quota - deep_quota
 
     selected: list[dict[str, Any]] = []

@@ -65,6 +65,17 @@ CANDIDATE_RECIPES = (
     {"name": "confident", "min_teacher_confidence": 0.50, "step_scale": 0.50},
     {"name": "strict", "min_teacher_confidence": 0.75, "step_scale": 1.00},
 )
+RESCUE_CANDIDATE_RECIPES = (
+    {"name": "rescue_micro", "min_teacher_confidence": 0.0, "step_scale": 0.10},
+    {"name": "rescue_confident", "min_teacher_confidence": 0.50, "step_scale": 0.20},
+    {"name": "rescue_strict", "min_teacher_confidence": 0.75, "step_scale": 0.35},
+)
+
+
+def _candidate_recipes_for_stagnation(stagnation_count: int) -> tuple[dict[str, Any], ...]:
+    if stagnation_count < 0:
+        raise RuntimeError("stagnation count cannot be negative")
+    return RESCUE_CANDIDATE_RECIPES if stagnation_count >= 12 else CANDIDATE_RECIPES
 AMBIGUITY_PARENT_DISTILL_COEF = 1.0
 PARALLEL_CPU_VERSION = 1
 
@@ -2135,7 +2146,10 @@ def main() -> int:
 
         candidate_records: list[dict[str, Any]] = []
         training_variants: list[dict[str, Any]] = []
-        for candidate_index, recipe in enumerate(CANDIDATE_RECIPES):
+        candidate_recipes = _candidate_recipes_for_stagnation(
+            int(state.get("stagnation_count", 0))
+        )
+        for candidate_index, recipe in enumerate(candidate_recipes):
             recipe_name = str(recipe["name"])
             min_teacher_confidence = float(recipe["min_teacher_confidence"])
             step_scale = float(recipe["step_scale"])
@@ -2223,8 +2237,9 @@ def main() -> int:
                     "min_teacher_confidence": float(recipe["min_teacher_confidence"]),
                     "step_scale": float(recipe["step_scale"]),
                 }
-                for recipe in CANDIDATE_RECIPES
+                for recipe in candidate_recipes
             ],
+            "stagnation_rescue": int(state.get("stagnation_count", 0)) >= 12,
             "training_variants": training_variants,
             "selected_recipe": str(chosen_candidate["recipe"]),
             "selected_step_scale": float(chosen_candidate["step_scale"]),

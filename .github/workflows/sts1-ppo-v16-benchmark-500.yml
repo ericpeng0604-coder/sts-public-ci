@@ -1,0 +1,132 @@
+name: STS1 PPO v1.6 500-Game Benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - gpt/sts1-ppo-v16-stagnation-rescue-20260930
+    paths:
+      - control/sts1-v16-benchmark-500.trigger
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: sts1-ppo-v16-benchmark-500
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: '1'
+  GH_TOKEN: ${{ github.token }}
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  PINNED_STATE_ARTIFACT_ID: '11075154194'
+  PINNED_PARENT_SHA: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install benchmark runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python -m py_compile scripts/sts1/sts1_ppo_v16_benchmark_500.py
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+
+      - name: Restore pinned G7 parent
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pinned-state"
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/pinned-state.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$PINNED_STATE_ARTIFACT_ID/zip"
+          unzip -q "$RUNNER_TEMP/pinned-state.zip" -d "$RUNNER_TEMP/pinned-state"
+          weight="$(find "$RUNNER_TEMP/pinned-state" -name offline-champion.pt -print -quit)"
+          test -n "$weight"
+          test "$(sha256sum "$weight" | awk '{print $1}')" = "$PINNED_PARENT_SHA"
+          echo "BENCHMARK_WEIGHT=$weight" >> "$GITHUB_ENV"
+          root=.cache/sts1-armg-benchmark
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          ln -sf "$PWD/external/sts-rl-agent/source/weights/armG_model_G128x128_15k.pt" "$root/armG_model_G128x128_15k.pt"
+
+      - name: Run 25 held-out games
+        run: |
+          python scripts/sts1/sts1_ppo_v16_benchmark_500.py shard             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-benchmark             --weight "$BENCHMARK_WEIGHT"             --expected-weight-sha "$PINNED_PARENT_SHA"             --seeds-file control/sts1-v16-benchmark-seeds-500.txt             --output-dir "evidence/sts1/ppo-v16-benchmark/shard-${{ matrix.shard }}"             --shard-index "${{ matrix.shard }}"             --shard-count 20             --mcts-sims 2000             --workers 4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ppo-v16-benchmark-500-shard-${{ matrix.shard }}
+          path: evidence/sts1/ppo-v16-benchmark/shard-${{ matrix.shard }}/shard-*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ppo-v16-benchmark-500-shard-*
+          path: evidence/sts1/ppo-v16-benchmark/shards
+          merge-multiple: true
+
+      - name: Aggregate all 500 games
+        run: |
+          python scripts/sts1/sts1_ppo_v16_benchmark_500.py aggregate             --input-dir evidence/sts1/ppo-v16-benchmark/shards             --seeds-file control/sts1-v16-benchmark-seeds-500.txt             --output evidence/sts1/ppo-v16-benchmark/summary.json             --shard-count 20
+
+      - name: Report benchmark result
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          s=json.loads(Path("evidence/sts1/ppo-v16-benchmark/summary.json").read_text())
+          print("@ericpeng0604-coder")
+          print()
+          print("## PPO v1.6 — 500 場固定 Held-out Benchmark")
+          print()
+          print(f"- 勝場：**{s['wins']}/500**")
+          print(f"- 勝率：**{s['win_rate_percent']:.1f}%**")
+          print(f"- 95% Wilson CI：**{100*s['wilson_95_low']:.1f}%–{100*s['wilson_95_high']:.1f}%**")
+          print(f"- 平均樓層：{s['mean_final_floor']:.2f}")
+          print(f"- MCTS：{s['mcts_sims']}")
+          print(f"- Safety：{s['safety']}")
+          print("- 權重：PPO v1.6 current Parent G7（固定 SHA）")
+          print(f"- Run：https://github.com/{__import__('os').environ['GITHUB_REPOSITORY']}/actions/runs/{__import__('os').environ['GITHUB_RUN_ID']}")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ppo-v16-benchmark-500-summary
+          path: evidence/sts1/ppo-v16-benchmark/summary.json
+          if-no-files-found: error
+          retention-days: 90

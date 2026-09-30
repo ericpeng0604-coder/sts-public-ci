@@ -66,7 +66,7 @@ class SamplingArmG(ArmGNoncombatPolicy):
             }
         )
         # Conversion mining only needs the most recent strategic decisions.
-        self.conversion_states = self.conversion_states[-8:]
+        self.conversion_states = self.conversion_states[-20:]
 
     def decide(self, gc: Any, sts: Any):
         kind, descs, execs = self.choices(gc)
@@ -138,6 +138,7 @@ def _finish_conversion_branch(
     policy: SamplingArmG,
     mcts_sims: int,
     target_floor: int,
+    boss_mcts_sims: int | None = None,
     second_alternative_rank: int | None = None,
     max_game_steps: int = 600,
     max_battle_steps: int = 800,
@@ -165,7 +166,13 @@ def _finish_conversion_branch(
                 legal = list(sts.get_legal_actions(battle))
                 if not legal:
                     raise RuntimeError("conversion battle exposed no legal action")
-                chosen = legal[0] if len(legal) == 1 else sts.mcts_recommend(battle, int(mcts_sims))
+                floor_now = int(getattr(gc, "floor_num", 0) or 0)
+                active_sims = (
+                    int(boss_mcts_sims)
+                    if boss_mcts_sims is not None and floor_now == int(target_floor)
+                    else int(mcts_sims)
+                )
+                chosen = legal[0] if len(legal) == 1 else sts.mcts_recommend(battle, active_sims)
                 if chosen is None:
                     raise RuntimeError("conversion MCTS returned no action")
                 chosen.execute(battle)
@@ -222,6 +229,7 @@ def _force_choice_and_finish(
     policy: SamplingArmG,
     mcts_sims: int,
     target_floor: int,
+    boss_mcts_sims: int | None = None,
     second_alternative_rank: int | None = None,
 ) -> dict[str, Any]:
     branch = record["gc"].clone()
@@ -238,6 +246,7 @@ def _force_choice_and_finish(
         policy=policy,
         mcts_sims=mcts_sims,
         target_floor=target_floor,
+        boss_mcts_sims=boss_mcts_sims,
         second_alternative_rank=second_alternative_rank,
     )
 

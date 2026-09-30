@@ -109,3 +109,66 @@ jobs:
           print("- 這是診斷，不會直接取代正式 Champion。")
           PY
           gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments"             -f body="$(cat "$RUNNER_TEMP/body.txt")"
+
+  build-rescue:
+    needs: aggregate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-ppo-v20-boss-diagnostic-${{ github.run_id }}
+          path: evidence/sts1/v20-boss
+      - name: Install and hydrate
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-armg-v20-build
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: Download frozen G7 parent
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/state.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$FIXED_STATE_ARTIFACT_ID/zip"
+          unzip -q "$RUNNER_TEMP/state.zip" -d "$RUNNER_TEMP/state"
+          weight="$(find "$RUNNER_TEMP/state" -name offline-champion.pt -print -quit)"
+          test -n "$weight"
+          actual="$(sha256sum "$weight" | awk '{print $1}')"
+          test "$actual" = "$EXPECTED_G7_SHA"
+          cp "$weight" "$RUNNER_TEMP/g7.pt"
+      - name: Diagnose early Build trajectory
+        run: |
+          python scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-v20-build             --weight "$RUNNER_TEMP/g7.pt"             --seeds-file control/sts1-v15-dev-seeds-50.txt             --boss-summary evidence/sts1/v20-boss/summary.json             --output evidence/sts1/v20-build/summary.json             --teacher-output evidence/sts1/v20-build/candidate-teacher.jsonl             --max-seeds 10             --max-states 20             --max-alternatives 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-ppo-v20-build-diagnostic-${{ github.run_id }}
+          path: evidence/sts1/v20-build/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Report Build diagnosis
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/build-body.txt"
+          import json
+          s=json.load(open("evidence/sts1/v20-build/summary.json",encoding="utf-8"))
+          print("@ericpeng0604-coder")
+          print()
+          print("## PPO v2.0 Early Build Diagnostic")
+          print()
+          print(f"- Boss-50k 後仍屬 Build-limited：**{s['input_build_limited']}**")
+          print(f"- 本輪深入診斷 Seeds：**{s['diagnosed_seeds']}**")
+          print(f"- 找到更早單一步 Build Rescue：**{s['early_build_rescues']}**")
+          print(f"- 仍找不到單一步 Rescue：**{s['no_single_rescue']}**")
+          print("- candidate-teacher 只做診斷證據，尚未直接升級 Champion。")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments"             -f body="$(cat "$RUNNER_TEMP/build-body.txt")"

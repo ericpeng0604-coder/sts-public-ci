@@ -1,0 +1,118 @@
+name: STS1 Build Rescue v2.3 Regression Trace
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v23-trace.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  V22_RUN_ID: '36720633030'
+  V22_ARTIFACT: 'sts1-v22-antiforget-36720633030'
+  G7_STATE_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v23-regression-trace
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static trace contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/sts1/sts1_build_rescue_regression_trace.py
+          test "$(wc -l < control/sts1-v22-parent-only-seeds-2.txt)" -eq 2
+
+      - name: Download frozen v2.2 candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V22_ARTIFACT }}
+          path: evidence/sts1/v22-source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V22_RUN_ID }}
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v23-trace
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+          candidate="$(find evidence/sts1/v22-source -name candidate.pt -print -quit)"
+          test -n "$candidate"
+          test "$(sha256sum "$candidate" | awk '{print $1}')" = "18b93d7e6a346ae967458368ecd40f742dc300ef3c3d470e7abc4c1ea51484d3"
+
+      - name: Trace first noncombat divergence
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v23-trace
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          candidate="$(find evidence/sts1/v22-source -name candidate.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_regression_trace.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v23-trace             --parent-weight "$parent"             --candidate-weight "$candidate"             --seed-file control/sts1-v22-parent-only-seeds-2.txt             --heldout-seeds-file evidence/sts1/v22-source/dev30-seeds.txt             --output evidence/sts1/v23-trace/regression-trace.json             --preservation-output evidence/sts1/v23-trace/preservation.jsonl
+          cat evidence/sts1/v23-trace/regression-trace.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v23-regression-trace-${{ github.run_id }}
+          path: evidence/sts1/v23-trace/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report regression trace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          x=json.load(open("evidence/sts1/v23-trace/regression-trace.json"))
+          print("@ericpeng0604-coder")
+          print()
+          print("## Build Rescue v2.3 Regression Trace")
+          print(f"- Parent-only regressions: **{x['parent_only_regressions']}**")
+          print(f"- Preservation anchors: **{x['preservation_anchors']}**")
+          for r in x["rows"]:
+              d=r.get("first_divergence") or {}
+              print(
+                  f"- Seed **{r['seed']}**: "
+                  f"{d.get('kind_parent')} @ floor {d.get('floor_parent')}, "
+                  f"G7 index {d.get('parent_selected_index')} -> Candidate index {d.get('candidate_selected_index')}, "
+                  f"G7 prob gap={d.get('parent_prob_gap')}"
+              )
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

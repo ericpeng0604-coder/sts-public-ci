@@ -457,6 +457,9 @@ jobs:
           assert training.get("selected_recipe") == selected["recipe"]
           assert float(training.get("parent_distill_coef", 0.0)) > 0.0
           assert 0.0 <= float(training.get("mean_teacher_mix", -1.0)) <= 1.0
+          if bool(training.get("stagnation_rescue")):
+              assert float(training.get("focus_weight", 0.0)) == 6.0
+              assert int(training.get("focus_example_count", 0)) > 0
           assert selected["candidate_strategy_sha256"] == latest["candidate_strategy_sha256"]
           replay=latest.get("replay") or {}
           assert 0.0 < float(replay.get("shop_max_fraction", 0.0)) <= 0.25

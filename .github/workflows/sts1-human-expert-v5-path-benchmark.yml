@@ -76,7 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf evidence/sts1/human-expert-v5-path
-          python scripts/sts1/sts1_human_expert_v5_path_benchmark.py             --data-root "$HUMAN_DATA_ROOT"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-human-expert             --armg-base-weight .cache/sts1-human-expert/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --output-dir evidence/sts1/human-expert-v5-path             --card-strength 2.0             --path-strengths 0.25,1.00,2.00,4.00,8.00,16.00             --combat-mcts-sims 2000             --eval-workers 4             --rng-seed 2026093005             --min-ascension 15
+          python scripts/sts1/sts1_human_expert_v5_path_benchmark.py             --data-root "$HUMAN_DATA_ROOT"             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-human-expert             --armg-base-weight .cache/sts1-human-expert/armG_model_G128x128_15k.pt             --dev-seed-file external/sts-rl-agent/source/eval/eval_seeds_50.txt             --output-dir evidence/sts1/human-expert-v5-path             --card-strength 2.0             --path-strengths 8.00             --combat-mcts-sims 2000             --eval-workers 4             --rng-seed 2026093005             --min-ascension 15
 
       - name: Verify V5 report
         run: |

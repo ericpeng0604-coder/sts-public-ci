@@ -127,3 +127,37 @@ def test_stagnation_rescue_uses_smaller_candidate_steps() -> None:
     assert [row["step_scale"] for row in normal] == [0.25, 0.50, 1.00]
     assert [row["step_scale"] for row in rescue] == [0.10, 0.20, 0.35]
     assert all(row["name"].startswith("rescue_") for row in rescue)
+
+
+def test_rescue_focus_weight_boosts_only_current_teacher_rows(tmp_path) -> None:
+    import json
+
+    row = {
+        "schema_version": m.STRATEGY_DATASET_SCHEMA_VERSION,
+        "combat_policy": "mcts_2000",
+        "kind": "map",
+        "obs": [0.0, 1.0],
+        "descs": [[0.0], [1.0]],
+        "current_armg_index": 0,
+        "teacher_best_index": 1,
+        "target_probs": [0.1, 0.9],
+        "priority": 2.0,
+        "teacher_margin": 4.0,
+    }
+    focus_path = tmp_path / "fresh.jsonl"
+    focus_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    focus_ids = m._focus_identity_set([focus_path])
+
+    assert m._example_focus_weight(
+        row,
+        focus_ids=focus_ids,
+        focus_weight=6.0,
+    ) == 6.0
+
+    other = dict(row)
+    other["obs"] = [9.0, 9.0]
+    assert m._example_focus_weight(
+        other,
+        focus_ids=focus_ids,
+        focus_weight=6.0,
+    ) == 1.0

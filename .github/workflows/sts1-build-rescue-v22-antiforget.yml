@@ -1,0 +1,305 @@
+name: STS1 Build Rescue v2.2 Anti-Forgetting
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v22.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  V21_DATASET_RUN_ID: '36699995040'
+  V21_DATASET_ARTIFACT: 'v21-verified-36699995040'
+  G7_STATE_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v22-antiforget
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static anti-forgetting contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/sts1/sts1_build_rescue_bc_v22.py scripts/sts1/sts1_build_rescue_gate_v21.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("scripts/sts1/sts1_build_rescue_bc_v22.py").read_text()
+          required=[
+              "parent_top1_agreement",
+              "min-parent-agreement",
+              "max-parent-kl",
+              "max-winner-drop",
+              "selected_alpha",
+              "actor.named_parameters()",
+          ]
+          missing=[x for x in required if x not in p]
+          if missing:
+              raise SystemExit(f"missing anti-forgetting contract: {missing}")
+          print("V22_CONTRACT_PASS")
+          PY
+
+  experiment:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download frozen v2.1 Verified Rescue Dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V21_DATASET_ARTIFACT }}
+          path: evidence/sts1/v21-verified
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V21_DATASET_RUN_ID }}
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v22
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test -n "$parent"
+          test -n "$elite"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Validate immutable Rescue Dataset
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path("evidence/sts1/v21-verified/summary.json").read_text())
+          count=int(x.get("verified_teacher_examples",0))
+          complete=int(x.get("complete_build_limited_seeds",x.get("complete_seeds",0)))
+          if complete != 40:
+              raise SystemExit(f"expected 40 complete Build-limited seeds, got {complete}")
+          if count != 18:
+              raise SystemExit(f"expected frozen 18 Verified Teacher examples, got {count}")
+          print("V22_DATASET_CONTRACT_PASS",complete,count)
+          PY
+
+      - name: Train anti-forgetting Build Candidate
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v22-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python scripts/sts1/sts1_build_rescue_bc_v22.py             --armg-root .cache/sts1-v22             --module-dir external/sts_lightspeed/source/build-probe             --base-weight "$parent"             --elite-replay "$elite"             --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl             --output evidence/sts1/v22-candidate/candidate.pt             --report evidence/sts1/v22-candidate/train-report.json             --epochs 6 --lr 3e-6             --elite-train-max 8192 --retention-eval-max 2048             --rescue-repeats 4             --winner-coef 0.80 --distill-coef 1.20 --rescue-coef 0.60             --param-anchor-coef 1e-5             --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-winner-drop 0.01             --threads 4
+          cp evidence/sts1/v21-verified/summary.json evidence/sts1/v22-candidate/dataset-summary.json
+
+      - name: Build fixed evaluation seed files
+        run: |
+          set -euo pipefail
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > evidence/sts1/v22-candidate/dev30-seeds.txt
+          cp control/sts1-v14-final-promotion-seeds-50.txt evidence/sts1/v22-candidate/hidden50-seeds.txt
+          python - <<'PY'
+          import json,random
+          from pathlib import Path
+          def read_seeds(path):
+              return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
+          protected=set(read_seeds("control/sts1-v15-dev-seeds-50.txt"))
+          protected.update(read_seeds("control/sts1-v14-final-promotion-seeds-50.txt"))
+          protected.update(read_seeds("control/sts1-v16-benchmark-seeds-500.txt"))
+          d=json.loads(Path("evidence/sts1/v21-verified/summary.json").read_text())
+          protected.update(int(r["seed"]) for r in d["rows"])
+          rng=random.Random(2026093022)
+          fresh=[]
+          while len(fresh)<100:
+              x=rng.randrange(1,2_000_000_000)
+              if x not in protected and x not in fresh:
+                  fresh.append(x)
+          Path("evidence/sts1/v22-candidate/fresh100-seeds.txt").write_text("\n".join(map(str,fresh))+"\n")
+          assert len(fresh)==100 and not (set(fresh)&protected)
+          print("V22_EVAL_SEEDS_READY",30,50,100,500)
+          PY
+          test "$(wc -l < evidence/sts1/v22-candidate/dev30-seeds.txt)" -eq 30
+
+      - name: Dev30 fixed-seed win Gate
+        id: dev
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v22             --parent-weight "$parent"             --candidate-weight evidence/sts1/v22-candidate/candidate.pt             --seed-file evidence/sts1/v22-candidate/dev30-seeds.txt             --output evidence/sts1/v22-candidate/dev30.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v22-dev30
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v22-candidate/dev30.json"))
+          print("passed="+str(x["pass"]).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          PY
+
+      - name: Hidden50 fixed-seed Gate
+        id: hidden
+        if: steps.dev.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v22             --parent-weight "$parent"             --candidate-weight evidence/sts1/v22-candidate/candidate.pt             --seed-file evidence/sts1/v22-candidate/hidden50-seeds.txt             --output evidence/sts1/v22-candidate/hidden50.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v22-hidden50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v22-candidate/hidden50.json"))
+          print("passed="+str(x["pass"]).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          PY
+
+      - name: Fresh100 formal win Gate
+        id: fresh
+        if: steps.hidden.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v22             --parent-weight "$parent"             --candidate-weight evidence/sts1/v22-candidate/candidate.pt             --seed-file evidence/sts1/v22-candidate/fresh100-seeds.txt             --output evidence/sts1/v22-candidate/fresh100.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v22-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v22-candidate/fresh100.json"))
+          print("passed="+str(x["pass"]).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Heldout500 formal win Gate
+        id: heldout
+        if: steps.fresh.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v22             --parent-weight "$parent"             --candidate-weight evidence/sts1/v22-candidate/candidate.pt             --seed-file control/sts1-v16-benchmark-seeds-500.txt             --output evidence/sts1/v22-candidate/heldout500.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v22-heldout500
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v22-candidate/heldout500.json"))
+          print("passed="+str(x["pass"]).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Write final v2.2 summary
+        if: always()
+        env:
+          DEV_PASS: ${{ steps.dev.outputs.passed }}
+          DEV_PARENT: ${{ steps.dev.outputs.parent }}
+          DEV_CAND: ${{ steps.dev.outputs.candidate }}
+          DEV_CONLY: ${{ steps.dev.outputs.candidate_only }}
+          DEV_PONLY: ${{ steps.dev.outputs.parent_only }}
+          HID_PASS: ${{ steps.hidden.outputs.passed }}
+          HID_PARENT: ${{ steps.hidden.outputs.parent }}
+          HID_CAND: ${{ steps.hidden.outputs.candidate }}
+          FRESH_PASS: ${{ steps.fresh.outputs.passed }}
+          FRESH_PARENT: ${{ steps.fresh.outputs.parent }}
+          FRESH_CAND: ${{ steps.fresh.outputs.candidate }}
+          FRESH_P: ${{ steps.fresh.outputs.pvalue }}
+          H500_PASS: ${{ steps.heldout.outputs.passed }}
+          H500_PARENT: ${{ steps.heldout.outputs.parent }}
+          H500_CAND: ${{ steps.heldout.outputs.candidate }}
+          H500_P: ${{ steps.heldout.outputs.pvalue }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path("evidence/sts1/v22-candidate")
+          out.mkdir(parents=True,exist_ok=True)
+          train={}
+          p=out/"train-report.json"
+          if p.exists():
+              train=json.loads(p.read_text())
+          summary={
+              "schema_version":"sts1-build-rescue-v22-summary",
+              "parent":"G7",
+              "parent_sha256":os.environ["G7_WEIGHT_SHA256"],
+              "verified_rescue_examples":train.get("verified_rescue_examples"),
+              "selected_alpha":train.get("selected_alpha"),
+              "anti_forgetting_after":train.get("after",{}).get("retention"),
+              "dev30":{"pass":os.environ.get("DEV_PASS")=="true","parent_wins":os.environ.get("DEV_PARENT"),"candidate_wins":os.environ.get("DEV_CAND"),"candidate_only_wins":os.environ.get("DEV_CONLY"),"parent_only_wins":os.environ.get("DEV_PONLY")},
+              "hidden50":{"pass":os.environ.get("HID_PASS")=="true","parent_wins":os.environ.get("HID_PARENT"),"candidate_wins":os.environ.get("HID_CAND")},
+              "fresh100":{"pass":os.environ.get("FRESH_PASS")=="true","parent_wins":os.environ.get("FRESH_PARENT"),"candidate_wins":os.environ.get("FRESH_CAND"),"pvalue":os.environ.get("FRESH_P")},
+              "heldout500":{"pass":os.environ.get("H500_PASS")=="true","parent_wins":os.environ.get("H500_PARENT"),"candidate_wins":os.environ.get("H500_CAND"),"pvalue":os.environ.get("H500_P")},
+          }
+          summary["readiness"]="READY_FOR_REAL_GAME_GATE" if summary["heldout500"]["pass"] else "HOLD_PARENT"
+          (out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("V22_FINAL",json.dumps(summary,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v22-antiforget-${{ github.run_id }}
+          path: evidence/sts1/v22-candidate/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report v2.2 status to GitHub
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          p=Path("evidence/sts1/v22-candidate/summary.json")
+          print("@ericpeng0604-coder")
+          print()
+          print("## Build Rescue v2.2 Anti-Forgetting")
+          if not p.exists():
+              print("- Run failed before final summary. G7 remains unchanged.")
+          else:
+              x=json.loads(p.read_text())
+              t=x.get("anti_forgetting_after") or {}
+              print(f"- Verified Rescue: **{x.get('verified_rescue_examples')}**")
+              print(f"- Selected blend alpha: **{x.get('selected_alpha')}**")
+              print(f"- G7 parent agreement: **{t.get('parent_top1_agreement')}**")
+              print(f"- Parent KL: **{t.get('parent_kl')}**")
+              d=x["dev30"]
+              print(f"- Dev30: Parent **{d.get('parent_wins')}/30** / Candidate **{d.get('candidate_wins')}/30** / PASS={d.get('pass')}")
+              h=x["hidden50"]
+              print(f"- Hidden50: Parent **{h.get('parent_wins')}** / Candidate **{h.get('candidate_wins')}** / PASS={h.get('pass')}")
+              f=x["fresh100"]
+              print(f"- Fresh100: Parent **{f.get('parent_wins')}** / Candidate **{f.get('candidate_wins')}** / p={f.get('pvalue')} / PASS={f.get('pass')}")
+              z=x["heldout500"]
+              print(f"- Heldout500: Parent **{z.get('parent_wins')}** / Candidate **{z.get('candidate_wins')}** / p={z.get('pvalue')} / PASS={z.get('pass')}")
+              print(f"- Final readiness: **{x.get('readiness')}**")
+          print("- 正式 Champion 不會自動替換；未通過就保留 G7。")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

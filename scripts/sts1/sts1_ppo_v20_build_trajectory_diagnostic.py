@@ -1133,8 +1133,8 @@ def main() -> int:
     p.add_argument("--branch-timeout-seconds",type=int,default=180)
     p.add_argument("--branch-retries",type=int,default=1)
     args=p.parse_args()
-    if not 1<=args.max_seeds<=20:
-        raise RuntimeError("max-seeds must be within 1..20")
+    if not 1<=args.max_seeds<=40:
+        raise RuntimeError("max-seeds must be within 1..40")
     if not 1<=args.max_states<=20:
         raise RuntimeError("max-states must be within 1..20")
     if not 1<=args.max_alternatives<=4:

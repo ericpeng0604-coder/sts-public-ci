@@ -104,3 +104,59 @@ def test_human_expert_policy_reranks_map_with_path_prior() -> None:
     assert result[0] == "map"
     assert result[1] == 1
     assert result[4][1] > result[4][0]
+
+
+def test_human_expert_path_gate_respects_armg_confidence() -> None:
+    policy = object.__new__(HumanExpertPolicy)
+    policy.expert_strength = 0.0
+    policy.expert_prior = {}
+    policy.path_strength = 8.0
+    policy.path_min_prior_spread = 0.0
+    policy.path_max_armg_margin = 1.0
+    policy.path_prior = {
+        "global_log_probs": {"ELITE": -3.0, "REST": -0.1},
+        "act_log_probs": {"1": {"ELITE": -3.0, "REST": -0.1}},
+        "context_log_probs": {
+            "1|critical|medium": {"ELITE": -3.0, "REST": -0.1},
+        },
+    }
+    policy.choices = lambda gc: ("map", ["elite", "rest"], [lambda g: None, lambda g: None])
+    policy.score_choices = lambda gc: ("map", ["elite", "rest"], _Scores([4.0, 0.0]))
+    policy.describe_choice = lambda kind, desc: {"room": str(desc).upper()}
+
+    gc = SimpleNamespace(floor_num=8, cur_hp=20, max_hp=80, gold=100)
+    result = HumanExpertPolicy.decide(policy, gc, SimpleNamespace())
+
+    assert result[1] == 0
+    diag = policy.path_diagnostics_snapshot()
+    assert diag["eligible_decisions"] == 0
+    assert diag["blocked_armg_confident"] == 1
+    assert diag["map_flips"] == 0
+
+
+def test_human_expert_path_gate_requires_prior_separation() -> None:
+    policy = object.__new__(HumanExpertPolicy)
+    policy.expert_strength = 0.0
+    policy.expert_prior = {}
+    policy.path_strength = 8.0
+    policy.path_min_prior_spread = 0.5
+    policy.path_max_armg_margin = 10.0
+    policy.path_prior = {
+        "global_log_probs": {"ELITE": -1.0, "REST": -0.9},
+        "act_log_probs": {"1": {"ELITE": -1.0, "REST": -0.9}},
+        "context_log_probs": {
+            "1|critical|medium": {"ELITE": -1.0, "REST": -0.9},
+        },
+    }
+    policy.choices = lambda gc: ("map", ["elite", "rest"], [lambda g: None, lambda g: None])
+    policy.score_choices = lambda gc: ("map", ["elite", "rest"], _Scores([0.2, 0.0]))
+    policy.describe_choice = lambda kind, desc: {"room": str(desc).upper()}
+
+    gc = SimpleNamespace(floor_num=8, cur_hp=20, max_hp=80, gold=100)
+    result = HumanExpertPolicy.decide(policy, gc, SimpleNamespace())
+
+    assert result[1] == 0
+    diag = policy.path_diagnostics_snapshot()
+    assert diag["eligible_decisions"] == 0
+    assert diag["blocked_low_prior_confidence"] == 1
+    assert diag["map_flips"] == 0

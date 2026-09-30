@@ -119,6 +119,7 @@ jobs:
             --out "evidence/sts1/ppo-v14-auto/worker-$worker" \
             --formal-seed-file control/sts1-v15-dev-seeds-50.txt \
             --final-seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+            --extra-heldout-seed-file control/sts1-v16-benchmark-seeds-500.txt \
             --seed-start "$seed_start" \
             --games "$games" \
             --temperature "$PPO_TEMPERATURE" \

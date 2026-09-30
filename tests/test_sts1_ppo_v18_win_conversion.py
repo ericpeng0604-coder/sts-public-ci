@@ -170,3 +170,61 @@ def test_no_conversion_mining_for_non_boss_loss(monkeypatch: pytest.MonkeyPatch)
     )
     policy = type("P", (), {"conversion_states": [_record()]})()
     assert mod._mine_win_conversions(policy=policy, sts=object(), final_floor=40) == []
+
+
+
+def test_zero_legal_map_transition_advances_without_consuming_a_choice():
+    class ScreenState:
+        MAP_SCREEN = "MAP"
+        REWARDS = "REWARDS"
+
+    class Sts:
+        ScreenState = ScreenState
+
+        @staticmethod
+        def get_legal_game_actions(gc):
+            return []
+
+    class Gc:
+        screen_state = ScreenState.MAP_SCREEN
+        floor_num = 33
+        act = 2
+        outcome = "UNDECIDED"
+
+    class Agent:
+        pause_on_map = True
+
+        def playout(self, gc):
+            assert self.pause_on_map is False
+            gc.floor_num = 34
+
+    gc = Gc()
+    agent = Agent()
+    mod._advance_zero_legal_map_transition(agent, gc, Sts)
+    assert gc.floor_num == 34
+    assert agent.pause_on_map is True
+
+
+def test_zero_legal_map_transition_refuses_to_hide_real_choice():
+    class ScreenState:
+        MAP_SCREEN = "MAP"
+        REWARDS = "REWARDS"
+
+    class Sts:
+        ScreenState = ScreenState
+
+        @staticmethod
+        def get_legal_game_actions(gc):
+            return [object()]
+
+    class Gc:
+        screen_state = ScreenState.MAP_SCREEN
+        floor_num = 33
+        act = 2
+        outcome = "UNDECIDED"
+
+    class Agent:
+        pause_on_map = True
+
+    with pytest.raises(RuntimeError, match="legal player actions"):
+        mod._advance_zero_legal_map_transition(Agent(), Gc(), Sts)

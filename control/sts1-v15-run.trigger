@@ -1,9 +1,12 @@
-# PPO v1.8 Critical Win Conversion launch
-started=2026-09-30T12:57:00+08:00
-mode=v18_critical_win_conversion
-baseline=latest_v17_state
+# PPO v1.9 Multistep Win Conversion launch
+started=2026-09-30T13:42:00+08:00
+mode=v19_multistep_boss_conversion
+baseline=latest-v18-training-parent
 reward_mode=v17_winrate
-win_conversion_enabled=1
-conversion_mcts=2000
-confirmation_mcts=10000
+conversion_primary_mcts=2000
+conversion_confirm_mcts=10000
+conversion_max_states=6
+conversion_max_alternatives=2
+conversion_max_second_alternatives=2
+conversion_sample_modulus=4
 heldout_500=protected

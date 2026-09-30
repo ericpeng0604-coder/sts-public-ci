@@ -579,7 +579,19 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
             sorted_raw = sorted(raw, reverse=True)
             raw_margin = sorted_raw[0] - sorted_raw[1] if len(sorted_raw) > 1 else 0.0
             addition_spread = max(additions) - min(additions) if additions else 0.0
-            diag = self.path_diagnostics
+            diag = getattr(self, "path_diagnostics", None)
+            if not isinstance(diag, dict):
+                diag = {
+                    "map_decisions": 0,
+                    "map_flips": 0,
+                    "addition_spread_sum": 0.0,
+                    "addition_spread_max": 0.0,
+                    "raw_margin_sum": 0.0,
+                    "raw_margin_max": 0.0,
+                    "rooms_seen": {},
+                    "flip_examples": [],
+                }
+                self.path_diagnostics = diag
             diag["map_decisions"] = int(diag.get("map_decisions", 0)) + 1
             diag["map_flips"] = int(diag.get("map_flips", 0)) + int(raw_choice != adjusted_choice)
             diag["addition_spread_sum"] = float(diag.get("addition_spread_sum", 0.0)) + addition_spread
@@ -613,7 +625,7 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
         return kind, max(range(len(adjusted)), key=adjusted.__getitem__), descs, execs, adjusted
 
     def path_diagnostics_snapshot(self) -> dict[str, Any]:
-        diag = dict(self.path_diagnostics)
+        diag = dict(getattr(self, "path_diagnostics", {}) or {})
         decisions = int(diag.get("map_decisions", 0) or 0)
         flips = int(diag.get("map_flips", 0) or 0)
         diag["flip_rate"] = (flips / decisions) if decisions else 0.0

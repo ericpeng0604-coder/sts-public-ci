@@ -42,6 +42,9 @@ jobs:
           p=Path("scripts/sts1/sts1_build_rescue_bc_v22.py").read_text()
           required=[
               "parent_top1_agreement",
+              "parent_high_conf_top1_agreement",
+              "PARENT_HIGH_CONFIDENCE_PROB_GAP",
+              "MIN_HIGH_CONFIDENCE_DECISIONS",
               "min-parent-agreement",
               "max-parent-kl",
               "max-winner-drop",
@@ -289,7 +292,9 @@ jobs:
               t=x.get("anti_forgetting_after") or {}
               print(f"- Verified Rescue: **{x.get('verified_rescue_examples')}**")
               print(f"- Selected blend alpha: **{x.get('selected_alpha')}**")
-              print(f"- G7 parent agreement: **{t.get('parent_top1_agreement')}**")
+              print(f"- G7 all-decision agreement: **{t.get('parent_top1_agreement')}**")
+              print(f"- G7 high-confidence agreement: **{t.get('parent_high_conf_top1_agreement')}**")
+              print(f"- High-confidence decisions: **{t.get('parent_high_conf_decisions')}**")
               print(f"- Parent KL: **{t.get('parent_kl')}**")
               d=x["dev30"]
               print(f"- Dev30: Parent **{d.get('parent_wins')}/30** / Candidate **{d.get('candidate_wins')}/30** / PASS={d.get('pass')}")

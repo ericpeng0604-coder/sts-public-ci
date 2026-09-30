@@ -88,7 +88,7 @@ def _worker(
         path_prior_path=Path(path_prior_text),
         path_strength=float(path_strength),
     )
-    return dict(
+    result = dict(
         run_simulator_game(
             student=None,
             sts=sts,
@@ -100,6 +100,8 @@ def _worker(
             collect_teacher=False,
         )
     )
+    result["v5_path_diagnostics"] = policy.path_diagnostics_snapshot()
+    return result
 
 
 def _evaluate(
@@ -183,6 +185,43 @@ def _paired_gate(
     )
 
 
+def _aggregate_path_diagnostics(evaluation: Mapping[str, Any]) -> dict[str, Any]:
+    decisions = 0
+    flips = 0
+    spread_sum = 0.0
+    raw_margin_sum = 0.0
+    max_spread = 0.0
+    max_raw_margin = 0.0
+    rooms: dict[str, int] = {}
+    examples: list[dict[str, Any]] = []
+    for run in list(evaluation.get("runs") or []):
+        diag = dict(run.get("v5_path_diagnostics") or {})
+        d = int(diag.get("map_decisions", 0) or 0)
+        f = int(diag.get("map_flips", 0) or 0)
+        decisions += d
+        flips += f
+        spread_sum += float(diag.get("addition_spread_sum", 0.0) or 0.0)
+        raw_margin_sum += float(diag.get("raw_margin_sum", 0.0) or 0.0)
+        max_spread = max(max_spread, float(diag.get("addition_spread_max", 0.0) or 0.0))
+        max_raw_margin = max(max_raw_margin, float(diag.get("raw_margin_max", 0.0) or 0.0))
+        for room, count in dict(diag.get("rooms_seen") or {}).items():
+            rooms[str(room)] = rooms.get(str(room), 0) + int(count)
+        for row in list(diag.get("flip_examples") or []):
+            if len(examples) < 25:
+                examples.append(dict(row))
+    return {
+        "map_decisions": decisions,
+        "map_flips": flips,
+        "flip_rate": (flips / decisions) if decisions else 0.0,
+        "mean_addition_spread": (spread_sum / decisions) if decisions else 0.0,
+        "max_addition_spread": max_spread,
+        "mean_raw_margin": (raw_margin_sum / decisions) if decisions else 0.0,
+        "max_raw_margin": max_raw_margin,
+        "rooms_seen": dict(sorted(rooms.items())),
+        "flip_examples": examples,
+    }
+
+
 def _summary(gate: Mapping[str, Any]) -> dict[str, Any]:
     parent = dict(gate.get("current") or {})
     candidate = dict(gate.get("candidate") or {})
@@ -209,7 +248,7 @@ def main() -> int:
     parser.add_argument("--dev-seed-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--card-strength", type=float, default=2.0)
-    parser.add_argument("--path-strengths", default="0.10,0.25,0.50,0.75,1.00")
+    parser.add_argument("--path-strengths", default="0.25,1.00,2.00,4.00,8.00,16.00")
     parser.add_argument("--combat-mcts-sims", type=int, default=2000)
     parser.add_argument("--eval-workers", type=int, default=4)
     parser.add_argument("--rng-seed", type=int, default=2026093005)
@@ -233,8 +272,8 @@ def main() -> int:
     )
 
     strengths = tuple(float(v.strip()) for v in args.path_strengths.split(",") if v.strip())
-    if not strengths or any(v <= 0 or v > 2.0 for v in strengths):
-        raise RuntimeError("path strengths must be within (0, 2]")
+    if not strengths or any(v <= 0 or v > 20.0 for v in strengths):
+        raise RuntimeError("path strengths must be within (0, 20]")
 
     frozen50 = _read_seeds(args.dev_seed_file)
     dev30 = frozen50[:30]
@@ -271,7 +310,12 @@ def main() -> int:
             policy=DEV_STRATEGY_GATE,
             mcts_sims=args.combat_mcts_sims,
         )
-        candidates.append({"path_strength": strength, "gate": gate, "eval": candidate_dev})
+        candidates.append({
+            "path_strength": strength,
+            "gate": gate,
+            "eval": candidate_dev,
+            "path_diagnostics": _aggregate_path_diagnostics(candidate_dev),
+        })
         _write_json(args.output_dir / f"dev30-path-{strength:.2f}.json", candidate_dev)
 
     selected = max(candidates, key=lambda row: _rank(row["gate"]))
@@ -351,7 +395,11 @@ def main() -> int:
         "card_strength": args.card_strength,
         "selected_path_strength": path_strength,
         "path_strength_candidates": [
-            {"path_strength": row["path_strength"], "dev": _summary(row["gate"])}
+            {
+                "path_strength": row["path_strength"],
+                "dev": _summary(row["gate"]),
+                "path_diagnostics": row["path_diagnostics"],
+            }
             for row in candidates
         ],
         "card_dataset": {
@@ -365,6 +413,7 @@ def main() -> int:
             "contexts": len(path_data["context_log_probs"]),
         },
         "dev30": _summary(dev_gate),
+        "selected_dev_path_diagnostics": dict(selected["path_diagnostics"]),
         "hidden50": _summary(hidden_gate) if hidden_gate.get("status") != "SKIPPED" else hidden_gate,
         "fresh100": _summary(fresh_gate) if fresh_gate.get("status") != "SKIPPED" else fresh_gate,
         "confirm500": _summary(confirm_gate) if confirm_gate.get("status") != "SKIPPED" else confirm_gate,

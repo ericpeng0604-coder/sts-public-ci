@@ -64,7 +64,7 @@ def _fresh_seeds(*, count: int, rng_seed: int, forbidden: set[int]) -> tuple[int
 
 
 def _worker(
-    payload: tuple[str, str, str, str, float, str, float, int, tuple[int, ...], int],
+    payload: tuple[str, str, str, str, float, str, float, float, float, int, tuple[int, ...], int],
 ) -> dict[str, Any]:
     (
         module_dir_text,
@@ -74,6 +74,8 @@ def _worker(
         card_strength,
         path_prior_text,
         path_strength,
+        path_min_prior_spread,
+        path_max_armg_margin,
         seed,
         all_seeds,
         mcts_sims,
@@ -87,6 +89,8 @@ def _worker(
         expert_strength=float(card_strength),
         path_prior_path=Path(path_prior_text),
         path_strength=float(path_strength),
+        path_min_prior_spread=float(path_min_prior_spread),
+        path_max_armg_margin=float(path_max_armg_margin),
     )
     result = dict(
         run_simulator_game(
@@ -114,7 +118,9 @@ def _evaluate(
     card_strength: float,
     path_prior: Path,
     path_strength: float,
-    mcts_sims: int,
+    path_min_prior_spread: float = 0.0,
+    path_max_armg_margin: float = float("inf"),
+    mcts_sims: int = 2000,
     workers: int,
 ) -> dict[str, Any]:
     ordered = tuple(int(seed) for seed in seeds)
@@ -127,6 +133,8 @@ def _evaluate(
             float(card_strength),
             str(path_prior),
             float(path_strength),
+            float(path_min_prior_spread),
+            float(path_max_armg_margin),
             seed,
             ordered,
             int(mcts_sims),
@@ -188,6 +196,9 @@ def _paired_gate(
 def _aggregate_path_diagnostics(evaluation: Mapping[str, Any]) -> dict[str, Any]:
     decisions = 0
     flips = 0
+    eligible = 0
+    blocked_low_prior = 0
+    blocked_armg = 0
     spread_sum = 0.0
     raw_margin_sum = 0.0
     max_spread = 0.0
@@ -200,6 +211,9 @@ def _aggregate_path_diagnostics(evaluation: Mapping[str, Any]) -> dict[str, Any]
         f = int(diag.get("map_flips", 0) or 0)
         decisions += d
         flips += f
+        eligible += int(diag.get("eligible_decisions", 0) or 0)
+        blocked_low_prior += int(diag.get("blocked_low_prior_confidence", 0) or 0)
+        blocked_armg += int(diag.get("blocked_armg_confident", 0) or 0)
         spread_sum += float(diag.get("addition_spread_sum", 0.0) or 0.0)
         raw_margin_sum += float(diag.get("raw_margin_sum", 0.0) or 0.0)
         max_spread = max(max_spread, float(diag.get("addition_spread_max", 0.0) or 0.0))
@@ -213,6 +227,10 @@ def _aggregate_path_diagnostics(evaluation: Mapping[str, Any]) -> dict[str, Any]
         "map_decisions": decisions,
         "map_flips": flips,
         "flip_rate": (flips / decisions) if decisions else 0.0,
+        "eligible_decisions": eligible,
+        "eligible_rate": (eligible / decisions) if decisions else 0.0,
+        "blocked_low_prior_confidence": blocked_low_prior,
+        "blocked_armg_confident": blocked_armg,
         "mean_addition_spread": (spread_sum / decisions) if decisions else 0.0,
         "max_addition_spread": max_spread,
         "mean_raw_margin": (raw_margin_sum / decisions) if decisions else 0.0,
@@ -248,7 +266,9 @@ def main() -> int:
     parser.add_argument("--dev-seed-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--card-strength", type=float, default=2.0)
-    parser.add_argument("--path-strengths", default="0.25,1.00,2.00,4.00,8.00,16.00")
+    parser.add_argument("--path-strengths", default="8.00")
+    parser.add_argument("--path-min-prior-spreads", default="0.10,0.20")
+    parser.add_argument("--path-max-armg-margins", default="1.0,2.0,3.0")
     parser.add_argument("--combat-mcts-sims", type=int, default=2000)
     parser.add_argument("--eval-workers", type=int, default=4)
     parser.add_argument("--rng-seed", type=int, default=2026093005)
@@ -272,8 +292,14 @@ def main() -> int:
     )
 
     strengths = tuple(float(v.strip()) for v in args.path_strengths.split(",") if v.strip())
+    min_spreads = tuple(float(v.strip()) for v in args.path_min_prior_spreads.split(",") if v.strip())
+    max_margins = tuple(float(v.strip()) for v in args.path_max_armg_margins.split(",") if v.strip())
     if not strengths or any(v <= 0 or v > 20.0 for v in strengths):
         raise RuntimeError("path strengths must be within (0, 20]")
+    if not min_spreads or any(v < 0 or v > 5.0 for v in min_spreads):
+        raise RuntimeError("path minimum prior spreads must be within [0, 5]")
+    if not max_margins or any(v < 0 or v > 20.0 for v in max_margins):
+        raise RuntimeError("path maximum ArmG margins must be within [0, 20]")
 
     frozen50 = _read_seeds(args.dev_seed_file)
     dev30 = frozen50[:30]
@@ -292,34 +318,43 @@ def main() -> int:
 
     candidates: list[dict[str, Any]] = []
     for strength in strengths:
-        candidate_dev = _evaluate(
-            seeds=dev30,
-            module_dir=args.module_dir,
-            armg_root=args.armg_root,
-            base_weight=args.armg_base_weight,
-            card_prior=card_prior,
-            card_strength=args.card_strength,
-            path_prior=path_prior,
-            path_strength=strength,
-            mcts_sims=args.combat_mcts_sims,
-            workers=args.eval_workers,
-        )
-        gate = _paired_gate(
-            parent=parent_dev,
-            candidate=candidate_dev,
-            policy=DEV_STRATEGY_GATE,
-            mcts_sims=args.combat_mcts_sims,
-        )
-        candidates.append({
-            "path_strength": strength,
-            "gate": gate,
-            "eval": candidate_dev,
-            "path_diagnostics": _aggregate_path_diagnostics(candidate_dev),
-        })
-        _write_json(args.output_dir / f"dev30-path-{strength:.2f}.json", candidate_dev)
+        for min_spread in min_spreads:
+            for max_margin in max_margins:
+                candidate_dev = _evaluate(
+                    seeds=dev30,
+                    module_dir=args.module_dir,
+                    armg_root=args.armg_root,
+                    base_weight=args.armg_base_weight,
+                    card_prior=card_prior,
+                    card_strength=args.card_strength,
+                    path_prior=path_prior,
+                    path_strength=strength,
+                    path_min_prior_spread=min_spread,
+                    path_max_armg_margin=max_margin,
+                    mcts_sims=args.combat_mcts_sims,
+                    workers=args.eval_workers,
+                )
+                gate = _paired_gate(
+                    parent=parent_dev,
+                    candidate=candidate_dev,
+                    policy=DEV_STRATEGY_GATE,
+                    mcts_sims=args.combat_mcts_sims,
+                )
+                candidates.append({
+                    "path_strength": strength,
+                    "path_min_prior_spread": min_spread,
+                    "path_max_armg_margin": max_margin,
+                    "gate": gate,
+                    "eval": candidate_dev,
+                    "path_diagnostics": _aggregate_path_diagnostics(candidate_dev),
+                })
+                label = f"s{strength:.2f}-p{min_spread:.2f}-m{max_margin:.2f}".replace(".", "p")
+                _write_json(args.output_dir / f"dev30-{label}.json", candidate_dev)
 
     selected = max(candidates, key=lambda row: _rank(row["gate"]))
     path_strength = float(selected["path_strength"])
+    path_min_prior_spread = float(selected["path_min_prior_spread"])
+    path_max_armg_margin = float(selected["path_max_armg_margin"])
     dev_gate = dict(selected["gate"])
     _write_json(args.output_dir / "parent-dev30.json", parent_dev)
 
@@ -344,6 +379,8 @@ def main() -> int:
             seeds=hidden_seeds, module_dir=args.module_dir, armg_root=args.armg_root,
             base_weight=args.armg_base_weight, card_prior=card_prior,
             card_strength=args.card_strength, path_prior=path_prior, path_strength=path_strength,
+            path_min_prior_spread=path_min_prior_spread,
+            path_max_armg_margin=path_max_armg_margin,
             mcts_sims=args.combat_mcts_sims, workers=args.eval_workers,
         )
         hidden_gate = _paired_gate(
@@ -364,6 +401,8 @@ def main() -> int:
             seeds=fresh_seeds, module_dir=args.module_dir, armg_root=args.armg_root,
             base_weight=args.armg_base_weight, card_prior=card_prior,
             card_strength=args.card_strength, path_prior=path_prior, path_strength=path_strength,
+            path_min_prior_spread=path_min_prior_spread,
+            path_max_armg_margin=path_max_armg_margin,
             mcts_sims=args.combat_mcts_sims, workers=args.eval_workers,
         )
         fresh_gate = _paired_gate(
@@ -383,6 +422,8 @@ def main() -> int:
             seeds=confirm_seeds, module_dir=args.module_dir, armg_root=args.armg_root,
             base_weight=args.armg_base_weight, card_prior=card_prior,
             card_strength=args.card_strength, path_prior=path_prior, path_strength=path_strength,
+            path_min_prior_spread=path_min_prior_spread,
+            path_max_armg_margin=path_max_armg_margin,
             mcts_sims=args.combat_mcts_sims, workers=args.eval_workers,
         )
         confirm_gate = _paired_gate(
@@ -394,9 +435,13 @@ def main() -> int:
         "schema_version": REPORT_SCHEMA,
         "card_strength": args.card_strength,
         "selected_path_strength": path_strength,
+        "selected_path_min_prior_spread": path_min_prior_spread,
+        "selected_path_max_armg_margin": path_max_armg_margin,
         "path_strength_candidates": [
             {
                 "path_strength": row["path_strength"],
+                "path_min_prior_spread": row["path_min_prior_spread"],
+                "path_max_armg_margin": row["path_max_armg_margin"],
                 "dev": _summary(row["gate"]),
                 "path_diagnostics": row["path_diagnostics"],
             }

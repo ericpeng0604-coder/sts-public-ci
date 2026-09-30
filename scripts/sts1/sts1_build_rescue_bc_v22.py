@@ -254,7 +254,9 @@ def main() -> int:
     parent_params = {k: v.detach().clone() for k, v in parent.state_dict().items()}
     opt = torch.optim.Adam(actor.parameters(), lr=a.lr)
     history: list[dict[str, Any]] = []
-    accepted: list[tuple[tuple[float, float, float], dict[str, Any], dict[str, Any]]] = []
+    trained_candidates: list[
+        tuple[tuple[float, float, float], dict[str, Any], dict[str, Any]]
+    ] = []
 
     for ep in range(a.epochs):
         actor.train()
@@ -308,7 +310,7 @@ def main() -> int:
         actor.eval()
         rescue_eval = _eval_rescue(actor, torch, rescues)
         retention_eval_stats = _eval_retention(actor, parent, torch, elite, retention_eval)
-        ok = _retention_ok(
+        raw_retention_ok = _retention_ok(
             retention_eval_stats,
             before_retention,
             min_parent_agreement=a.min_parent_agreement,
@@ -324,65 +326,80 @@ def main() -> int:
             "winner_top1": retention_eval_stats["winner_top1"],
             "parent_top1_agreement": retention_eval_stats["parent_top1_agreement"],
             "parent_kl": retention_eval_stats["parent_kl"],
-            "retention_pass": bool(ok),
+            "raw_retention_pass": bool(raw_retention_ok),
             "rescue_improved": bool(improved),
         }
         history.append(row)
         print("V22_ANTI_FORGET_EPOCH", json.dumps(row, sort_keys=True), flush=True)
 
-        if ok and improved:
+        # Important v2.2 rule: do NOT reject a useful Rescue checkpoint here
+        # merely because the raw update changed too many G7 decisions.
+        # The interpolation stage below exists specifically to shrink that update
+        # back toward G7 before applying the hard anti-forgetting gate.
+        if improved:
             score = (
                 float(rescue_eval["top1"]),
                 -float(rescue_eval["loss"]),
                 -float(retention_eval_stats["parent_kl"]),
             )
             state = {k: v.detach().clone() for k, v in actor.state_dict().items()}
-            accepted.append((score, state, row))
+            trained_candidates.append((score, state, row))
 
-    if not accepted:
-        raise RuntimeError("no training checkpoint improved Rescue while passing anti-forgetting guards")
+    if not trained_candidates:
+        raise RuntimeError("no training checkpoint improved verified Rescue loss")
 
-    accepted.sort(key=lambda x: x[0], reverse=True)
-    trained_state = accepted[0][1]
+    trained_candidates.sort(key=lambda x: x[0], reverse=True)
 
     blend_trials = []
     best = None
-    for alpha in (1.0, 0.75, 0.5, 0.25, 0.125):
-        blended = _blend_state(torch, parent_state, trained_state, alpha)
-        actor.load_state_dict(blended)
-        actor.eval()
-        rescue_eval = _eval_rescue(actor, torch, rescues)
-        retention_eval_stats = _eval_retention(actor, parent, torch, elite, retention_eval)
-        ok = (
-            rescue_eval["loss"] < before_rescue["loss"]
-            and _retention_ok(
+    alphas = (1.0, 0.75, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625)
+    for candidate_rank, (_, trained_state, source_row) in enumerate(trained_candidates, 1):
+        for alpha in alphas:
+            blended = _blend_state(torch, parent_state, trained_state, alpha)
+            actor.load_state_dict(blended)
+            actor.eval()
+            rescue_eval = _eval_rescue(actor, torch, rescues)
+            retention_eval_stats = _eval_retention(actor, parent, torch, elite, retention_eval)
+            retention_ok = _retention_ok(
                 retention_eval_stats,
                 before_retention,
                 min_parent_agreement=a.min_parent_agreement,
                 max_parent_kl=a.max_parent_kl,
                 max_winner_drop=a.max_winner_drop,
             )
-        )
-        trial = {
-            "alpha": alpha,
-            "rescue": rescue_eval,
-            "retention": retention_eval_stats,
-            "pass": bool(ok),
-        }
-        blend_trials.append(trial)
-        print("V22_BLEND_TRIAL", json.dumps(trial, sort_keys=True), flush=True)
-        if ok:
-            score = (
-                float(rescue_eval["top1"]),
-                -float(rescue_eval["loss"]),
-                -float(retention_eval_stats["parent_kl"]),
-                -alpha,
-            )
-            if best is None or score > best[0]:
-                best = (score, {k: v.detach().clone() for k, v in blended.items()}, trial)
+            rescue_improved = rescue_eval["loss"] < before_rescue["loss"]
+            ok = rescue_improved and retention_ok
+            trial = {
+                "candidate_rank": candidate_rank,
+                "source_epoch": source_row["epoch"],
+                "alpha": alpha,
+                "rescue": rescue_eval,
+                "retention": retention_eval_stats,
+                "rescue_improved": bool(rescue_improved),
+                "retention_pass": bool(retention_ok),
+                "pass": bool(ok),
+            }
+            blend_trials.append(trial)
+            print("V22_BLEND_TRIAL", json.dumps(trial, sort_keys=True), flush=True)
+            if ok:
+                score = (
+                    float(rescue_eval["top1"]),
+                    -float(rescue_eval["loss"]),
+                    float(retention_eval_stats["parent_top1_agreement"]),
+                    -float(retention_eval_stats["parent_kl"]),
+                    -alpha,
+                )
+                if best is None or score > best[0]:
+                    best = (
+                        score,
+                        {k: v.detach().clone() for k, v in blended.items()},
+                        trial,
+                    )
 
     if best is None:
-        raise RuntimeError("no interpolated checkpoint passed anti-forgetting guards")
+        raise RuntimeError(
+            "no parent-candidate interpolation improved Rescue while passing anti-forgetting guards"
+        )
 
     selected_state = best[1]
     selected = best[2]

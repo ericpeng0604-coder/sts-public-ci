@@ -1,0 +1,13 @@
+# PPO v2.0 Isolated Two-Step Build Trace
+started=2026-09-30T15:00:00+08:00
+source_boss_run=36677610709
+parent_sha256=8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0
+selected_build_limited_seeds=10
+max_states=20
+max_alternatives=2
+max_two_step_states=20
+max_second_alternatives=2
+branch_isolation=fork
+branch_retries=1
+branch_timeout_seconds=180
+production_champion_unchanged=true

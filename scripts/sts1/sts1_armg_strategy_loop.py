@@ -1411,6 +1411,25 @@ def _example_identity(row: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def _focus_identity_set(paths: Sequence[Path]) -> set[str]:
+    identities: set[str] = set()
+    for path in paths:
+        for row in _read_examples(path):
+            identities.add(_example_identity(row))
+    return identities
+
+
+def _example_focus_weight(
+    row: Mapping[str, Any],
+    *,
+    focus_ids: set[str],
+    focus_weight: float,
+) -> float:
+    if not math.isfinite(float(focus_weight)) or float(focus_weight) < 1.0:
+        raise RuntimeError("focus weight must be finite and >= 1")
+    return float(focus_weight) if _example_identity(row) in focus_ids else 1.0
+
+
 def _read_examples(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not path.is_file():
@@ -1580,10 +1599,15 @@ def _train_candidate(
     rng_seed: int,
     min_teacher_confidence: float = 0.0,
     parent_distill_coef: float = AMBIGUITY_PARENT_DISTILL_COEF,
+    focus_paths: Sequence[Path] = (),
+    focus_weight: float = 1.0,
 ) -> dict[str, Any]:
     examples = _read_examples(replay_path)
     if not examples:
         raise RuntimeError("strategy replay is empty")
+    focus_ids = _focus_identity_set(focus_paths)
+    if not math.isfinite(float(focus_weight)) or float(focus_weight) < 1.0:
+        raise RuntimeError("focus weight must be finite and >= 1")
 
     module = armg.module
     source_state = torch.load(source_weight, weights_only=True, map_location="cpu")
@@ -1650,7 +1674,12 @@ def _train_candidate(
                 teacher_mix * ce
                 + parent_distill_coef * (1.0 - teacher_mix) * parent_distill
             )
-            loss = priority * balance * strategy_loss + anchor_coef * anchor
+            focus = _example_focus_weight(
+                row,
+                focus_ids=focus_ids,
+                focus_weight=focus_weight,
+            )
+            loss = priority * balance * focus * strategy_loss + anchor_coef * anchor
 
             optimizer.zero_grad()
             loss.backward()
@@ -1675,6 +1704,10 @@ def _train_candidate(
         "anchor_coef": anchor_coef,
         "min_teacher_confidence": min_teacher_confidence,
         "parent_distill_coef": parent_distill_coef,
+        "focus_weight": float(focus_weight),
+        "focus_example_count": sum(
+            _example_identity(row) in focus_ids for row in examples
+        ),
         "mean_teacher_mix": sum(teacher_mix_values) / len(teacher_mix_values),
         "teacher_driven_updates": sum(value > 0.0 for value in teacher_mix_values),
         "parent_preservation_updates": sum(value < 1.0 for value in teacher_mix_values),
@@ -2091,6 +2124,7 @@ def main() -> int:
             max_examples=args.max_replay_examples,
             shop_max_fraction=args.shop_max_fraction,
         )
+        focus_paths: list[Path] = [dataset_path]
 
         elite_mining_seeds: tuple[int, ...] = ()
         elite_mining_report: dict[str, Any] = {
@@ -2133,6 +2167,7 @@ def main() -> int:
                     max_examples=args.max_replay_examples,
                     shop_max_fraction=args.shop_max_fraction,
                 )
+                focus_paths.append(elite_dataset)
 
         current_dev = _evaluate_weight(
             seeds=dev30,
@@ -2154,6 +2189,7 @@ def main() -> int:
             min_teacher_confidence = float(recipe["min_teacher_confidence"])
             step_scale = float(recipe["step_scale"])
             trained_weight = round_dir / f"candidate-trained-{recipe_name}.pt"
+            rescue_mode = int(state.get("stagnation_count", 0)) >= 12
             variant_train_report = _train_candidate(
                 armg=armg,
                 source_weight=current_weight,
@@ -2164,6 +2200,8 @@ def main() -> int:
                 anchor_coef=args.anchor_coef,
                 rng_seed=args.rng_seed + round_no * 1000 + 2 + candidate_index,
                 min_teacher_confidence=min_teacher_confidence,
+                focus_paths=focus_paths if rescue_mode else (),
+                focus_weight=6.0 if rescue_mode else 1.0,
             )
             label = f"{recipe_name}-step-{int(round(step_scale * 100)):03d}"
             variant_weight = round_dir / f"candidate-{label}.pt"

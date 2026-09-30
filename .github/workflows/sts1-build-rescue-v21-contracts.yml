@@ -34,7 +34,7 @@ jobs:
       - name: Install test runtime
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]' numpy
+          python -m pip install -e '.[dev]' numpy pyyaml
           pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
       - name: Compile v2.1 path
         run: |
@@ -42,6 +42,20 @@ jobs:
             scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py \
             scripts/sts1/sts1_build_rescue_bc_v21.py \
             scripts/sts1/sts1_build_rescue_gate_v21.py
+      - name: Validate Teacher Loop YAML
+        run: |
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          p=Path(".github/workflows/sts1-build-rescue-v21-teacher-loop.yml")
+          data=yaml.safe_load(p.read_text(encoding="utf-8"))
+          assert isinstance(data,dict)
+          assert data.get("name")=="STS1 Build Rescue Teacher Loop v2.1"
+          assert isinstance(data.get("jobs"),dict)
+          for job in ("mine","aggregate","train","dev_gate","hidden_gate","fresh_gate","heldout500","report"):
+              assert job in data["jobs"], job
+          print("PASS_V21_TEACHER_LOOP_YAML",len(data["jobs"]))
+          PY
       - name: Unit contracts
         run: |
           pytest -q \

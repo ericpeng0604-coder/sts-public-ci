@@ -47,8 +47,10 @@ jobs:
               "PRESERVATION_SCHEMA",
               "_load_preservation",
               "_eval_preservation",
+              "_preservation_margin_loss",
               "preservation-replay",
               "preservation-coef",
+              "preservation-margin",
               "preservation_top1",
               "V23_REGRESSION_PRESERVATION_PASS",
           ]
@@ -146,7 +148,7 @@ jobs:
           mkdir -p evidence/sts1/v23-candidate
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
           elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
-          python scripts/sts1/sts1_build_rescue_bc_v23.py             --armg-root .cache/sts1-v23             --module-dir external/sts_lightspeed/source/build-probe             --base-weight "$parent"             --elite-replay "$elite"             --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl             --preservation-replay evidence/sts1/v23-trace/preservation.jsonl             --output evidence/sts1/v23-candidate/candidate.pt             --report evidence/sts1/v23-candidate/train-report.json             --epochs 6 --lr 3e-6             --elite-train-max 8192 --retention-eval-max 2048             --rescue-repeats 4             --winner-coef 0.80 --distill-coef 1.20 --rescue-coef 0.60             --preservation-coef 0.30             --param-anchor-coef 1e-5             --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-winner-drop 0.01             --threads 4
+          python scripts/sts1/sts1_build_rescue_bc_v23.py             --armg-root .cache/sts1-v23             --module-dir external/sts_lightspeed/source/build-probe             --base-weight "$parent"             --elite-replay "$elite"             --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl             --preservation-replay evidence/sts1/v23-trace/preservation.jsonl             --output evidence/sts1/v23-candidate/candidate.pt             --report evidence/sts1/v23-candidate/train-report.json             --epochs 6 --lr 3e-6             --elite-train-max 8192 --retention-eval-max 2048             --rescue-repeats 4             --winner-coef 0.80 --distill-coef 1.20 --rescue-coef 0.60             --preservation-coef 0.30 --preservation-margin 0.001             --param-anchor-coef 1e-5             --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-winner-drop 0.01             --threads 4
 
       - name: Build evaluation seed files
         run: |

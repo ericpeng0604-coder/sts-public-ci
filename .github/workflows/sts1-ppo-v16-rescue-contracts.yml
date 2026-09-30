@@ -1,0 +1,42 @@
+name: STS1 PPO v1.6 Rescue Contracts
+
+on:
+  push:
+    branches:
+      - gpt/sts1-ppo-v16-stagnation-rescue-20260930
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+      - name: Compile
+        run: |
+          python -m py_compile scripts/sts1/sts1_armg_ppo_v15_adapt.py
+      - name: Unit contracts
+        run: |
+          pytest -q tests/test_sts1_armg_ppo_v15.py
+      - name: Verify rescue control safety
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("control/sts1-armg-ppo-v15-auto-loop.request").read_text()
+          assert "mcts_sims=2000" in p
+          assert "candidate_threads=4" in p
+          assert "strategy_teacher_required=1" in p
+          print("PASS_PPO_V16_RESCUE_CONTROL")
+          PY

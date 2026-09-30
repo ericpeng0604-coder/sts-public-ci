@@ -122,6 +122,7 @@ def _eval_elite(actor,parent,torch,elite,indices):
 def main()->int:
     p=argparse.ArgumentParser()
     p.add_argument("--armg-root",type=Path,required=True)
+    p.add_argument("--module-dir",type=Path,required=True)
     p.add_argument("--base-weight",type=Path,required=True)
     p.add_argument("--elite-replay",type=Path,required=True)
     p.add_argument("--rescue-replay",type=Path,required=True)

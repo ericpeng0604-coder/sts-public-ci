@@ -249,6 +249,7 @@ jobs:
           elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
           python scripts/sts1/sts1_build_rescue_bc_v21.py \
             --armg-root .cache/sts1-v21-train \
+            --module-dir external/sts_lightspeed/source/build-probe \
             --base-weight "$parent" \
             --elite-replay "$elite" \
             --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl \

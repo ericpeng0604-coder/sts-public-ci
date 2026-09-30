@@ -1,0 +1,166 @@
+name: STS1 Build Rescue v2.9 Teacher Transfer Audit
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v29-transfer.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '36731071450'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v29-transfer
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        seed:
+          - 341684210
+          - 469494371
+          - 523373928
+          - 572162032
+          - 620908546
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static transfer-audit contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/sts1/sts1_build_rescue_teacher_transfer_v29.py
+          grep -q 'boss_sims=None' scripts/sts1/sts1_build_rescue_teacher_transfer_v29.py
+          grep -q 'V29_TEACHER_TRANSFER_RESULT' scripts/sts1/sts1_build_rescue_teacher_transfer_v29.py
+
+      - name: Download source rescue artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v24-mine-${{ matrix.seed }}
+          path: evidence/sts1/v29-source
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Install and hydrate pinned runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v29-${{ matrix.seed }}
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > "$RUNNER_TEMP/dev30.txt"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Audit Teacher under formal MCTS-2000
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v29-transfer
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          source="$(find evidence/sts1/v29-source -name 'result-${{ matrix.seed }}.json' -print -quit)"
+          test -n "$source"
+          python scripts/sts1/sts1_build_rescue_teacher_transfer_v29.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v29-${{ matrix.seed }}             --weight "$parent"             --heldout-seeds-file "$RUNNER_TEMP/dev30.txt"             --source-result "$source"             --output evidence/sts1/v29-transfer/transfer-${{ matrix.seed }}.json             --timeout-seconds 180
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v29-transfer-${{ matrix.seed }}
+          path: evidence/sts1/v29-transfer/
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: audit
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sts1-v29-transfer-*
+          path: evidence/sts1/v29-all
+          merge-multiple: true
+
+      - name: Aggregate formal-transfer evidence
+        id: agg
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v29-summary
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[json.loads(p.read_text()) for p in sorted(Path("evidence/sts1/v29-all").glob("transfer-*.json"))]
+          wins=[r for r in rows if r["formal_mcts2000_full_win"]]
+          payload={
+              "schema_version":"sts1-build-rescue-v29-transfer-summary",
+              "audited_seeds":len(rows),
+              "formal_mcts2000_full_wins":len(wins),
+              "formal_win_seed_ids":[r["seed"] for r in wins],
+              "rows":rows,
+          }
+          Path("evidence/sts1/v29-summary/summary.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+          print("V29_TRANSFER_SUMMARY",json.dumps({
+              "audited_seeds":len(rows),
+              "formal_mcts2000_full_wins":len(wins),
+              "formal_win_seed_ids":[r["seed"] for r in wins],
+          },sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v29-transfer-summary-${{ github.run_id }}
+          path: evidence/sts1/v29-summary/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report transfer audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          x=json.loads(Path("evidence/sts1/v29-summary/summary.json").read_text())
+          print("@ericpeng0604-coder")
+          print()
+          print("## Build Rescue v2.9 Teacher Transfer Audit")
+          print(f"- Audited rescued seeds: **{x['audited_seeds']}**")
+          print(f"- Still full-win under formal MCTS-2000: **{x['formal_mcts2000_full_wins']}**")
+          print(f"- Formal-win seed IDs: **{x['formal_win_seed_ids']}**")
+          for r in x["rows"]:
+              print(f"- Seed **{r['seed']}**: forced MCTS-2000 outcome={r['forced_mcts2000_outcome']} floor={r['forced_mcts2000_floor']} full_win={r['formal_mcts2000_full_win']}")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

@@ -98,7 +98,7 @@ jobs:
           print("PPO_V14_STATE_INTEGRITY_PASS", sys.argv[2])
           PY
           echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
-          echo "CHECKPOINT_ID=armg-ppo-v17-$sha" >> "$GITHUB_ENV"
+          echo "CHECKPOINT_ID=armg-ppo-v18-$sha" >> "$GITHUB_ENV"
 
       - name: Collect fresh v1.5 rollout shard
         run: |
@@ -194,27 +194,28 @@ jobs:
           print("PPO_V15_STATE_INTEGRITY_PASS", sys.argv[2])
           PY
           echo "STATE_DIR=$state" >> "$GITHUB_ENV"
-          echo "CHECKPOINT_ID=armg-ppo-v17-$sha" >> "$GITHUB_ENV"
+          echo "CHECKPOINT_ID=armg-ppo-v18-$sha" >> "$GITHUB_ENV"
 
-      - name: Migrate state to v1.7 victory-first reward
+      - name: Migrate state to clean v1.8 victory-first reward
         run: |
           set -euo pipefail
-          marker="$RUNNER_TEMP/v17-reward-migrated"
+          marker="$RUNNER_TEMP/v18-clean-migrated"
           rm -f "$marker"
           python - "$STATE_DIR/state.json" "$marker" <<'PY'
           import json,sys
           from pathlib import Path
           p=Path(sys.argv[1]); marker=Path(sys.argv[2])
           s=json.loads(p.read_text(encoding="utf-8"))
-          if s.get("training_reward_mode") != "v17_winrate":
+          if not bool(s.get("v18_clean_reward_migration", False)):
               s["training_reward_mode"]="v17_winrate"
               s["stagnation_count"]=0
-              s["v17_reward_migration"]=True
+              s["v18_clean_reward_migration"]=True
               p.write_text(json.dumps(s,indent=2,sort_keys=True)+"\n",encoding="utf-8")
               marker.write_text("1\n",encoding="utf-8")
-              print("PPO_V17_REWARD_MIGRATION_RESET")
+              print("PPO_V18_CLEAN_REWARD_MIGRATION_RESET")
           else:
-              print("PPO_V17_REWARD_MIGRATION_ALREADY_DONE")
+              assert s.get("training_reward_mode")=="v17_winrate", s
+              print("PPO_V18_CLEAN_REWARD_MIGRATION_ALREADY_DONE")
           PY
           if [ -f "$marker" ]; then
             rm -f "$STATE_DIR/training-critic.pt" "$STATE_DIR/ppo-replay.npz"
@@ -661,7 +662,7 @@ jobs:
           sha="$(sha256sum "$state/offline-champion.pt" | awk '{print $1}')"
           echo "CURRENT_WEIGHT=$state/offline-champion.pt" >> "$GITHUB_ENV"
           echo "STATE_DIR=$state" >> "$GITHUB_ENV"
-          echo "CHECKPOINT_ID=armg-ppo-v17-$sha" >> "$GITHUB_ENV"
+          echo "CHECKPOINT_ID=armg-ppo-v18-$sha" >> "$GITHUB_ENV"
           for name in A B C D; do
             test -f "evidence/sts1/ppo-v15-population/$name/actor.pt"
             test -f "evidence/sts1/ppo-v15-population/$name/critic.pt"
@@ -756,7 +757,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Continue v1.7, retry, or pause
+      - name: Continue v1.8, retry, or pause
         env:
           ROLLOUT_RESULT: ${{ needs.rollout.result }}
           TRAIN_GATE_RESULT: ${{ needs.train-and-gate.result }}
@@ -800,6 +801,10 @@ jobs:
                   v="0"
               if k=="ppo_version":
                   v="1.8"
+              if k=="reward_mode":
+                  v="v17_winrate"
+              if k=="win_conversion_enabled":
+                  v="1"
               rows.append((k,v))
               seen.add(k)
           defaults={
@@ -809,6 +814,11 @@ jobs:
               "strategy_teacher_min_confidence":"0.75",
               "strategy_teacher_min_margin":"3.0",
               "strategy_teacher_min_consensus":"0.0",
+              "win_conversion_enabled":"1",
+              "win_conversion_primary_mcts":"2000",
+              "win_conversion_confirm_mcts":"10000",
+              "win_conversion_max_states":"2",
+              "win_conversion_max_alternatives":"3",
               "candidate_threads":"4",
           }
           for k,v in defaults.items():
@@ -872,6 +882,10 @@ jobs:
                   v="auto_retry_after_failure"
               elif k=="ppo_version":
                   v="1.8"
+              elif k=="reward_mode":
+                  v="v17_winrate"
+              elif k=="win_conversion_enabled":
+                  v="1"
               rows.append((k,v))
               seen.add(k)
           defaults={
@@ -881,6 +895,11 @@ jobs:
               "strategy_teacher_min_confidence":"0.75",
               "strategy_teacher_min_margin":"3.0",
               "strategy_teacher_min_consensus":"0.0",
+              "win_conversion_enabled":"1",
+              "win_conversion_primary_mcts":"2000",
+              "win_conversion_confirm_mcts":"10000",
+              "win_conversion_max_states":"2",
+              "win_conversion_max_alternatives":"3",
               "candidate_threads":"4",
           }
           for k,v in defaults.items():

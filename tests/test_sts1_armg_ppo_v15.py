@@ -386,3 +386,53 @@ def test_parent_fast_cache_rejects_seed_pin_drift(tmp_path):
         mcts_sims=2000,
         sim_head=sim_head,
     )
+
+
+def test_v16_stagnation_rescue_uses_stronger_teacher_signal():
+    state = {
+        "schema_version": "sts1-armg-ppo-v14-loop-state-v1",
+        "round_index": 200,
+        "stagnation_count": 54,
+        "last_decision": "HOLD_PARENT",
+        "last_dev_gate": {
+            "win_delta": -3,
+            "mean_paired_floor_delta": -0.8,
+        },
+    }
+    order = [
+        "attempt",
+        "retry_count",
+        "games_per_worker",
+        "mcts_sims",
+        "max_rounds",
+        "ppo_version",
+        "strategy_teacher_coef",
+        "strategy_teacher_max_examples",
+        "strategy_teacher_required",
+        "candidate_threads",
+    ]
+    control = {
+        "attempt": "200",
+        "retry_count": "0",
+        "games_per_worker": "80",
+        "mcts_sims": "2000",
+        "max_rounds": "0",
+        "ppo_version": "1.5",
+        "strategy_teacher_coef": "0.01",
+        "strategy_teacher_max_examples": "512",
+        "strategy_teacher_required": "1",
+        "candidate_threads": "4",
+    }
+
+    updated, report = adapt_mod.adapt(
+        state=state,
+        control_order=order,
+        control=control,
+    )
+
+    assert report["rescue_mode"] is True
+    assert report["profile"]["name"] == "teacher_reanchor"
+    assert updated["strategy_teacher_coef"] == "0.05"
+    assert updated["strategy_teacher_max_examples"] == "1024"
+    assert updated["mcts_sims"] == "2000"
+    assert report["production_champion_changed"] is False

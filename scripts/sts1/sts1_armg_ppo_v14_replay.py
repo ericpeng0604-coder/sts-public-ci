@@ -285,6 +285,81 @@ def _elite_key(game: dict[str, Any]) -> tuple[int, int, int, int]:
     )
 
 
+def _select_rescue_replay(
+    games: list[dict[str, Any]],
+    *,
+    max_games: int,
+    decision_budget: int,
+) -> list[dict[str, Any]]:
+    """Mix wins, deep losses, and recent episodes without duplicating games."""
+    if max_games <= 0 or decision_budget <= 0 or not games:
+        return []
+
+    winners = sorted(
+        (game for game in games if bool(game["victory"])),
+        key=_winner_replay_key,
+        reverse=True,
+    )
+    losses = [game for game in games if not bool(game["victory"])]
+    deep_losses = sorted(
+        losses,
+        key=lambda game: (
+            int(game["final_floor"]),
+            int(game["source_round"]),
+            int(game["seed"]),
+        ),
+        reverse=True,
+    )
+    recent_losses = sorted(losses, key=_recent_key, reverse=True)
+
+    win_quota = (max_games + 1) // 2
+    deep_quota = (max_games * 3) // 10
+    recent_quota = max_games - win_quota - deep_quota
+
+    selected: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    used_decisions = 0
+
+    def add_group(group: list[dict[str, Any]], quota: int) -> None:
+        nonlocal used_decisions
+        added = 0
+        for game in group:
+            if added >= quota or len(selected) >= max_games:
+                break
+            key = (str(game["checkpoint_id"]), int(game["seed"]))
+            if key in seen:
+                continue
+            game_decisions = len(game["action"])
+            if used_decisions + game_decisions > decision_budget:
+                continue
+            selected.append(game)
+            seen.add(key)
+            used_decisions += game_decisions
+            added += 1
+
+    add_group(winners, win_quota)
+    add_group(deep_losses, deep_quota)
+    add_group(recent_losses, recent_quota)
+
+    # If one bucket is undersupplied, use the remaining budget instead of
+    # throwing useful data away. Wins stay first, then deepest losses, then recency.
+    fallback = winners + deep_losses + recent_losses
+    for game in fallback:
+        if len(selected) >= max_games:
+            break
+        key = (str(game["checkpoint_id"]), int(game["seed"]))
+        if key in seen:
+            continue
+        game_decisions = len(game["action"])
+        if used_decisions + game_decisions > decision_budget:
+            continue
+        selected.append(game)
+        seen.add(key)
+        used_decisions += game_decisions
+
+    return selected
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--fresh-dir", type=Path, required=True)
@@ -331,8 +406,6 @@ def main() -> int:
         for game in same_parent
         if int(game["seed"]) not in fresh_seeds
     ]
-    reusable = sorted(reusable, key=_winner_replay_key, reverse=True)
-
     train_replay_game_limit = min(
         len(reusable),
         int(len(fresh) * args.replay_fraction),
@@ -340,16 +413,11 @@ def main() -> int:
     replay_decision_budget = int(
         _game_decisions(fresh) * args.replay_fraction
     )
-    train_replay: list[dict[str, Any]] = []
-    used_replay_decisions = 0
-    for game in reusable:
-        if len(train_replay) >= train_replay_game_limit:
-            break
-        game_decisions = len(game["action"])
-        if used_replay_decisions + game_decisions > replay_decision_budget:
-            continue
-        train_replay.append(game)
-        used_replay_decisions += game_decisions
+    train_replay = _select_rescue_replay(
+        reusable,
+        max_games=train_replay_game_limit,
+        decision_budget=replay_decision_budget,
+    )
     _pack(
         args.output_dir / "replay_00.npz",
         train_replay,
@@ -401,7 +469,7 @@ def main() -> int:
         "train_replay_games": len(train_replay),
         "train_replay_decisions": _game_decisions(train_replay),
         "train_replay_victories": sum(bool(game["victory"]) for game in train_replay),
-        "train_replay_selection": "victory_then_floor_then_recency",
+        "train_replay_selection": "quota_50pct_wins_30pct_deep_losses_20pct_recent_then_fill",
         "train_replay_fraction_of_fresh_games": (
             len(train_replay) / max(1, len(fresh))
         ),

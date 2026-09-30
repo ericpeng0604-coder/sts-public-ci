@@ -529,3 +529,77 @@ def test_v16_dev_gate_promotes_real_win_improvement():
     assert result["win_delta"] == 1
     assert result["status"] == "PASS"
     assert result["decision"] == "ADOPT_PARENT"
+
+
+ROLLOUT_V17_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_rollout_v14.py"
+ROLLOUT_V17_SPEC = importlib.util.spec_from_file_location(
+    "sts1_armg_ppo_rollout_v17_test",
+    ROLLOUT_V17_SCRIPT,
+)
+assert ROLLOUT_V17_SPEC and ROLLOUT_V17_SPEC.loader
+rollout_v17 = importlib.util.module_from_spec(ROLLOUT_V17_SPEC)
+sys.modules[ROLLOUT_V17_SPEC.name] = rollout_v17
+ROLLOUT_V17_SPEC.loader.exec_module(rollout_v17)
+
+
+def test_v17_terminal_reward_is_victory_first():
+    defeat = rollout_v17._v17_terminal_bonus(50, victory=False)
+    victory = rollout_v17._v17_terminal_bonus(50, victory=True)
+    early_defeat = rollout_v17._v17_terminal_bonus(16, victory=False)
+    assert victory - defeat == 3.25
+    assert victory > 10 * max(0.01, defeat)
+    assert defeat > early_defeat
+
+
+def test_v17_strategy_teacher_filters_low_confidence_and_low_margin(tmp_path):
+    import json
+
+    path = tmp_path / "strategy-replay.jsonl"
+    strong = _strategy_row("map", current=0, teacher=1, priority=3.0)
+    strong["confidence_weight"] = 0.75
+    strong["teacher_margin"] = 4.0
+
+    weak_conf = _strategy_row("shop", current=0, teacher=1, priority=4.0)
+    weak_conf["confidence_weight"] = 0.50
+    weak_conf["teacher_margin"] = 9.0
+
+    weak_margin = _strategy_row("rest", current=0, teacher=1, priority=5.0)
+    weak_margin["confidence_weight"] = 1.0
+    weak_margin["teacher_margin"] = 1.0
+
+    path.write_text(
+        "".join(json.dumps(row) + "\n" for row in [strong, weak_conf, weak_margin]),
+        encoding="utf-8",
+    )
+
+    selected = train_mod.load_strategy_teacher_examples(
+        path,
+        max_examples=16,
+        combat_policy="mcts_2000",
+        min_confidence_weight=0.75,
+        min_teacher_margin=3.0,
+    )
+    assert len(selected) == 1
+    assert selected[0]["kind"] == "map"
+
+
+def test_v17_strategy_teacher_can_require_consensus_metadata(tmp_path):
+    import json
+
+    path = tmp_path / "strategy-replay.jsonl"
+    accepted = _strategy_row("map", current=0, teacher=1, priority=3.0)
+    accepted["teacher_consensus_fraction"] = 0.75
+    rejected = _strategy_row("shop", current=0, teacher=1, priority=3.0)
+    rejected["teacher_consensus_fraction"] = 0.50
+    path.write_text(
+        "".join(json.dumps(row) + "\n" for row in [accepted, rejected]),
+        encoding="utf-8",
+    )
+    selected = train_mod.load_strategy_teacher_examples(
+        path,
+        max_examples=16,
+        combat_policy="mcts_2000",
+        min_consensus_fraction=0.75,
+    )
+    assert len(selected) == 1
+    assert selected[0]["kind"] == "map"

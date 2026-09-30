@@ -19,6 +19,7 @@ SIM_META = ROOT / "external" / "sts_lightspeed" / "UPSTREAM.json"
 AGENT_DST = ROOT / "external" / "sts-rl-agent" / "source"
 SIM_DST = ROOT / "external" / "sts_lightspeed" / "source"
 EVIDENCE = ROOT / "evidence" / "sts1" / "baseline_v0"
+LOCAL_CLONE_BINDING_ID = "sts1-gamecontext-clone-binding-v1"
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
@@ -78,6 +79,29 @@ def hydrate(meta: dict, dst: Path, *, submodules: bool = False) -> str:
     return head
 
 
+def apply_local_gamecontext_clone_binding(sim_root: Path) -> str:
+    """Expose GameContext's C++ value copy to Python for deterministic branch tests."""
+    binding = sim_root / "bindings" / "slaythespire.cpp"
+    text = binding.read_text(encoding="utf-8")
+    needle = (
+        '    gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())\n'
+        '        .def("pick_reward_card", &sts::py::pickRewardCard, '
+    )
+    replacement = (
+        '    gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())\n'
+        '        .def("clone", [](const GameContext &gc) { return GameContext(gc); },\n'
+        '             "copy the full run state for deterministic out-of-combat branching")\n'
+        '        .def("pick_reward_card", &sts::py::pickRewardCard, '
+    )
+    if 'gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())\n        .def("clone"' in text:
+        raise RuntimeError("GameContext clone binding unexpectedly already present upstream")
+    if needle not in text:
+        raise RuntimeError("GameContext binding anchor changed; refusing to patch silently")
+    patched = text.replace(needle, replacement, 1)
+    binding.write_text(patched, encoding="utf-8")
+    return sha256(binding)
+
+
 def main() -> None:
     agent = json.loads(AGENT_META.read_text(encoding="utf-8"))
     sim = json.loads(SIM_META.read_text(encoding="utf-8"))
@@ -119,6 +143,10 @@ def main() -> None:
     run("git", "apply", "--check", str(patch), cwd=SIM_DST)
     run("git", "apply", str(patch), cwd=SIM_DST)
 
+    # Local interface-only extension: expose the existing C++ GameContext copy
+    # constructor to Python. This does not alter game rules or RNG progression.
+    patched_binding_sha256 = apply_local_gamecontext_clone_binding(SIM_DST)
+
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     manifest_path = EVIDENCE / "manifest.json"
     manifest = {
@@ -155,6 +183,8 @@ def main() -> None:
             "eval_seeds_path": agent["eval_seed_path"],
             "eval_seeds_sha256": sha256(seeds),
             "eval_seed_count": len(seed_values),
+            "local_clone_binding_id": LOCAL_CLONE_BINDING_ID,
+            "patched_binding_sha256": patched_binding_sha256,
         },
         "evaluation_contract": {
             "character": "IRONCLAD",
@@ -179,6 +209,8 @@ def main() -> None:
         "model_sha256": manifest["artifacts"]["model_sha256"],
         "eval_seeds_sha256": manifest["artifacts"]["eval_seeds_sha256"],
         "eval_seed_count": len(seed_values),
+        "local_clone_binding_id": LOCAL_CLONE_BINDING_ID,
+        "patched_binding_sha256": patched_binding_sha256,
         "pybind11_upstream_sha": pybind_original,
         "pybind11_active_sha": pybind_active,
     }, indent=2))

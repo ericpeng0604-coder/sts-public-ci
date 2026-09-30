@@ -104,16 +104,38 @@ def diagnose_seed(
             "seed":seed,
             "status":"NOT_REPRODUCED_AS_NEAR_BOSS_LOSS",
             "base":base,
+            "captured_states":len(policy.conversion_states),
+            "captured_state_summary":[
+                {
+                    "floor":int(row.get("floor",0) or 0),
+                    "act":int(row.get("act",0) or 0),
+                    "kind":str(row.get("kind","unknown")),
+                    "choices":len(row.get("descs",[])),
+                }
+                for row in policy.conversion_states
+            ],
             "attempted_states":0,
             "rescue":None,
         }
 
     target=rollout._boss_target_floor(floor)
-    target_act=ACT_BY_BOSS[target]
+    captured=list(policy.conversion_states)
+    captured_summary=[
+        {
+            "floor":int(row.get("floor",0) or 0),
+            "act":int(row.get("act",0) or 0),
+            "kind":str(row.get("kind","unknown")),
+            "choices":len(row.get("descs",[])),
+        }
+        for row in captured
+    ]
+    # Floor is the stable cross-version key. The simulator's act field can
+    # transition around Boss boundaries, so filtering on exact act caused
+    # valid reversible states to be discarded.
     records=[
         row
-        for row in policy.conversion_states
-        if int(row.get("act",0))==target_act and int(row.get("floor",0)) <= target
+        for row in captured
+        if int(row.get("floor",0) or 0) <= target
         and len(row.get("descs",[]))>=2
     ]
     records=list(reversed(records[-max_states:]))
@@ -168,6 +190,9 @@ def diagnose_seed(
                 "status":"EARLY_BUILD_RESCUE_FOUND",
                 "base":base,
                 "target_boss_floor":target,
+                "captured_states":len(captured),
+                "captured_state_summary":captured_summary,
+                "candidate_states":len(records),
                 "attempted_states":attempted,
                 "rescue":{
                     "decision_floor":int(record["floor"]),
@@ -193,6 +218,9 @@ def diagnose_seed(
         "status":"NO_SINGLE_EARLY_BUILD_RESCUE",
         "base":base,
         "target_boss_floor":target,
+        "captured_states":len(captured),
+        "captured_state_summary":captured_summary,
+        "candidate_states":len(records),
         "attempted_states":attempted,
         "rescue":None,
     }

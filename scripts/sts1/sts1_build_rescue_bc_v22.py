@@ -27,6 +27,8 @@ from typing import Any
 import numpy as np
 
 SCHEMA = "sts1-armg-strategy-branch-dataset-v1"
+PARENT_HIGH_CONFIDENCE_PROB_GAP = 0.05
+MIN_HIGH_CONFIDENCE_DECISIONS = 256
 
 
 def _load_rescues(path: Path) -> list[dict[str, Any]]:
@@ -102,11 +104,16 @@ def _elite_terms(actor, parent, torch, elite: dict[str, np.ndarray], i: int):
         parent_logits = parent.net(x).squeeze(1)
         parent_probs = torch.softmax(parent_logits, 0)
         parent_top1 = int(torch.argmax(parent_logits))
+        if len(parent_probs) >= 2:
+            top2 = torch.topk(parent_probs, k=2).values
+            parent_prob_gap = float(top2[0] - top2[1])
+        else:
+            parent_prob_gap = 1.0
     logp = torch.log_softmax(logits, 0)
     action = int(elite["action"][i])
     hard_ce = -logp[action]
     parent_kl = (parent_probs * (torch.log_softmax(parent_logits, 0) - logp)).sum()
-    return hard_ce, parent_kl, logits, parent_top1
+    return hard_ce, parent_kl, logits, parent_top1, parent_prob_gap
 
 
 def _eval_rescue(actor, torch, rows):
@@ -125,18 +132,34 @@ def _eval_retention(actor, parent, torch, elite, indices):
         raise RuntimeError("retention split is empty")
     winner_correct = 0
     parent_agree = 0
+    high_conf_total = 0
+    high_conf_agree = 0
     kls: list[float] = []
+    gaps: list[float] = []
     with torch.no_grad():
         for raw in indices:
             i = int(raw)
-            _, kl, logits, parent_top1 = _elite_terms(actor, parent, torch, elite, i)
+            _, kl, logits, parent_top1, parent_prob_gap = _elite_terms(
+                actor, parent, torch, elite, i
+            )
             pred = int(torch.argmax(logits))
             winner_correct += int(pred == int(elite["action"][i]))
             parent_agree += int(pred == parent_top1)
+            if parent_prob_gap >= PARENT_HIGH_CONFIDENCE_PROB_GAP:
+                high_conf_total += 1
+                high_conf_agree += int(pred == parent_top1)
             kls.append(float(kl))
+            gaps.append(parent_prob_gap)
+    high_conf_agreement = (
+        high_conf_agree / high_conf_total if high_conf_total else 0.0
+    )
     return {
         "winner_top1": winner_correct / len(indices),
         "parent_top1_agreement": parent_agree / len(indices),
+        "parent_high_conf_top1_agreement": high_conf_agreement,
+        "parent_high_conf_decisions": int(high_conf_total),
+        "parent_high_conf_prob_gap": PARENT_HIGH_CONFIDENCE_PROB_GAP,
+        "parent_prob_gap_mean": float(np.mean(gaps)),
         "parent_kl": float(np.mean(kls)),
         "decisions": int(len(indices)),
     }
@@ -153,7 +176,8 @@ def _blend_state(torch, parent_state, candidate_state, alpha: float):
 
 def _retention_ok(stats, before, *, min_parent_agreement, max_parent_kl, max_winner_drop):
     return (
-        float(stats["parent_top1_agreement"]) >= min_parent_agreement
+        int(stats["parent_high_conf_decisions"]) >= MIN_HIGH_CONFIDENCE_DECISIONS
+        and float(stats["parent_high_conf_top1_agreement"]) >= min_parent_agreement
         and float(stats["parent_kl"]) <= max_parent_kl
         and float(stats["winner_top1"]) + max_winner_drop >= float(before["winner_top1"])
     )
@@ -279,7 +303,7 @@ def main() -> int:
                     priority = min(2.0, max(1.0, float(row.get("priority", 1.0))))
                     rescue_terms.append(priority * ce)
                 if j < len(elite_order):
-                    ce, kl, _, _ = _elite_terms(actor, parent, torch, elite, int(elite_order[j]))
+                    ce, kl, _, _, _ = _elite_terms(actor, parent, torch, elite, int(elite_order[j]))
                     winner_terms.append(ce)
                     distill_terms.append(kl)
 
@@ -325,6 +349,8 @@ def main() -> int:
             "rescue_top1": rescue_eval["top1"],
             "winner_top1": retention_eval_stats["winner_top1"],
             "parent_top1_agreement": retention_eval_stats["parent_top1_agreement"],
+            "parent_high_conf_top1_agreement": retention_eval_stats["parent_high_conf_top1_agreement"],
+            "parent_high_conf_decisions": retention_eval_stats["parent_high_conf_decisions"],
             "parent_kl": retention_eval_stats["parent_kl"],
             "raw_retention_pass": bool(raw_retention_ok),
             "rescue_improved": bool(improved),
@@ -432,7 +458,9 @@ def main() -> int:
         "elite_train_decisions": int(len(elite_train)),
         "retention_eval_decisions": int(len(retention_eval)),
         "guards": {
-            "min_parent_agreement": a.min_parent_agreement,
+            "min_parent_high_conf_agreement": a.min_parent_agreement,
+            "parent_high_conf_prob_gap": PARENT_HIGH_CONFIDENCE_PROB_GAP,
+            "min_high_conf_decisions": MIN_HIGH_CONFIDENCE_DECISIONS,
             "max_parent_kl": a.max_parent_kl,
             "max_winner_drop": a.max_winner_drop,
         },
@@ -456,6 +484,8 @@ def main() -> int:
                 "rescue_top1_after": after_rescue["top1"],
                 "winner_top1_after": after_retention["winner_top1"],
                 "parent_top1_agreement": after_retention["parent_top1_agreement"],
+                "parent_high_conf_top1_agreement": after_retention["parent_high_conf_top1_agreement"],
+                "parent_high_conf_decisions": after_retention["parent_high_conf_decisions"],
                 "parent_kl": after_retention["parent_kl"],
                 "selected_alpha": selected["alpha"],
             },

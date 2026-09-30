@@ -1,6 +1,6 @@
 enabled=1
-attempt=124
-retry_count=1
+attempt=1
+retry_count=0
 max_retries=3
 max_rounds=1
 training_seeds=8
@@ -28,3 +28,4 @@ elite_min_win_delta=1
 elite_min_floor_delta=-0.5
 elite_max_pool=3
 report_issue=15
+human_path_disagreement_bonus=1.5

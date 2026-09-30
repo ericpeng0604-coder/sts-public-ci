@@ -254,6 +254,8 @@ def _conversion_row(
     baseline_10k: dict[str, Any],
     alt_2k: dict[str, Any],
     alt_10k: dict[str, Any],
+    primary_mcts: int,
+    confirm_mcts: int,
 ) -> dict[str, Any]:
     target = [0.0] * len(record["descs"])
     target[int(alternative)] = 1.0
@@ -274,8 +276,8 @@ def _conversion_row(
         "teacher_margin": 12.0,
         "confidence_weight": 1.0,
         "teacher_consensus_fraction": 1.0,
-        "combat_policy": "mcts_2000",
-        "confirmation_policy": "mcts_10000",
+        "combat_policy": f"mcts_{int(primary_mcts)}",
+        "confirmation_policy": f"mcts_{int(confirm_mcts)}",
         "baseline_confirmed_loss": {
             "mcts_2000": baseline_2k,
             "mcts_10000": baseline_10k,
@@ -292,6 +294,8 @@ def _second_conversion_row(
     intervention: dict[str, Any],
     seed: int | None,
     target_floor: int,
+    primary_mcts: int,
+    confirm_mcts: int,
 ) -> dict[str, Any]:
     return {
         "schema_version": "sts1-armg-strategy-branch-dataset-v1",
@@ -310,8 +314,8 @@ def _second_conversion_row(
         "teacher_margin": 10.0,
         "confidence_weight": 1.0,
         "teacher_consensus_fraction": 1.0,
-        "combat_policy": "mcts_2000",
-        "confirmation_policy": "mcts_10000",
+        "combat_policy": f"mcts_{int(primary_mcts)}",
+        "confirmation_policy": f"mcts_{int(confirm_mcts)}",
         "target_boss_floor": int(target_floor),
     }
 
@@ -406,6 +410,8 @@ def _mine_win_conversions(
                         baseline_10k=baseline_10k,
                         alt_2k=alt_2k,
                         alt_10k=alt_10k,
+                        primary_mcts=primary_mcts,
+                        confirm_mcts=confirm_mcts,
                     )
                 ]
 
@@ -445,6 +451,8 @@ def _mine_win_conversions(
                     baseline_10k=baseline_10k,
                     alt_2k=two_2k,
                     alt_10k=two_10k,
+                    primary_mcts=primary_mcts,
+                    confirm_mcts=confirm_mcts,
                 )
                 second = two_10k.get("second_intervention") or two_2k.get("second_intervention")
                 rows = [first]
@@ -454,6 +462,8 @@ def _mine_win_conversions(
                             intervention=second,
                             seed=seed,
                             target_floor=target_floor,
+                            primary_mcts=primary_mcts,
+                            confirm_mcts=confirm_mcts,
                         )
                     )
                 return rows

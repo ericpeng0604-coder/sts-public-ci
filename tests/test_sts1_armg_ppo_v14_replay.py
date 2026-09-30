@@ -144,7 +144,7 @@ def test_same_parent_replay_is_bounded_and_preserves_temperature(tmp_path: Path)
         assert replayed.issubset({1, 2, 3, 4})
         assert 3 in replayed  # the known winning episode must survive replay selection
     assert m2["train_replay_victories"] >= 1
-    assert m2["train_replay_selection"] == "victory_then_floor_then_recency"
+    assert m2["train_replay_selection"] == "v17_40pct_wins_35pct_boss_failures_15pct_deep_10pct_recent_then_fill"
 
 
 def test_parent_change_rejects_ppo_replay_but_keeps_elite_archive(tmp_path: Path):
@@ -196,3 +196,40 @@ def test_replay_pool_keeps_complete_episode_boundaries(tmp_path: Path):
             idx = np.flatnonzero(d["game_seed"] == seed)
             assert int(d["done"][idx].sum()) == 1
             assert bool(d["done"][idx[-1]])
+
+
+
+def test_v17_replay_explicitly_keeps_boss_failures():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("replay_v17", REPLAY)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    def game(seed, floor, victory=False, source_round=1):
+        return {
+            "seed": seed,
+            "checkpoint_id": "parent-A",
+            "source_round": source_round,
+            "temperature": 1.0,
+            "victory": victory,
+            "final_floor": floor,
+            "action": [0],
+        }
+
+    games = [
+        game(1, 51, True),
+        game(2, 51, True),
+        game(3, 16),
+        game(4, 33),
+        game(5, 50),
+        game(6, 45),
+        game(7, 12, source_round=99),
+        game(8, 8, source_round=100),
+    ]
+    selected = mod._select_rescue_replay(games, max_games=6, decision_budget=6)
+    boss = [g for g in selected if mod._is_boss_failure(g)]
+    assert len(selected) == 6
+    assert len(boss) >= 2
+    assert any(g["final_floor"] in {16, 33, 50} for g in boss)

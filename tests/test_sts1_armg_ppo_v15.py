@@ -461,7 +461,7 @@ def _replay_game(seed: int, *, victory: bool, floor: int, source_round: int):
     }
 
 
-def test_v16_rescue_replay_mixes_wins_deep_losses_and_recent_data():
+def test_v17_rescue_replay_mixes_wins_boss_failures_and_recent_data():
     games = [
         _replay_game(1, victory=True, floor=51, source_round=1),
         _replay_game(2, victory=True, floor=51, source_round=2),
@@ -483,9 +483,9 @@ def test_v16_rescue_replay_mixes_wins_deep_losses_and_recent_data():
     seeds = {int(game["seed"]) for game in selected}
     assert len(selected) == 6
     assert len(seeds) == 6
-    assert {1, 2, 3}.issubset(seeds)
-    assert any(int(game["final_floor"]) >= 48 and not game["victory"] for game in selected)
-    assert any(int(game["source_round"]) >= 100 and not game["victory"] for game in selected)
+    assert sum(bool(game["victory"]) for game in selected) >= 2
+    assert sum(replay_mod._is_boss_failure(game) for game in selected) >= 2
+    assert any(int(game["source_round"]) >= 101 and not game["victory"] for game in selected)
 
 
 GATE_SCRIPT = ROOT / "scripts" / "sts1" / "sts1_armg_ppo_v14_gate.py"

@@ -103,3 +103,60 @@ jobs:
           path: evidence/sts1/v20-boss-diagnostic/summary.json
           if-no-files-found: error
           retention-days: 30
+
+  build-trace:
+    needs: aggregate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v20-boss-diagnostic-summary
+          path: evidence/sts1/v20-boss-diagnostic
+
+      - name: Install and hydrate
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v20-build-trace
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download frozen G7 parent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          weight="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$weight"
+          actual="$(sha256sum "$weight" | awk '{print $1}')"
+          test "$actual" = "$G7_WEIGHT_SHA256"
+          cp "$weight" "$RUNNER_TEMP/g7-parent.pt"
+
+      - name: Trace unresolved Boss-50k losses earlier in the build
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v20-build-trace             --weight "$RUNNER_TEMP/g7-parent.pt"             --seeds-file control/sts1-v15-dev-seeds-50.txt             --boss-summary evidence/sts1/v20-boss-diagnostic/summary.json             --output evidence/sts1/v20-build-trace/summary.json             --teacher-output evidence/sts1/v20-build-trace/candidate-teacher.jsonl             --max-seeds 10             --max-states 20             --max-alternatives 2
+          cat evidence/sts1/v20-build-trace/summary.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v20-build-trace-summary
+          path: evidence/sts1/v20-build-trace/
+          if-no-files-found: error
+          retention-days: 30

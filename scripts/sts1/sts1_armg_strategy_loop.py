@@ -40,6 +40,7 @@ from roguelike_ai.sts1_phase3.armg_strategy_evolve import (
     FRESH_STRATEGY_GATE,
     HIDDEN_STRATEGY_GATE,
     STRATEGY_DATASET_SCHEMA_VERSION,
+    StrategyGatePolicy,
     branch_quality,
     evaluate_strategy_gate,
     soft_branch_targets,
@@ -65,6 +66,14 @@ CANDIDATE_RECIPES = (
     {"name": "confident", "min_teacher_confidence": 0.50, "step_scale": 0.50},
     {"name": "strict", "min_teacher_confidence": 0.75, "step_scale": 1.00},
 )
+DEV_CONFIRM_20_GATE = StrategyGatePolicy(
+    "strategy-dev-confirm-20",
+    20,
+    min_win_delta=0,
+    min_floor_delta=0.0,
+    max_floor_regression_with_win_gain=60.0,
+)
+
 RESCUE_CANDIDATE_RECIPES = (
     {"name": "rescue_micro", "min_teacher_confidence": 0.0, "step_scale": 0.10},
     {"name": "rescue_confident", "min_teacher_confidence": 0.50, "step_scale": 0.20},
@@ -2050,6 +2059,7 @@ def main() -> int:
             "the first 30 are the reusable Dev gate and all 50 stay train-excluded"
         )
     dev30 = dev_all[:30]
+    dev_confirm20 = dev_all[30:]
 
     if not args.armg_base_weight.is_file():
         raise RuntimeError(f"ArmG base weight missing: {args.armg_base_weight}")
@@ -2285,18 +2295,36 @@ def main() -> int:
             "selected_candidate_sha256": _sha256(candidate_weight),
         }
 
+        dev_confirm_gate: dict[str, Any] = {
+            "status": "SKIPPED",
+            "reasons": ["dev_30_gate_did_not_pass"],
+        }
+        if dev_gate.get("status") == "PASS":
+            current_dev_confirm, candidate_dev_confirm, dev_confirm_gate = _eval_and_gate(
+                current_weight=current_weight,
+                candidate_weight=candidate_weight,
+                seeds=dev_confirm20,
+                module_dir=args.module_dir,
+                armg_root=args.armg_root,
+                mcts_sims=args.combat_mcts_sims,
+                workers=args.eval_workers,
+                policy=DEV_CONFIRM_20_GATE,
+            )
+            _write_json(round_dir / "eval-current-dev-confirm20.json", current_dev_confirm)
+            _write_json(round_dir / "eval-candidate-dev-confirm20.json", candidate_dev_confirm)
+
         hidden_seeds: tuple[int, ...] = ()
         fresh_seeds: tuple[int, ...] = ()
         hidden_gate: dict[str, Any] = {
             "status": "SKIPPED",
-            "reasons": ["dev_30_gate_did_not_pass"],
+            "reasons": ["dev_confirmation_not_passed"],
         }
         fresh_gate: dict[str, Any] = {
             "status": "SKIPPED",
             "reasons": ["hidden_50_gate_not_passed"],
         }
 
-        if dev_gate["status"] == "PASS":
+        if dev_gate["status"] == "PASS" and dev_confirm_gate.get("status") == "PASS":
             hidden_seeds = _fresh_seeds(
                 count=50,
                 rng_seed=args.rng_seed + round_no * 1000 + 3,
@@ -2423,6 +2451,7 @@ def main() -> int:
             "training": train_report,
             "candidate_pool": candidate_pool_report,
             "dev_gate": dev_gate,
+            "dev_confirm20_gate": dev_confirm_gate,
             "hidden_gate": hidden_gate,
             "fresh_gate": fresh_gate,
             "promotion": promotion,

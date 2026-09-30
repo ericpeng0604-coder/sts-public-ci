@@ -1,9 +1,9 @@
-name: STS1 Strategy Parallel CPU v4 Auto Loop
+name: STS1 Strategy v6 Stagnation Rescue
 
 on:
   push:
     branches:
-      - gpt/sts1-strategy-parallel-cpu-v4-20260928
+      - gpt/sts1-strategy-v6-stagnation-rescue-20260930
     paths:
       - '.github/workflows/sts1-armg-strategy-loop.yml'
       - 'src/roguelike_ai/sts1_phase3/armg_strategy_evolve.py'
@@ -23,7 +23,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: sts1-strategy-parallel-cpu-v4-auto-loop
+  group: sts1-strategy-v6-stagnation-rescue
   cancel-in-progress: false
 
 env:
@@ -34,8 +34,8 @@ env:
   NUMEXPR_NUM_THREADS: '1'
   GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
-  STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v4'
-  BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v3'
+  STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v6-rescue'
+  BOOTSTRAP_STATE_ARTIFACT: 'sts1-armg-strategy-loop-state-v4'
   BOOTSTRAP_ELITE_REPORT_ARTIFACT: 'sts1-armg-strategy-loop-report-36415222490'
   BOOTSTRAP_ELITE_EXPECTED_SHA: 'ea6d7bfa59f3bd4ac3c11dd2d4ebf236182a38acaed3fa720f0b81744cc0e4e5'
   BOOTSTRAP_ELITE_PARENT_SHA: 'fc4bb1e64ea3ee4aec2245445a01172afb35f872b7b9c90a2b6000430f4c67cb'
@@ -472,7 +472,7 @@ jobs:
         if: env.STRATEGY_ENABLED == '1' && success()
         uses: actions/upload-artifact@v4
         with:
-          name: sts1-armg-strategy-loop-state-v4
+          name: sts1-armg-strategy-loop-state-v6-rescue
           path: |
             ${{ runner.temp }}/strategy-state/strategy-state.json
             ${{ runner.temp }}/strategy-state/current-strategy.pt
@@ -518,7 +518,7 @@ jobs:
           summary_text=""
 
           if [ "$CONTRACT_RESULT" = "success" ] && [ "$ROUND_RESULT" = "success" ]; then
-            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-strategy-loop-state-v4") | .id' | head -n1)"
+            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name=="sts1-armg-strategy-loop-state-v6-rescue") | .id' | head -n1)"
             report_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("sts1-armg-strategy-loop-report-")) | .id' | head -n1)"
             test -n "$artifact_id"
             test -n "$report_id"

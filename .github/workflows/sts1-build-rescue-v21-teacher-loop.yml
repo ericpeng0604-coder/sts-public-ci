@@ -283,13 +283,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           name: sts1-v21-build-candidate-${{ github.run_id }}
           path: evidence/sts1/v21-candidate
       - name: Prepare simulator and parent
-        env: {GH_TOKEN: ${{ github.token }}}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -346,11 +348,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
-        with: {name: sts1-v21-build-candidate-${{ github.run_id }}, path: evidence/sts1/v21-candidate}
+        with:
+          name: sts1-v21-build-candidate-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate
       - name: Prepare simulator and parent
-        env: {GH_TOKEN: ${{ github.token }}}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -381,7 +387,9 @@ jobs:
           print("passed="+str(x["pass"]).lower()); print("parent_wins="+str(x["parent_wins"])); print("candidate_wins="+str(x["candidate_wins"]))
           PY
       - uses: actions/upload-artifact@v4
-        with: {name: sts1-v21-hidden50-${{ github.run_id }}, path: evidence/sts1/v21-candidate/hidden50.json}
+        with:
+          name: sts1-v21-hidden50-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate/hidden50.json
 
   fresh_gate:
     needs: hidden_gate
@@ -396,11 +404,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
-        with: {name: sts1-v21-build-candidate-${{ github.run_id }}, path: evidence/sts1/v21-candidate}
+        with:
+          name: sts1-v21-build-candidate-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate
       - uses: actions/download-artifact@v4
-        with: {name: sts1-v21-verified-build-rescue-${{ github.run_id }}, path: evidence/sts1/v21-verified}
+        with:
+          name: sts1-v21-verified-build-rescue-${{ github.run_id }}
+          path: evidence/sts1/v21-verified
       - name: Generate isolated Fresh100 Seeds
         run: |
           python - <<'PY'
@@ -422,7 +435,8 @@ jobs:
           print("V21_FRESH100_SEEDS",len(seeds))
           PY
       - name: Prepare simulator and parent
-        env: {GH_TOKEN: ${{ github.token }}}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -472,11 +486,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
-        with: {name: sts1-v21-build-candidate-${{ github.run_id }}, path: evidence/sts1/v21-candidate}
+        with:
+          name: sts1-v21-build-candidate-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate
       - name: Prepare simulator and parent
-        env: {GH_TOKEN: ${{ github.token }}}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -507,7 +525,9 @@ jobs:
           print("passed="+str(x["pass"]).lower()); print("parent_wins="+str(x["parent_wins"])); print("candidate_wins="+str(x["candidate_wins"])); print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
           PY
       - uses: actions/upload-artifact@v4
-        with: {name: sts1-v21-heldout500-${{ github.run_id }}, path: evidence/sts1/v21-candidate/heldout500.json}
+        with:
+          name: sts1-v21-heldout500-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate/heldout500.json
 
   report:
     needs: [aggregate,train,dev_gate,hidden_gate,fresh_gate,heldout500]

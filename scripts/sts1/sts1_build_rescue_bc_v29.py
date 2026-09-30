@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tail2 surgical New-Win trainer for STS1 ArmG.
+"""Single-seed Focused-One Tail2 trainer for STS1 ArmG.
 
-v2.7 freezes the early ArmG backbone and updates only the final two Linear
-layers. Verified New-Win examples use a pairwise margin objective:
+v2.9 trains exactly one verified one-step full-win Teacher while updating only
+the final two Linear layers. Verified New-Win examples use a pairwise margin objective:
 the proven teacher action only needs to outrank G7's original action by a small
 margin. G7 replay, distillation, preservation, and interpolation guards remain.
 
@@ -362,8 +362,8 @@ def main() -> int:
     p.add_argument("--threads", type=int, default=4)
     a = p.parse_args()
 
-    if not 1 <= a.epochs <= 20:
-        raise RuntimeError("epochs outside 1..20")
+    if not 1 <= a.epochs <= 60:
+        raise RuntimeError("epochs outside 1..60")
     if not 0 < a.lr <= 2e-5:
         raise RuntimeError("lr outside safe bound")
     if not 128 <= a.elite_train_max <= 32768:
@@ -429,7 +429,7 @@ def main() -> int:
     if len(rescues) < 10:
         raise RuntimeError(f"v2.4 expects the frozen Rescue pool; got {len(rescues)}")
     if len(new_wins) != 1:
-        raise RuntimeError(f"v2.8 requires exactly one focused New-Win Teacher; got {len(new_wins)}")
+        raise RuntimeError(f"v2.9 requires exactly one New-Win Teacher; got {len(new_wins)}")
 
     expected_obs = int(m.OBS_DIM)
     first_linear = next(layer for layer in actor.net if hasattr(layer, "in_features"))
@@ -631,11 +631,11 @@ def main() -> int:
             "rescue_improved": bool(improved),
         }
         history.append(row)
-        print("V28_FOCUSED_NEW_WIN_EPOCH", json.dumps(row, sort_keys=True), flush=True)
+        print("V29_SINGLE_SEED_EPOCH", json.dumps(row, sort_keys=True), flush=True)
 
         if float(retention_eval_stats["parent_kl"]) >= a.raw_kl_stop and not learned_enough:
             print(
-                "V28_RAW_KL_EARLY_STOP",
+                "V29_SINGLE_SEED_KL_STOP",
                 json.dumps(
                     {
                         "epoch": ep + 1,
@@ -664,6 +664,20 @@ def main() -> int:
             )
             state = {k: v.detach().clone() for k, v in actor.state_dict().items()}
             trained_candidates.append((score, state, row))
+            if raw_retention_ok and preservation_eval["top1"] >= 1.0:
+                print(
+                    "V29_SINGLE_SEED_EARLY_STOP",
+                    json.dumps(
+                        {
+                            "epoch": ep + 1,
+                            "fully_learned_seed_ids": new_win_eval["fully_learned_seed_ids"],
+                            "parent_kl": retention_eval_stats["parent_kl"],
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                break
 
     if not trained_candidates:
         raise RuntimeError("no Focused-One checkpoint flipped the target New-Win decision while preserving guards")
@@ -791,6 +805,7 @@ def main() -> int:
         "retention_eval_decisions": int(len(retention_eval)),
         "new_win_margin": a.new_win_margin,
         "trainable_parameter_tensors": len(trainable),
+        "training_mode": "single_seed_tail2_pairwise",
         "trainable_tail_linear_layers": len(tail_layers),
         "raw_kl_stop": a.raw_kl_stop,
         "preservation_margin": a.preservation_margin,
@@ -828,7 +843,7 @@ def main() -> int:
     a.report.parent.mkdir(parents=True, exist_ok=True)
     a.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
-        "V28_FOCUSED_NEW_WIN_TRAIN_PASS",
+        "V29_SINGLE_SEED_TRAIN_PASS",
         json.dumps(
             {
                 "verified_rescue_examples": len(rescues),

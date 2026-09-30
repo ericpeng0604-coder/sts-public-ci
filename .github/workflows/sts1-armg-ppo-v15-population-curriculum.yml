@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: sts1-armg-ppo-v15-population-curriculum
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: '1'
@@ -26,6 +26,7 @@ env:
 
 jobs:
   rollout:
+    if: ${{ false }}
     strategy:
       fail-fast: false
       matrix:
@@ -685,7 +686,7 @@ jobs:
 
 
   supervisor:
-    if: always()
+    if: ${{ false }}
     needs: [rollout, train-and-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 15

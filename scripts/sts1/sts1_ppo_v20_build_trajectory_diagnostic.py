@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trace Boss-50k failures back to earlier non-combat build decisions."""
+"""Trace Boss-50k-unrescued runs back to earlier non-combat build decisions."""
 
 from __future__ import annotations
 
@@ -222,7 +222,7 @@ def main() -> int:
     summary=json.loads(args.boss_summary.read_text(encoding="utf-8"))
     candidates=[
         int(v)
-        for v in summary["build_limited_after_boss_50k"]["seeds"]
+        for v in summary["not_rescued_by_boss_50k"]["seeds"]
     ][:args.max_seeds]
 
     rows=[
@@ -244,7 +244,7 @@ def main() -> int:
     ]
     payload={
         "schema_version":"sts1-ppo-v20-build-trajectory-diagnostic-v1",
-        "input_build_limited":len(summary["build_limited_after_boss_50k"]["seeds"]),
+        "input_build_limited":len(summary["not_rescued_by_boss_50k"]["seeds"]),
         "diagnosed_seeds":len(rows),
         "early_build_rescues":len(teacher),
         "no_single_rescue":sum(row["status"]=="NO_SINGLE_EARLY_BUILD_RESCUE" for row in rows),

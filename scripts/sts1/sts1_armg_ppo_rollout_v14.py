@@ -253,6 +253,7 @@ def main() -> None:
     parser.add_argument("--max-training-seed-rejections", type=int, default=8)
     parser.add_argument("--reward-mode", choices=("legacy", "v14_dense"), default="v14_dense")
     parser.add_argument("--final-seed-file", type=Path)
+    parser.add_argument("--extra-heldout-seed-file", type=Path)
     args = parser.parse_args()
 
     if args.parallel_games < 1 or args.parallel_games > 4:
@@ -274,8 +275,19 @@ def main() -> None:
         }
     if formal & final:
         raise RuntimeError("dev/final seed sets must be disjoint")
+    extra_heldout = set()
+    if args.extra_heldout_seed_file is not None:
+        extra_heldout = {
+            int(x)
+            for x in args.extra_heldout_seed_file.read_text().splitlines()
+            if x.strip() and not x.lstrip().startswith("#")
+        }
+        if not extra_heldout:
+            raise RuntimeError("extra held-out seed file is empty")
+        if formal & extra_heldout or final & extra_heldout:
+            raise RuntimeError("extra held-out seeds must be disjoint from dev/final")
     rng = random.Random(args.seed_start)
-    seen = set(formal) | set(final)
+    seen = set(formal) | set(final) | set(extra_heldout)
     with ProcessPoolExecutor(max_workers=min(args.parallel_games, args.games)) as pool:
         def draw_seed() -> int:
             return _next_training_seed(rng, seen)

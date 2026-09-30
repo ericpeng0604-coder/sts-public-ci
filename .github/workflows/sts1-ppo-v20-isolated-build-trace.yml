@@ -1,0 +1,163 @@
+name: STS1 PPO v2.0 Isolated Two-Step Build Trace
+
+on:
+  push:
+    branches:
+      - gpt/sts1-ppo-v20-boss-build-rescue-20260930
+    paths:
+      - control/sts1-v20-isolated-build-trace.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  G7_STATE_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+
+concurrency:
+  group: sts1-ppo-v20-isolated-build-trace
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate_index: [0,1,2,3,4,5,6,7,8,9]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and hydrate
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v20-isolated-${{ matrix.candidate_index }}
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: Download frozen G7 parent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          weight="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$weight"
+          actual="$(sha256sum "$weight" | awk '{print $1}')"
+          test "$actual" = "$G7_WEIGHT_SHA256"
+          cp "$weight" "$RUNNER_TEMP/g7-parent.pt"
+      - name: Trace one Build-limited Seed with isolated branches
+        run: |
+          set -euo pipefail
+          out="evidence/sts1/v20-isolated-build/${{ matrix.candidate_index }}"
+          python scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root ".cache/sts1-v20-isolated-${{ matrix.candidate_index }}"             --weight "$RUNNER_TEMP/g7-parent.pt"             --seeds-file control/sts1-v15-dev-seeds-50.txt             --boss-summary control/sts1-v20-boss-diagnostic-summary-36677610709.json             --output "$out/summary.json"             --teacher-output "$out/candidate-teacher.jsonl"             --max-seeds 10             --candidate-index "${{ matrix.candidate_index }}"             --max-states 20             --max-alternatives 2             --max-two-step-states 20             --max-second-alternatives 2             --isolate-branches 1             --branch-timeout-seconds 180             --branch-retries 1
+          cat "$out/summary.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v20-isolated-build-${{ github.run_id }}-${{ matrix.candidate_index }}
+          path: evidence/sts1/v20-isolated-build/${{ matrix.candidate_index }}/
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: trace
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sts1-v20-isolated-build-${{ github.run_id }}-*
+          path: evidence/sts1/v20-isolated-build/all
+          merge-multiple: false
+      - name: Aggregate and validate 10 Seed reports
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("evidence/sts1/v20-isolated-build/all")
+          summaries=sorted(root.glob("**/summary.json"))
+          if len(summaries)!=10:
+              raise SystemExit(f"expected 10 isolated summaries, got {len(summaries)}")
+          rows=[]
+          teachers=[]
+          for p in summaries:
+              payload=json.loads(p.read_text(encoding="utf-8"))
+              if int(payload.get("diagnosed_seeds",0))!=1:
+                  raise SystemExit(f"bad isolated summary {p}")
+              rows.extend(payload["rows"])
+              t=p.with_name("candidate-teacher.jsonl")
+              if t.exists():
+                  teachers.extend(json.loads(line) for line in t.read_text(encoding="utf-8").splitlines() if line.strip())
+          seeds=[int(row["seed"]) for row in rows]
+          if len(seeds)!=10 or len(set(seeds))!=10:
+              raise SystemExit(f"seed coverage mismatch: {seeds}")
+          for row in teachers:
+              assert row["schema_version"]=="sts1-armg-strategy-branch-dataset-v1"
+              assert float(row["confidence_weight"])==1.0
+              assert float(row["teacher_consensus_fraction"])==1.0
+              probs=[float(v) for v in row["target_probs"]]
+              assert abs(sum(probs)-1.0)<1e-9
+          payload={
+              "schema_version":"sts1-ppo-v20-isolated-build-trace-v1",
+              "complete_seeds":len(rows),
+              "rescue_seeds":sum(row["status"] in {"EARLY_BUILD_RESCUE_FOUND","EARLY_TWO_STEP_BUILD_RESCUE_FOUND"} for row in rows),
+              "single_step_rescues":sum(row["status"]=="EARLY_BUILD_RESCUE_FOUND" for row in rows),
+              "two_step_rescues":sum(row["status"]=="EARLY_TWO_STEP_BUILD_RESCUE_FOUND" for row in rows),
+              "teacher_examples":len(teachers),
+              "native_branch_failures":sum(int(row.get("native_branch_failures",0) or 0) for row in rows),
+              "no_early_rescue":sum(row["status"]=="NO_EARLY_BUILD_RESCUE" for row in rows),
+              "not_reproduced":sum(row["status"]=="NOT_REPRODUCED_AS_NEAR_BOSS_LOSS" for row in rows),
+              "capture_missing":sum(row["status"]=="NO_CAPTURED_REVERSIBLE_STATE" for row in rows),
+              "rows":rows,
+          }
+          out=Path("evidence/sts1/v20-isolated-build/aggregate")
+          out.mkdir(parents=True,exist_ok=True)
+          (out/"summary.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          (out/"candidate-teacher.jsonl").write_text("".join(json.dumps(row,sort_keys=True)+"\n" for row in teachers),encoding="utf-8")
+          print("PPO_V20_ISOLATED_BUILD_RESULT",json.dumps({k:payload[k] for k in ("complete_seeds","rescue_seeds","single_step_rescues","two_step_rescues","teacher_examples","native_branch_failures","no_early_rescue","not_reproduced","capture_missing")},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v20-isolated-build-aggregate-${{ github.run_id }}
+          path: evidence/sts1/v20-isolated-build/aggregate/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Report verified result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          s=json.load(open("evidence/sts1/v20-isolated-build/aggregate/summary.json",encoding="utf-8"))
+          print("@ericpeng0604-coder")
+          print()
+          print("## PPO v2.0 Isolated Two-Step Build Trace")
+          print()
+          print(f"- 完整診斷 Seeds：**{s['complete_seeds']}/10**")
+          print(f"- 找到 Rescue Seeds：**{s['rescue_seeds']}**")
+          print(f"- 單一步 Rescue：**{s['single_step_rescues']}**")
+          print(f"- 兩步 Rescue：**{s['two_step_rescues']}**")
+          print(f"- Teacher examples：**{s['teacher_examples']}**")
+          print(f"- 隔離 native branch failures：**{s['native_branch_failures']}**")
+          print("- 正式 Champion 未變更。")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

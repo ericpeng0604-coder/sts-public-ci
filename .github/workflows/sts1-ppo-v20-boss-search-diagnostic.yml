@@ -1,37 +1,40 @@
 name: STS1 PPO v2.0 Boss Search Diagnostic
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - gpt/sts1-ppo-v20-boss-build-rescue-20260930
     paths:
-      - control/sts1-v20-boss-search.trigger
+      - control/sts1-v20-boss-diagnostic.trigger
+  workflow_dispatch:
 
 permissions:
   contents: read
   actions: read
-  issues: write
 
 env:
-  GH_TOKEN: ${{ github.token }}
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
-  FIXED_STATE_ARTIFACT_ID: '11079234863'
-  EXPECTED_G7_SHA: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  G7_STATE_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+
+concurrency:
+  group: sts1-ppo-v20-boss-search-diagnostic
+  cancel-in-progress: true
 
 jobs:
-  shard:
+  diagnose:
     strategy:
       fail-fast: false
       matrix:
         shard: [0,1,2,3,4,5,6,7,8,9]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
       - name: Install and hydrate
         run: |
           set -euo pipefail
@@ -41,34 +44,42 @@ jobs:
           python scripts/sts1/hydrate_jialeiv_baseline_v0.py
           test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
           python scripts/sts1/build_probe.py
-          root=.cache/sts1-armg-v20
+          root=.cache/sts1-v20-diagnostic
           mkdir -p "$root/sim/sts_lightspeed"
           ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
       - name: Download frozen G7 parent
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/state.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$FIXED_STATE_ARTIFACT_ID/zip"
-          unzip -q "$RUNNER_TEMP/state.zip" -d "$RUNNER_TEMP/state"
-          weight="$(find "$RUNNER_TEMP/state" -name offline-champion.pt -print -quit)"
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          weight="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
           test -n "$weight"
           actual="$(sha256sum "$weight" | awk '{print $1}')"
-          test "$actual" = "$EXPECTED_G7_SHA"
-          cp "$weight" "$RUNNER_TEMP/g7.pt"
-          echo "PPO_V20_FIXED_G7_PASS $actual"
-      - name: Run Boss search shard
+          test "$actual" = "$G7_WEIGHT_SHA256"
+          cp "$weight" "$RUNNER_TEMP/g7-parent.pt"
+          echo "G7_WEIGHT=$RUNNER_TEMP/g7-parent.pt" >> "$GITHUB_ENV"
+          echo "PPO_V20_G7_PIN_PASS $actual"
+
+      - name: Run paired Boss search diagnostic shard
         run: |
-          python scripts/sts1/sts1_ppo_v20_boss_search_diagnostic.py shard             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-v20             --weight "$RUNNER_TEMP/g7.pt"             --seeds-file control/sts1-v15-dev-seeds-50.txt             --output-dir "evidence/sts1/v20-boss/shard-${{ matrix.shard }}"             --shard-index ${{ matrix.shard }}             --shard-count 10             --workers 2
+          set -euo pipefail
+          python scripts/sts1/sts1_ppo_v20_boss_search_diagnostic.py shard             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v20-diagnostic             --weight "$G7_WEIGHT"             --seeds-file control/sts1-v15-dev-seeds-50.txt             --output-dir "evidence/sts1/v20-boss-diagnostic/shard-${{ matrix.shard }}"             --shard-index "${{ matrix.shard }}"             --shard-count 10             --workers 2
+
       - uses: actions/upload-artifact@v4
         with:
-          name: sts1-ppo-v20-boss-shard-${{ github.run_id }}-${{ matrix.shard }}
-          path: evidence/sts1/v20-boss/shard-${{ matrix.shard }}/shard-*.json
+          name: sts1-v20-boss-diagnostic-${{ github.run_id }}-${{ matrix.shard }}
+          path: evidence/sts1/v20-boss-diagnostic/shard-${{ matrix.shard }}/shard-*.json
           if-no-files-found: error
           retention-days: 30
 
   aggregate:
-    needs: shard
+    needs: diagnose
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -78,97 +89,17 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
-          pattern: sts1-ppo-v20-boss-shard-${{ github.run_id }}-*
-          path: evidence/sts1/v20-boss/download
-      - name: Aggregate fixed-seed diagnosis
-        run: |
-          python scripts/sts1/sts1_ppo_v20_boss_search_diagnostic.py aggregate             --input-dir evidence/sts1/v20-boss/download             --seeds-file control/sts1-v15-dev-seeds-50.txt             --output evidence/sts1/v20-boss/summary.json             --shard-count 10
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sts1-ppo-v20-boss-diagnostic-${{ github.run_id }}
-          path: evidence/sts1/v20-boss/summary.json
-          if-no-files-found: error
-          retention-days: 90
-      - name: Report
-        run: |
-          python - <<'PY' > "$RUNNER_TEMP/body.txt"
-          import json,os
-          s=json.load(open("evidence/sts1/v20-boss/summary.json",encoding="utf-8"))
-          b=s["modes"]["base_2k"]; x=s["modes"]["boss_10k"]; y=s["modes"]["boss_50k"]
-          r10=s["paired_rescues"]["boss_10k"]; r50=s["paired_rescues"]["boss_50k"]
-          build=s["build_limited_after_boss_50k"]
-          print("@ericpeng0604-coder")
-          print()
-          print("## PPO v2.0 Boss Search Diagnostic")
-          print()
-          print(f"- G7 Base MCTS-2000：**{b['wins']}/50**")
-          print(f"- Boss-10k：**{x['wins']}/50**（net {r10['net_win_delta']:+d}）")
-          print(f"- Boss-50k：**{y['wins']}/50**（net {r50['net_win_delta']:+d}）")
-          print(f"- 2k→50k 可救回敗局：**{r50['rescued_losses']}**")
-          print(f"- Boss-50k 仍救不回（Build-limited）：**{build['count']}**")
-          print("- 這是診斷，不會直接取代正式 Champion。")
-          PY
-          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments"             -f body="$(cat "$RUNNER_TEMP/body.txt")"
-
-  build-rescue:
-    needs: aggregate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@v4
-        with:
-          name: sts1-ppo-v20-boss-diagnostic-${{ github.run_id }}
-          path: evidence/sts1/v20-boss
-      - name: Install and hydrate
+          pattern: sts1-v20-boss-diagnostic-${{ github.run_id }}-*
+          path: evidence/sts1/v20-boss-diagnostic/all
+          merge-multiple: true
+      - name: Aggregate paired rescue result
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -e . numpy
-          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
-          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
-          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
-          python scripts/sts1/build_probe.py
-          root=.cache/sts1-armg-v20-build
-          mkdir -p "$root/sim/sts_lightspeed"
-          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
-          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
-          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
-      - name: Download frozen G7 parent
-        run: |
-          set -euo pipefail
-          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/state.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$FIXED_STATE_ARTIFACT_ID/zip"
-          unzip -q "$RUNNER_TEMP/state.zip" -d "$RUNNER_TEMP/state"
-          weight="$(find "$RUNNER_TEMP/state" -name offline-champion.pt -print -quit)"
-          test -n "$weight"
-          actual="$(sha256sum "$weight" | awk '{print $1}')"
-          test "$actual" = "$EXPECTED_G7_SHA"
-          cp "$weight" "$RUNNER_TEMP/g7.pt"
-      - name: Diagnose early Build trajectory
-        run: |
-          python scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-armg-v20-build             --weight "$RUNNER_TEMP/g7.pt"             --seeds-file control/sts1-v15-dev-seeds-50.txt             --boss-summary evidence/sts1/v20-boss/summary.json             --output evidence/sts1/v20-build/summary.json             --teacher-output evidence/sts1/v20-build/candidate-teacher.jsonl             --max-seeds 10             --max-states 20             --max-alternatives 2
+          python scripts/sts1/sts1_ppo_v20_boss_search_diagnostic.py aggregate             --input-dir evidence/sts1/v20-boss-diagnostic/all             --seeds-file control/sts1-v15-dev-seeds-50.txt             --output evidence/sts1/v20-boss-diagnostic/summary.json             --shard-count 10
+          cat evidence/sts1/v20-boss-diagnostic/summary.json
       - uses: actions/upload-artifact@v4
         with:
-          name: sts1-ppo-v20-build-diagnostic-${{ github.run_id }}
-          path: evidence/sts1/v20-build/
+          name: sts1-v20-boss-diagnostic-summary
+          path: evidence/sts1/v20-boss-diagnostic/summary.json
           if-no-files-found: error
-          retention-days: 90
-      - name: Report Build diagnosis
-        run: |
-          python - <<'PY' > "$RUNNER_TEMP/build-body.txt"
-          import json
-          s=json.load(open("evidence/sts1/v20-build/summary.json",encoding="utf-8"))
-          print("@ericpeng0604-coder")
-          print()
-          print("## PPO v2.0 Early Build Diagnostic")
-          print()
-          print(f"- Boss-50k 後仍屬 Build-limited：**{s['input_build_limited']}**")
-          print(f"- 本輪深入診斷 Seeds：**{s['diagnosed_seeds']}**")
-          print(f"- 找到更早單一步 Build Rescue：**{s['early_build_rescues']}**")
-          print(f"- 仍找不到單一步 Rescue：**{s['no_single_rescue']}**")
-          print("- candidate-teacher 只做診斷證據，尚未直接升級 Champion。")
-          PY
-          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments"             -f body="$(cat "$RUNNER_TEMP/build-body.txt")"
+          retention-days: 30

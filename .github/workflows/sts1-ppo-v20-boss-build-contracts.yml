@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: sts1-ppo-v20-boss-build-contracts
+  cancel-in-progress: true
+
 env:
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
 
@@ -49,7 +53,7 @@ jobs:
           assert '"base_2k": None' in s
           assert '"boss_10k": 10_000' in s
           assert '"boss_50k": 50_000' in s
-          assert 'build_limited_after_boss_50k' in s
+          assert 'not_rescued_by_boss_50k' in s
           assert 'combat_mcts_boss_sims' in sim
           assert '_combat_mcts_budget_for_floor' in sim
           print("PASS_PPO_V20_BOSS_BUILD_INVARIANTS")

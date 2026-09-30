@@ -1,0 +1,331 @@
+name: STS1 Build Rescue v2.7 Tail2 Candidate
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v27-tail2.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '36731071450'
+  V21_DATASET_RUN_ID: '36699995040'
+  V21_DATASET_ARTIFACT: 'v21-verified-36699995040'
+  V23_TRACE_RUN_ID: '36722951474'
+  V23_TRACE_ARTIFACT: 'sts1-v23-regression-trace-36722951474'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+jobs:
+  tail2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate v2.6 Tail2 replay contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/sts1/sts1_build_rescue_bc_v27.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("scripts/sts1/sts1_build_rescue_bc_v27.py").read_text()
+          required=[
+              "steps = len(elite_order)",
+              "j % len(rescue_order)",
+              "j % len(new_win_order)",
+              "_new_win_pairwise_margin_loss",
+              "tail_layers",
+              "linear_layers[-2:]",
+              "requires_grad_(False)",
+              "new_win_top1_flipped",
+              "V27_TAIL2_NEW_WIN_TRAIN_PASS",
+          ]
+          missing=[x for x in required if x not in p]
+          if missing:
+              raise SystemExit(f"missing v2.6 Tail2 replay contract: {missing}")
+          print("V27_TAIL2_CONTRACT_PASS")
+          PY
+
+      - name: Download seven verified full-win teachers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v24-mine-*
+          path: evidence/sts1/v27-tail2-raw
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Freeze Tail2 dataset
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v27-tail2
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          wanted={341684210,469494371,523373928,572162032,620908546}
+          root=Path("evidence/sts1/v27-tail2-raw")
+          results={}
+          teachers=[]
+          for p in root.glob("result-*.json"):
+              r=json.loads(p.read_text())
+              if int(r["seed"]) in wanted:
+                  results[int(r["seed"])]=r
+          for seed in sorted(wanted):
+              r=results.get(seed)
+              if r is None:
+                  raise SystemExit(f"missing Tail2 result for {seed}")
+              if r.get("status") not in {"NEW_FULL_WIN_ONE_STEP","NEW_FULL_WIN_TWO_STEP"}:
+                  raise SystemExit(f"Tail2 seed {seed} not verified full-win rescue: {r.get('status')}")
+              rows=list(r.get("teachers") or [])
+              expected=1 if r.get("status")=="NEW_FULL_WIN_ONE_STEP" else 2
+              if len(rows)!=expected:
+                  raise SystemExit(f"Tail2 seed {seed} expected {expected} teacher rows, got {len(rows)}")
+              teachers.extend(rows)
+          if len(teachers)!=7 or {int(x["seed"]) for x in teachers}!=wanted:
+              raise SystemExit("Tail2 teacher identity contract failed")
+          if any(x.get("confidence_weight")!=1.0 or x.get("teacher_consensus_fraction")!=1.0 for x in teachers):
+              raise SystemExit("Tail2 teacher confidence contract failed")
+          out=Path("evidence/sts1/v27-tail2/new-win-teacher.jsonl")
+          out.write_text("".join(json.dumps(x,sort_keys=True)+"\n" for x in teachers))
+          Path("evidence/sts1/v27-tail2/summary.json").write_text(
+              json.dumps({
+                  "schema_version":"sts1-v27-tail2-dataset",
+                  "teacher_examples":7,
+                  "teacher_seeds":sorted(wanted),
+                  "statuses":{str(k):results[k]["status"] for k in sorted(wanted)},
+              },indent=2,sort_keys=True)+"\n"
+          )
+          print("V27_TAIL27_DATASET_PASS",sorted(wanted))
+          PY
+
+      - name: Download frozen old Rescue pool
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V21_DATASET_ARTIFACT }}
+          path: evidence/sts1/v21-verified
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V21_DATASET_RUN_ID }}
+
+      - name: Download frozen regression anchors
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V23_TRACE_ARTIFACT }}
+          path: evidence/sts1/v23-trace
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V23_TRACE_RUN_ID }}
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v27-tail2
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test -n "$parent"
+          test -n "$elite"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Train Tail2 Candidate
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v27-tail2-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python scripts/sts1/sts1_build_rescue_bc_v27.py             --armg-root .cache/sts1-v27-tail2             --module-dir external/sts_lightspeed/source/build-probe             --base-weight "$parent"             --elite-replay "$elite"             --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl             --new-win-replay evidence/sts1/v27-tail2/new-win-teacher.jsonl             --preservation-replay evidence/sts1/v23-trace/preservation.jsonl             --output evidence/sts1/v27-tail2-candidate/candidate.pt             --report evidence/sts1/v27-tail2-candidate/train-report.json             --epochs 12 --lr 3e-6             --elite-train-max 8192 --retention-eval-max 2048             --rescue-repeats 2 --new-win-repeats 8             --winner-coef 0.80 --distill-coef 1.20             --rescue-coef 0.05 --new-win-coef 0.02 --new-win-margin 0.01 --new-win-margin-coef 1.00             --preservation-coef 0.30 --preservation-margin 0.001             --param-anchor-coef 1e-5             --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-winner-drop 0.01             --threads 4
+
+      - name: Build fixed gate seeds
+        run: |
+          set -euo pipefail
+          cp control/sts1-v22-parent-only-seeds-2.txt evidence/sts1/v27-tail2-candidate/regression2-seeds.txt
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > evidence/sts1/v27-tail2-candidate/dev30-seeds.txt
+          cp control/sts1-v14-final-promotion-seeds-50.txt evidence/sts1/v27-tail2-candidate/hidden50-seeds.txt
+          python - <<'PY'
+          import random
+          from pathlib import Path
+          def read(path):
+              return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
+          protected=set(read("control/sts1-v15-dev-seeds-50.txt"))
+          protected.update(read("control/sts1-v14-final-promotion-seeds-50.txt"))
+          protected.update(read("control/sts1-v16-benchmark-seeds-500.txt"))
+          protected.update(read("control/sts1-v24-dev30-double-loss-seeds-24.txt"))
+          rng=random.Random(20260930243)
+          fresh=[]
+          while len(fresh)<100:
+              x=rng.randrange(1,2_000_000_000)
+              if x not in protected and x not in fresh:
+                  fresh.append(x)
+          Path("evidence/sts1/v27-tail2-candidate/fresh100-seeds.txt").write_text("\n".join(map(str,fresh))+"\n")
+          PY
+
+      - name: Regression2 preservation Gate
+        id: reg
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v27-tail2             --parent-weight "$parent"             --candidate-weight evidence/sts1/v27-tail2-candidate/candidate.pt             --seed-file evidence/sts1/v27-tail2-candidate/regression2-seeds.txt             --output evidence/sts1/v27-tail2-candidate/regression2.json             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0 --label v27-tail2-regression2
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v27-tail2-candidate/regression2.json"))
+          passed=(x["parent_wins"]==2 and x["candidate_wins"]==2 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          PY
+
+      - name: Dev30 New-Win Gate
+        id: dev
+        if: steps.reg.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v27-tail2             --parent-weight "$parent"             --candidate-weight evidence/sts1/v27-tail2-candidate/candidate.pt             --seed-file evidence/sts1/v27-tail2-candidate/dev30-seeds.txt             --output evidence/sts1/v27-tail2-candidate/dev30.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v27-tail2-dev30
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v27-tail2-candidate/dev30.json"))
+          passed=(x["parent_wins"]==6 and x["candidate_wins"]>=7 and x["candidate_only_wins"]>=1 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          PY
+
+      - name: Hidden50 Gate
+        id: hidden
+        if: steps.dev.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v27-tail2             --parent-weight "$parent"             --candidate-weight evidence/sts1/v27-tail2-candidate/candidate.pt             --seed-file evidence/sts1/v27-tail2-candidate/hidden50-seeds.txt             --output evidence/sts1/v27-tail2-candidate/hidden50.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v27-tail2-hidden50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v27-tail2-candidate/hidden50.json"))
+          print("passed="+str(x["pass"]).lower())
+          PY
+
+      - name: Fresh100 Gate
+        id: fresh
+        if: steps.hidden.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v27-tail2             --parent-weight "$parent"             --candidate-weight evidence/sts1/v27-tail2-candidate/candidate.pt             --seed-file evidence/sts1/v27-tail2-candidate/fresh100-seeds.txt             --output evidence/sts1/v27-tail2-candidate/fresh100.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v27-tail2-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v27-tail2-candidate/fresh100.json"))
+          print("passed="+str(x["pass"]).lower())
+          PY
+
+      - name: Heldout500 Gate
+        id: h500
+        if: steps.fresh.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v27-tail2             --parent-weight "$parent"             --candidate-weight evidence/sts1/v27-tail2-candidate/candidate.pt             --seed-file control/sts1-v16-benchmark-seeds-500.txt             --output evidence/sts1/v27-tail2-candidate/heldout500.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v27-tail2-heldout500
+
+      - name: Write Tail2 summary
+        if: always()
+        env:
+          REG: ${{ steps.reg.outputs.passed }}
+          DEV: ${{ steps.dev.outputs.passed }}
+          DEV_PARENT: ${{ steps.dev.outputs.parent }}
+          DEV_CAND: ${{ steps.dev.outputs.candidate }}
+          DEV_CONLY: ${{ steps.dev.outputs.candidate_only }}
+          DEV_PONLY: ${{ steps.dev.outputs.parent_only }}
+          HID: ${{ steps.hidden.outputs.passed }}
+          FRESH: ${{ steps.fresh.outputs.passed }}
+          H500: ${{ steps.h500.outcome }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path("evidence/sts1/v27-tail2-candidate")
+          train={}
+          if (out/"train-report.json").exists():
+              train=json.loads((out/"train-report.json").read_text())
+          summary={
+              "schema_version":"sts1-v27-tail2-summary",
+              "teachers":7,
+              "teacher_seeds":[341684210,469494371,523373928,572162032,620908546],
+              "new_win_train_before":train.get("before",{}).get("new_win"),
+              "new_win_train_after":train.get("after",{}).get("new_win"),
+              "regression2_pass":os.environ.get("REG")=="true",
+              "dev30":{
+                  "pass":os.environ.get("DEV")=="true",
+                  "parent":os.environ.get("DEV_PARENT"),
+                  "candidate":os.environ.get("DEV_CAND"),
+                  "candidate_only":os.environ.get("DEV_CONLY"),
+                  "parent_only":os.environ.get("DEV_PONLY"),
+              },
+              "hidden50_pass":os.environ.get("HID")=="true",
+              "fresh100_pass":os.environ.get("FRESH")=="true",
+              "heldout500_outcome":os.environ.get("H500"),
+          }
+          (out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("V27_TAIL27_FINAL",json.dumps(summary,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v27-tail2-${{ github.run_id }}
+          path:
+            evidence/sts1/v27-tail2/
+            evidence/sts1/v27-tail2-candidate/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report Tail2 status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          print("@ericpeng0604-coder")
+          print()
+          print("## Build Rescue v2.7 Tail2")
+          p=Path("evidence/sts1/v27-tail2-candidate/summary.json")
+          if not p.exists():
+              print("- Tail2 failed before final summary. G7 remains unchanged.")
+          else:
+              x=json.loads(p.read_text())
+              print("- Verified full-win Teachers: **7 examples / 5 seeds**")
+              print(f"- Regression2 PASS: **{x['regression2_pass']}**")
+              d=x["dev30"]
+              print(f"- Dev30: G7 **{d.get('parent')}/30** / Candidate **{d.get('candidate')}/30** / Candidate-only={d.get('candidate_only')} / Parent-only={d.get('parent_only')} / PASS={d.get('pass')}")
+              print(f"- Hidden50 PASS: **{x['hidden50_pass']}**")
+              print(f"- Fresh100 PASS: **{x['fresh100_pass']}**")
+              print(f"- Heldout500 outcome: **{x['heldout500_outcome']}**")
+          print("- G7 remains unchanged unless all formal gates pass.")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

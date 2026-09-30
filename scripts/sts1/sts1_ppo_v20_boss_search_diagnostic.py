@@ -178,13 +178,31 @@ def aggregate(args: argparse.Namespace) -> int:
             s for s in seeds
             if base[s] and not _is_win(by_seed[s]["modes"][mode])
         ]
+        baseline_losses=sum(not base[s] for s in seeds)
         summary["paired_rescues"][mode]={
             "rescued_losses":len(rescued),
             "regressed_wins":len(regressed),
             "net_win_delta":len(rescued)-len(regressed),
+            "rescue_fraction_of_baseline_losses":(
+                len(rescued)/baseline_losses if baseline_losses else 0.0
+            ),
             "rescued_seeds":rescued,
             "regressed_seeds":regressed,
         }
+
+    build_limited=[
+        s for s in seeds
+        if not base[s] and not _is_win(by_seed[s]["modes"]["boss_50k"])
+    ]
+    summary["build_limited_after_boss_50k"]={
+        "count":len(build_limited),
+        "seeds":build_limited,
+        "fraction_of_baseline_losses":(
+            len(build_limited)/sum(not base[s] for s in seeds)
+            if any(not base[s] for s in seeds)
+            else 0.0
+        ),
+    }
 
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n",encoding="utf-8")

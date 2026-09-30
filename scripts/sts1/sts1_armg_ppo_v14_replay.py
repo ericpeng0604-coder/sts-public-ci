@@ -285,13 +285,24 @@ def _elite_key(game: dict[str, Any]) -> tuple[int, int, int, int]:
     )
 
 
+BOSS_FLOORS = (16, 33, 50)
+
+
+def _is_boss_failure(game: dict[str, Any], *, tolerance: int = 1) -> bool:
+    """Identify defeats at/next to the three A0 Act boss floors."""
+    if bool(game["victory"]):
+        return False
+    floor = int(game["final_floor"])
+    return any(abs(floor - boss_floor) <= tolerance for boss_floor in BOSS_FLOORS)
+
+
 def _select_rescue_replay(
     games: list[dict[str, Any]],
     *,
     max_games: int,
     decision_budget: int,
 ) -> list[dict[str, Any]]:
-    """Mix wins, deep losses, and recent episodes without duplicating games."""
+    """Win-first replay with explicit Boss-failure mining for PPO v1.7."""
     if max_games <= 0 or decision_budget <= 0 or not games:
         return []
 
@@ -301,8 +312,18 @@ def _select_rescue_replay(
         reverse=True,
     )
     losses = [game for game in games if not bool(game["victory"])]
+    boss_failures = sorted(
+        (game for game in losses if _is_boss_failure(game)),
+        key=lambda game: (
+            min(abs(int(game["final_floor"]) - boss) for boss in BOSS_FLOORS),
+            -int(game["final_floor"]),
+            -int(game["source_round"]),
+            -int(game["seed"]),
+        ),
+    )
+    non_boss_losses = [game for game in losses if not _is_boss_failure(game)]
     deep_losses = sorted(
-        losses,
+        non_boss_losses,
         key=lambda game: (
             int(game["final_floor"]),
             int(game["source_round"]),
@@ -310,11 +331,14 @@ def _select_rescue_replay(
         ),
         reverse=True,
     )
-    recent_losses = sorted(losses, key=_recent_key, reverse=True)
+    recent_losses = sorted(non_boss_losses, key=_recent_key, reverse=True)
 
-    win_quota = (max_games + 1) // 2
-    deep_quota = (max_games * 3) // 10
-    recent_quota = max_games - win_quota - deep_quota
+    # 40% proven wins, 35% Boss failures, 15% other deep losses, 10% recency.
+    # Missing buckets spill into the fallback below, keeping the replay full.
+    win_quota = (max_games * 4) // 10
+    boss_quota = (max_games * 35) // 100
+    deep_quota = (max_games * 15) // 100
+    recent_quota = max_games - win_quota - boss_quota - deep_quota
 
     selected: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
@@ -338,12 +362,12 @@ def _select_rescue_replay(
             added += 1
 
     add_group(winners, win_quota)
+    add_group(boss_failures, boss_quota)
     add_group(deep_losses, deep_quota)
     add_group(recent_losses, recent_quota)
 
-    # If one bucket is undersupplied, use the remaining budget instead of
-    # throwing useful data away. Wins stay first, then deepest losses, then recency.
-    fallback = winners + deep_losses + recent_losses
+    # Keep the strongest remaining signal if a bucket is undersupplied.
+    fallback = winners + boss_failures + deep_losses + recent_losses
     for game in fallback:
         if len(selected) >= max_games:
             break
@@ -469,7 +493,8 @@ def main() -> int:
         "train_replay_games": len(train_replay),
         "train_replay_decisions": _game_decisions(train_replay),
         "train_replay_victories": sum(bool(game["victory"]) for game in train_replay),
-        "train_replay_selection": "quota_50pct_wins_30pct_deep_losses_20pct_recent_then_fill",
+        "train_replay_boss_failures": sum(_is_boss_failure(game) for game in train_replay),
+        "train_replay_selection": "v17_40pct_wins_35pct_boss_failures_15pct_deep_10pct_recent_then_fill",
         "train_replay_fraction_of_fresh_games": (
             len(train_replay) / max(1, len(fresh))
         ),

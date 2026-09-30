@@ -179,11 +179,11 @@ def test_zero_legal_map_transition_advances_without_consuming_a_choice():
         REWARDS = "REWARDS"
 
     class Sts:
-        ScreenState = ScreenState
-
         @staticmethod
         def get_legal_game_actions(gc):
             return []
+
+    Sts.ScreenState = ScreenState
 
     class Gc:
         screen_state = ScreenState.MAP_SCREEN
@@ -211,11 +211,11 @@ def test_zero_legal_map_transition_refuses_to_hide_real_choice():
         REWARDS = "REWARDS"
 
     class Sts:
-        ScreenState = ScreenState
-
         @staticmethod
         def get_legal_game_actions(gc):
             return [object()]
+
+    Sts.ScreenState = ScreenState
 
     class Gc:
         screen_state = ScreenState.MAP_SCREEN

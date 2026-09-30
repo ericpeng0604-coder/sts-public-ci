@@ -649,7 +649,7 @@ def main() -> int:
     actor.load_state_dict(selected_state)
     actor.eval()
     after_rescue = _eval_rescue(actor, torch, rescues)
-    after_new_win = _eval_rescue(actor, torch, new_wins)
+    after_new_win = _eval_new_win(actor, torch, new_wins)
     after_preservation = _eval_preservation(actor, torch, preservation)
     after_retention = _eval_retention(actor, parent, torch, elite, retention_eval)
 
@@ -675,7 +675,7 @@ def main() -> int:
     a.output.parent.mkdir(parents=True, exist_ok=True)
     torch.save(actor.state_dict(), a.output)
     report = {
-        "schema_version": "sts1-build-rescue-bc-v25-balanced-new-win",
+        "schema_version": "sts1-build-rescue-bc-v25-persistent-new-win",
         "verified_rescue_examples": len(rescues),
         "new_win_teacher_examples": len(new_wins),
         "new_win_teacher_seeds": len({int(r["seed"]) for r in new_wins}),
@@ -720,7 +720,7 @@ def main() -> int:
     a.report.parent.mkdir(parents=True, exist_ok=True)
     a.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
-        "V25_BALANCED_NEW_WIN_TRAIN_PASS",
+        "V25_NEW_WIN_TRAIN_PASS",
         json.dumps(
             {
                 "verified_rescue_examples": len(rescues),

@@ -11,6 +11,7 @@ permissions:
   actions: read
 
 env:
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
   G7_STATE_ARTIFACT_ID: '11079234863'
   G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
   V20_AGG_ARTIFACT_ID: '11081959641'
@@ -82,6 +83,7 @@ jobs:
           elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
           python scripts/sts1/sts1_build_rescue_bc_v21.py \
             --armg-root .cache/sts1-v21-contract \
+            --module-dir external/sts_lightspeed/source/build-probe \
             --base-weight "$parent" \
             --elite-replay "$elite" \
             --rescue-replay "$RUNNER_TEMP/v20/candidate-teacher.jsonl" \

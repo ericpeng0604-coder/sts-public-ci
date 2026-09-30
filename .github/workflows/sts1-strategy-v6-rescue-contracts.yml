@@ -1,0 +1,50 @@
+name: STS1 Strategy v6 Rescue Contracts
+
+on:
+  push:
+    branches:
+      - gpt/sts1-strategy-v6-stagnation-rescue-20260930
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' numpy torch==2.11.0
+      - name: Compile
+        run: |
+          python -m py_compile scripts/sts1/sts1_armg_strategy_loop.py
+      - name: Unit contracts
+        run: |
+          pytest -q             tests/test_sts1_strategy_parallel_cpu_v4.py             tests/test_sts1_strategy_data_efficiency_v2.py             tests/test_sts1_strategy_elite_mining_v3.py
+      - name: Verify rescue control
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("control/sts1-armg-strategy-loop.request").read_text()
+          expected=[
+            "training_seeds=8",
+            "teacher_label_budget=48",
+            "min_labels_per_kind=5",
+            "learning_rate=0.00003",
+            "anchor_coef=0.08",
+            "max_replay_examples=12000",
+            "mcts_sims=2000",
+          ]
+          for item in expected:
+              assert item in p, item
+          print("PASS_STRATEGY_V6_RESCUE_CONTROL")
+          PY

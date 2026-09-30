@@ -506,6 +506,16 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
         self.path_prior = path_payload
         self.path_strength = float(path_strength)
         self.last_expert_rerank: dict[str, Any] | None = None
+        self.path_diagnostics: dict[str, Any] = {
+            "map_decisions": 0,
+            "map_flips": 0,
+            "addition_spread_sum": 0.0,
+            "addition_spread_max": 0.0,
+            "raw_margin_sum": 0.0,
+            "raw_margin_max": 0.0,
+            "rooms_seen": {},
+            "flip_examples": [],
+        }
 
     def decide(self, gc: Any, sts: Any) -> tuple[str, int, list[Any], list[Any], list[float]]:
         kind, descs, execs = self.choices(gc)
@@ -549,18 +559,49 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
             hp = getattr(gc, "cur_hp", None)
             max_hp = getattr(gc, "max_hp", None)
             gold = getattr(gc, "gold", None)
+            rooms: list[str] = []
             for index, desc in enumerate(descs):
                 semantic = self.describe_choice("map", desc)
-                room = semantic.get("room")
+                room = str(semantic.get("room") or "")
+                rooms.append(room)
                 additions[index] = self.path_strength * path_prior_score(
                     self.path_prior,
-                    str(room or ""),
+                    room,
                     floor=floor,
                     hp=hp,
                     max_hp=max_hp,
                     gold=gold,
                 )
                 adjusted[index] += additions[index]
+
+            raw_choice = max(range(len(raw)), key=raw.__getitem__)
+            adjusted_choice = max(range(len(adjusted)), key=adjusted.__getitem__)
+            sorted_raw = sorted(raw, reverse=True)
+            raw_margin = sorted_raw[0] - sorted_raw[1] if len(sorted_raw) > 1 else 0.0
+            addition_spread = max(additions) - min(additions) if additions else 0.0
+            diag = self.path_diagnostics
+            diag["map_decisions"] = int(diag.get("map_decisions", 0)) + 1
+            diag["map_flips"] = int(diag.get("map_flips", 0)) + int(raw_choice != adjusted_choice)
+            diag["addition_spread_sum"] = float(diag.get("addition_spread_sum", 0.0)) + addition_spread
+            diag["addition_spread_max"] = max(float(diag.get("addition_spread_max", 0.0)), addition_spread)
+            diag["raw_margin_sum"] = float(diag.get("raw_margin_sum", 0.0)) + raw_margin
+            diag["raw_margin_max"] = max(float(diag.get("raw_margin_max", 0.0)), raw_margin)
+            room_counts = diag.setdefault("rooms_seen", {})
+            for room in rooms:
+                room_counts[room] = int(room_counts.get(room, 0)) + 1
+            if raw_choice != adjusted_choice and len(diag.setdefault("flip_examples", [])) < 20:
+                diag["flip_examples"].append({
+                    "floor": floor,
+                    "hp": hp,
+                    "max_hp": max_hp,
+                    "gold": gold,
+                    "rooms": rooms,
+                    "raw_scores": raw,
+                    "additions": additions,
+                    "adjusted_scores": adjusted,
+                    "raw_choice": raw_choice,
+                    "adjusted_choice": adjusted_choice,
+                })
 
         self.last_expert_rerank = {
             "kind": kind,
@@ -570,3 +611,16 @@ class HumanExpertPolicy(ArmGNoncombatPolicy):
             "adjusted_scores": adjusted,
         }
         return kind, max(range(len(adjusted)), key=adjusted.__getitem__), descs, execs, adjusted
+
+    def path_diagnostics_snapshot(self) -> dict[str, Any]:
+        diag = dict(self.path_diagnostics)
+        decisions = int(diag.get("map_decisions", 0) or 0)
+        flips = int(diag.get("map_flips", 0) or 0)
+        diag["flip_rate"] = (flips / decisions) if decisions else 0.0
+        diag["mean_addition_spread"] = (
+            float(diag.get("addition_spread_sum", 0.0)) / decisions if decisions else 0.0
+        )
+        diag["mean_raw_margin"] = (
+            float(diag.get("raw_margin_sum", 0.0)) / decisions if decisions else 0.0
+        )
+        return diag

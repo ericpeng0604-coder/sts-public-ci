@@ -325,6 +325,8 @@ def _mine_win_conversions(
     max_states: int = 6,
     max_alternatives: int = 2,
     max_second_alternatives: int = 2,
+    primary_mcts: int = 2000,
+    confirm_mcts: int = 10000,
 ) -> list[dict[str, Any]]:
     """Mine one- and two-step changes that reliably convert a Boss loss into progress."""
     if not _near_boss_failure(final_floor):
@@ -346,7 +348,7 @@ def _mine_win_conversions(
             choice_index=selected,
             sts=sts,
             policy=policy,
-            mcts_sims=2000,
+            mcts_sims=int(primary_mcts),
             target_floor=target_floor,
         )
         if baseline_2k["passed_boss"]:
@@ -356,7 +358,7 @@ def _mine_win_conversions(
             choice_index=selected,
             sts=sts,
             policy=policy,
-            mcts_sims=10000,
+            mcts_sims=int(confirm_mcts),
             target_floor=target_floor,
         )
         if baseline_10k["passed_boss"]:
@@ -374,7 +376,7 @@ def _mine_win_conversions(
                 choice_index=alternative,
                 sts=sts,
                 policy=policy,
-                mcts_sims=2000,
+                mcts_sims=int(primary_mcts),
                 target_floor=target_floor,
             )
             alt_10k = _force_choice_and_finish(
@@ -382,7 +384,7 @@ def _mine_win_conversions(
                 choice_index=alternative,
                 sts=sts,
                 policy=policy,
-                mcts_sims=10000,
+                mcts_sims=int(confirm_mcts),
                 target_floor=target_floor,
             )
             if alt_2k["passed_boss"] and alt_10k["passed_boss"]:
@@ -414,7 +416,7 @@ def _mine_win_conversions(
                     choice_index=alternative,
                     sts=sts,
                     policy=policy,
-                    mcts_sims=2000,
+                    mcts_sims=int(primary_mcts),
                     target_floor=target_floor,
                     second_alternative_rank=second_rank,
                 )
@@ -425,7 +427,7 @@ def _mine_win_conversions(
                     choice_index=alternative,
                     sts=sts,
                     policy=policy,
-                    mcts_sims=10000,
+                    mcts_sims=int(confirm_mcts),
                     target_floor=target_floor,
                     second_alternative_rank=second_rank,
                 )
@@ -474,6 +476,8 @@ def _collect_one(task: tuple[Any, ...]) -> dict[str, Any]:
         conversion_max_alternatives,
         conversion_max_second_alternatives,
         conversion_sample_modulus,
+        conversion_primary_mcts,
+        conversion_confirm_mcts,
     ) = task
 
     module_path = Path(module_dir)
@@ -623,6 +627,8 @@ def _collect_one(task: tuple[Any, ...]) -> dict[str, Any]:
             max_states=int(conversion_max_states),
             max_alternatives=int(conversion_max_alternatives),
             max_second_alternatives=int(conversion_max_second_alternatives),
+            primary_mcts=int(conversion_primary_mcts),
+            confirm_mcts=int(conversion_confirm_mcts),
         )
         for row in win_conversions:
             row["seed"] = int(seed)
@@ -714,6 +720,8 @@ def main() -> None:
     parser.add_argument("--win-conversion-max-alternatives", type=int, default=2)
     parser.add_argument("--win-conversion-max-second-alternatives", type=int, default=2)
     parser.add_argument("--win-conversion-sample-modulus", type=int, default=4)
+    parser.add_argument("--win-conversion-primary-mcts", type=int, default=2000)
+    parser.add_argument("--win-conversion-confirm-mcts", type=int, default=10000)
     args = parser.parse_args()
 
     if args.parallel_games < 1 or args.parallel_games > 4:
@@ -728,6 +736,10 @@ def main() -> None:
         raise RuntimeError("win-conversion-max-second-alternatives must be within 1..3")
     if not 1 <= args.win_conversion_sample_modulus <= 16:
         raise RuntimeError("win-conversion-sample-modulus must be within 1..16")
+    if args.win_conversion_primary_mcts < 1:
+        raise RuntimeError("win-conversion-primary-mcts must be positive")
+    if args.win_conversion_confirm_mcts < args.win_conversion_primary_mcts:
+        raise RuntimeError("win-conversion-confirm-mcts must be >= primary")
 
     formal = {
         int(x)
@@ -782,6 +794,8 @@ def main() -> None:
                     int(args.win_conversion_max_alternatives),
                     int(args.win_conversion_max_second_alternatives),
                     int(args.win_conversion_sample_modulus),
+                    int(args.win_conversion_primary_mcts),
+                    int(args.win_conversion_confirm_mcts),
                 )
                 for index, seed in enumerate(seeds)
             ]

@@ -178,9 +178,9 @@ def _dev_gate(parent_runs: list[dict[str, Any]], candidate_runs: list[dict[str, 
         and median_delta >= 0.0
         and reach50_delta >= 0
     )
-    adopt = complete and safe and wins_not_worse and (
-        win_improvement or floor_improvement
-    )
+    # v1.6 rescue is explicitly win-first. Floor is diagnostic only:
+    # a candidate must win at least one more fixed seed than its parent.
+    adopt = complete and safe and win_improvement
 
     reasons: list[str] = []
     if not complete:
@@ -189,8 +189,8 @@ def _dev_gate(parent_runs: list[dict[str, Any]], candidate_runs: list[dict[str, 
         reasons.append("candidate_safety_failure")
     if not wins_not_worse:
         reasons.append("dev_wins_regressed")
-    if not (win_improvement or floor_improvement):
-        reasons.append("no_material_dev_improvement")
+    if not win_improvement:
+        reasons.append("no_dev_win_improvement")
 
     return {
         "schema_version": "sts1-armg-ppo-v14-dev-gate-v1",
@@ -208,6 +208,7 @@ def _dev_gate(parent_runs: list[dict[str, Any]], candidate_runs: list[dict[str, 
             "wins_not_worse": True,
             "win_improvement": "win_delta >= 1",
             "floor_improvement": (
+                "diagnostic_only_in_v1_6; "
                 "mean_paired_floor_delta >= 0.75 and "
                 "median_paired_floor_delta >= 0 and reach50_delta >= 0"
             ),

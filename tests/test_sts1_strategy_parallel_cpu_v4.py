@@ -168,3 +168,45 @@ def test_strategy_v6_dev_confirmation_gate_is_twenty_seed_non_regression() -> No
     assert gate.expected_seed_count == 20
     assert gate.min_win_delta == 0
     assert gate.min_floor_delta == 0.0
+
+
+def test_human_path_alignment_only_activates_on_confident_map_prior() -> None:
+    class FakeArmG:
+        def describe_choice(self, kind, desc):
+            return {"room": str(desc[0])}
+
+    candidate = {
+        "kind": "map",
+        "snapshot": {
+            "descs": [["MONSTER"], ["REST"]],
+            "floor": 8,
+            "hp": 20,
+            "max_hp": 80,
+            "gold": 100,
+        },
+    }
+    prior = {
+        "global_log_probs": {"MONSTER": -2.0, "REST": -0.2},
+        "act_log_probs": {"1": {"MONSTER": -2.0, "REST": -0.2}},
+        "context_log_probs": {
+            "1|critical|medium": {"MONSTER": -2.0, "REST": -0.2},
+        },
+    }
+    result = m._human_path_alignment(
+        candidate,
+        armg=FakeArmG(),
+        prior=prior,
+        min_prior_spread=0.2,
+    )
+    assert result["eligible"] is True
+    assert result["human_best_index"] == 1
+    assert result["prior_spread"] > 0.2
+
+    blocked = m._human_path_alignment(
+        candidate,
+        armg=FakeArmG(),
+        prior=prior,
+        min_prior_spread=5.0,
+    )
+    assert blocked["eligible"] is False
+    assert blocked["reason"] == "low_prior_spread"

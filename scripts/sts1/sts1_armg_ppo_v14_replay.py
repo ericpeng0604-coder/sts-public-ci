@@ -266,6 +266,16 @@ def _recent_key(game: dict[str, Any]) -> tuple[int, int]:
     return (int(game["source_round"]), int(game["seed"]))
 
 
+def _winner_replay_key(game: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Prefer proven wins, then deeper failures, without duplicating episodes."""
+    return (
+        int(bool(game["victory"])),
+        int(game["final_floor"]),
+        int(game["source_round"]),
+        int(game["seed"]),
+    )
+
+
 def _elite_key(game: dict[str, Any]) -> tuple[int, int, int, int]:
     return (
         int(bool(game["victory"])),
@@ -321,7 +331,7 @@ def main() -> int:
         for game in same_parent
         if int(game["seed"]) not in fresh_seeds
     ]
-    reusable = sorted(reusable, key=_recent_key, reverse=True)
+    reusable = sorted(reusable, key=_winner_replay_key, reverse=True)
 
     train_replay_game_limit = min(
         len(reusable),
@@ -390,6 +400,8 @@ def main() -> int:
         "fresh_decisions": _game_decisions(fresh),
         "train_replay_games": len(train_replay),
         "train_replay_decisions": _game_decisions(train_replay),
+        "train_replay_victories": sum(bool(game["victory"]) for game in train_replay),
+        "train_replay_selection": "victory_then_floor_then_recency",
         "train_replay_fraction_of_fresh_games": (
             len(train_replay) / max(1, len(fresh))
         ),

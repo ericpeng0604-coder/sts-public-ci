@@ -1,0 +1,549 @@
+name: STS1 Build Rescue Teacher Loop v2.1
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v21-teacher-loop-20260930
+    paths:
+      - control/sts1-build-rescue-v21.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+  G7_STATE_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  V20_AGG_ARTIFACT_ID: '11081959641'
+
+concurrency:
+  group: sts1-build-rescue-v21-teacher-loop
+  cancel-in-progress: true
+
+jobs:
+  mine:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        candidate_index: [10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install, hydrate, and build simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=".cache/sts1-v21-mine-${{ matrix.candidate_index }}"
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: Download frozen G7 parent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          weight="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$weight"
+          test "$(sha256sum "$weight" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+          cp "$weight" "$RUNNER_TEMP/g7-parent.pt"
+      - name: Mine one remaining Build-limited Seed
+        run: |
+          set -euo pipefail
+          out="evidence/sts1/v21-mine/${{ matrix.candidate_index }}"
+          python scripts/sts1/sts1_ppo_v20_build_trajectory_diagnostic.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root ".cache/sts1-v21-mine-${{ matrix.candidate_index }}" \
+            --weight "$RUNNER_TEMP/g7-parent.pt" \
+            --seeds-file control/sts1-v15-dev-seeds-50.txt \
+            --boss-summary control/sts1-v20-boss-diagnostic-summary-36677610709.json \
+            --output "$out/summary.json" \
+            --teacher-output "$out/candidate-teacher.jsonl" \
+            --max-seeds 40 \
+            --candidate-index "${{ matrix.candidate_index }}" \
+            --max-states 20 \
+            --max-alternatives 2 \
+            --max-two-step-states 20 \
+            --max-second-alternatives 2 \
+            --isolate-branches 1 \
+            --branch-timeout-seconds 180 \
+            --branch-retries 1
+          cat "$out/summary.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v21-build-mine-${{ github.run_id }}-${{ matrix.candidate_index }}
+          path: evidence/sts1/v21-mine/${{ matrix.candidate_index }}/
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: mine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sts1-v21-build-mine-${{ github.run_id }}-*
+          path: evidence/sts1/v21-mine/all
+          merge-multiple: false
+      - name: Download verified first 10 Seed aggregate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/v20.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$V20_AGG_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/v20"
+          unzip -q "$RUNNER_TEMP/v20.zip" -d "$RUNNER_TEMP/v20"
+      - name: Build durable Verified Rescue Dataset
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+
+          old_root=Path(os.environ["RUNNER_TEMP"])/"v20"
+          old_summary=json.loads((old_root/"summary.json").read_text())
+          if old_summary["complete_seeds"]!=10 or old_summary["native_branch_failures"]!=0:
+              raise SystemExit("old verified 10-seed aggregate contract failed")
+          rows=list(old_summary["rows"])
+          teachers=[
+              json.loads(line)
+              for line in (old_root/"candidate-teacher.jsonl").read_text().splitlines()
+              if line.strip()
+          ]
+
+          root=Path("evidence/sts1/v21-mine/all")
+          summaries=sorted(root.glob("**/summary.json"))
+          if len(summaries)!=30:
+              raise SystemExit(f"expected 30 new summaries, got {len(summaries)}")
+          for p in summaries:
+              payload=json.loads(p.read_text())
+              if int(payload.get("diagnosed_seeds",0))!=1:
+                  raise SystemExit(f"bad one-seed summary {p}")
+              row=payload["rows"][0]
+              if int(row.get("native_branch_failures",0) or 0)!=0:
+                  raise SystemExit(f"native branch failure prevents complete mining: {p}")
+              rows.append(row)
+              tp=p.with_name("candidate-teacher.jsonl")
+              if tp.exists():
+                  teachers.extend(json.loads(x) for x in tp.read_text().splitlines() if x.strip())
+
+          expected=json.loads(Path("control/sts1-v20-boss-diagnostic-summary-36677610709.json").read_text())
+          expected_seeds={int(x) for x in expected["not_rescued_by_boss_50k"]["seeds"]}
+          got={int(r["seed"]) for r in rows}
+          if len(rows)!=40 or got!=expected_seeds:
+              raise SystemExit(f"40-seed coverage mismatch got={len(got)} expected={len(expected_seeds)}")
+
+          dedup={}
+          for row in teachers:
+              if row["schema_version"]!="sts1-armg-strategy-branch-dataset-v1":
+                  raise SystemExit("teacher schema mismatch")
+              if float(row.get("confidence_weight",0))!=1.0:
+                  raise SystemExit("unverified confidence")
+              if float(row.get("teacher_consensus_fraction",0))!=1.0:
+                  raise SystemExit("unverified consensus")
+              probs=[float(v) for v in row["target_probs"]]
+              if abs(sum(probs)-1.0)>1e-6:
+                  raise SystemExit("bad teacher probabilities")
+              target=int(row["target_boss_floor"])
+              for key in ("boss_10k","boss_50k"):
+                  r=row[key]
+                  passed=str(r.get("outcome","")).lower()=="victory" or int(r.get("final_floor") or r.get("max_floor") or 0)>target
+                  if not passed:
+                      raise SystemExit(f"teacher lacks {key} confirmation")
+              k=(int(row["seed"]),int(row["floor"]),str(row["kind"]),int(row["current_armg_index"]),int(row["teacher_best_index"]))
+              dedup[k]=row
+          teachers=list(dedup.values())
+          if len(teachers)<5:
+              raise SystemExit(f"verified teacher pool unexpectedly shrank to {len(teachers)}")
+
+          by_kind={}
+          for r in teachers:
+              by_kind[str(r["kind"])]=by_kind.get(str(r["kind"]),0)+1
+          payload={
+              "schema_version":"sts1-build-rescue-verified-dataset-v21",
+              "source_parent_sha256":os.environ["G7_WEIGHT_SHA256"],
+              "complete_build_limited_seeds":40,
+              "rescue_seeds":sum(r["status"] in {"EARLY_BUILD_RESCUE_FOUND","EARLY_TWO_STEP_BUILD_RESCUE_FOUND"} for r in rows),
+              "single_step_rescues":sum(r["status"]=="EARLY_BUILD_RESCUE_FOUND" for r in rows),
+              "two_step_rescues":sum(r["status"]=="EARLY_TWO_STEP_BUILD_RESCUE_FOUND" for r in rows),
+              "not_reproduced":sum(r["status"]=="NOT_REPRODUCED_AS_NEAR_BOSS_LOSS" for r in rows),
+              "no_early_rescue":sum(r["status"]=="NO_EARLY_BUILD_RESCUE" for r in rows),
+              "verified_teacher_examples":len(teachers),
+              "teacher_by_kind":dict(sorted(by_kind.items())),
+              "rows":rows,
+          }
+          out=Path("evidence/sts1/v21-verified")
+          out.mkdir(parents=True,exist_ok=True)
+          (out/"summary.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+          (out/"verified-build-rescue.jsonl").write_text("".join(json.dumps(r,sort_keys=True)+"\n" for r in teachers))
+          print("V21_VERIFIED_DATASET",json.dumps({k:payload[k] for k in ("complete_build_limited_seeds","rescue_seeds","single_step_rescues","two_step_rescues","verified_teacher_examples","teacher_by_kind")},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v21-verified-build-rescue-${{ github.run_id }}
+          path: evidence/sts1/v21-verified/
+          if-no-files-found: error
+          retention-days: 90
+
+  train:
+    needs: aggregate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v21-verified-build-rescue-${{ github.run_id }}
+          path: evidence/sts1/v21-verified
+      - name: Install and hydrate ArmG
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          root=.cache/sts1-v21-train
+          mkdir -p "$root"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: Download frozen G7 parent and elite wins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+      - name: Train Build-only Candidate
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v21-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python scripts/sts1/sts1_build_rescue_bc_v21.py \
+            --armg-root .cache/sts1-v21-train \
+            --base-weight "$parent" \
+            --elite-replay "$elite" \
+            --rescue-replay evidence/sts1/v21-verified/verified-build-rescue.jsonl \
+            --output evidence/sts1/v21-candidate/candidate.pt \
+            --report evidence/sts1/v21-candidate/train-report.json \
+            --epochs 8 \
+            --lr 1e-5 \
+            --elite-max-decisions 1024 \
+            --rescue-repeats 16 \
+            --elite-coef 0.40 \
+            --rescue-coef 1.0 \
+            --anchor-coef 0.03 \
+            --max-parent-kl 0.08 \
+            --threads 4
+          cp evidence/sts1/v21-verified/summary.json evidence/sts1/v21-candidate/dataset-summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v21-build-candidate-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate/
+          if-no-files-found: error
+          retention-days: 90
+
+  dev_gate:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      passed: ${{ steps.verdict.outputs.passed }}
+      parent_wins: ${{ steps.verdict.outputs.parent_wins }}
+      candidate_wins: ${{ steps.verdict.outputs.candidate_wins }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v21-build-candidate-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate
+      - name: Prepare simulator and parent
+        env: {GH_TOKEN: ${{ github.token }}}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v21-gate
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"; unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > "$RUNNER_TEMP/dev30.txt"
+          test "$(wc -l < "$RUNNER_TEMP/dev30.txt")" -eq 30
+      - name: Paired Dev30 win-rate Gate
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v21-gate \
+            --parent-weight "$parent" \
+            --candidate-weight evidence/sts1/v21-candidate/candidate.pt \
+            --seed-file "$RUNNER_TEMP/dev30.txt" \
+            --output evidence/sts1/v21-candidate/dev30.json \
+            --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label dev30
+      - id: verdict
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v21-candidate/dev30.json"))
+          print("passed="+str(x["pass"]).lower())
+          print("parent_wins="+str(x["parent_wins"]))
+          print("candidate_wins="+str(x["candidate_wins"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v21-dev30-${{ github.run_id }}
+          path: evidence/sts1/v21-candidate/dev30.json
+
+  hidden_gate:
+    needs: dev_gate
+    if: needs.dev_gate.outputs.passed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    outputs:
+      passed: ${{ steps.verdict.outputs.passed }}
+      parent_wins: ${{ steps.verdict.outputs.parent_wins }}
+      candidate_wins: ${{ steps.verdict.outputs.candidate_wins }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with: {name: sts1-v21-build-candidate-${{ github.run_id }}, path: evidence/sts1/v21-candidate}
+      - name: Prepare simulator and parent
+        env: {GH_TOKEN: ${{ github.token }}}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v21-gate; mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"; unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+      - name: Hidden50 Gate
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v21-gate \
+            --parent-weight "$parent" --candidate-weight evidence/sts1/v21-candidate/candidate.pt \
+            --seed-file control/sts1-v14-final-promotion-seeds-50.txt \
+            --output evidence/sts1/v21-candidate/hidden50.json \
+            --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label hidden50
+      - id: verdict
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v21-candidate/hidden50.json"))
+          print("passed="+str(x["pass"]).lower()); print("parent_wins="+str(x["parent_wins"])); print("candidate_wins="+str(x["candidate_wins"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: sts1-v21-hidden50-${{ github.run_id }}, path: evidence/sts1/v21-candidate/hidden50.json}
+
+  fresh_gate:
+    needs: hidden_gate
+    if: needs.hidden_gate.outputs.passed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    outputs:
+      passed: ${{ steps.verdict.outputs.passed }}
+      parent_wins: ${{ steps.verdict.outputs.parent_wins }}
+      candidate_wins: ${{ steps.verdict.outputs.candidate_wins }}
+      pvalue: ${{ steps.verdict.outputs.pvalue }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with: {name: sts1-v21-build-candidate-${{ github.run_id }}, path: evidence/sts1/v21-candidate}
+      - uses: actions/download-artifact@v4
+        with: {name: sts1-v21-verified-build-rescue-${{ github.run_id }}, path: evidence/sts1/v21-verified}
+      - name: Generate isolated Fresh100 Seeds
+        run: |
+          python - <<'PY'
+          import json,random
+          from pathlib import Path
+          protected=set()
+          for name in ["control/sts1-v15-dev-seeds-50.txt","control/sts1-v14-final-promotion-seeds-50.txt","control/sts1-v16-benchmark-seeds-500.txt"]:
+              protected.update(int(x) for x in Path(name).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#"))
+          d=json.loads(Path("evidence/sts1/v21-verified/summary.json").read_text())
+          protected.update(int(r["seed"]) for r in d["rows"])
+          rng=random.Random(2026093021)
+          seeds=[]
+          while len(seeds)<100:
+              x=rng.randrange(1,2_000_000_000)
+              if x not in protected and x not in seeds:
+                  seeds.append(x)
+          Path("evidence/sts1/v21-candidate/fresh100-seeds.txt").write_text("\n".join(map(str,seeds))+"\n")
+          assert not (set(seeds)&protected)
+          print("V21_FRESH100_SEEDS",len(seeds))
+          PY
+      - name: Prepare simulator and parent
+        env: {GH_TOKEN: ${{ github.token }}}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v21-gate; mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"; unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+      - name: Fresh100 Gate with formal paired p threshold
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v21-gate \
+            --parent-weight "$parent" --candidate-weight evidence/sts1/v21-candidate/candidate.pt \
+            --seed-file evidence/sts1/v21-candidate/fresh100-seeds.txt \
+            --output evidence/sts1/v21-candidate/fresh100.json \
+            --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label fresh100
+      - id: verdict
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v21-candidate/fresh100.json"))
+          print("passed="+str(x["pass"]).lower()); print("parent_wins="+str(x["parent_wins"])); print("candidate_wins="+str(x["candidate_wins"])); print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v21-fresh100-${{ github.run_id }}
+          path: |
+            evidence/sts1/v21-candidate/fresh100.json
+            evidence/sts1/v21-candidate/fresh100-seeds.txt
+
+  heldout500:
+    needs: fresh_gate
+    if: needs.fresh_gate.outputs.passed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    outputs:
+      passed: ${{ steps.verdict.outputs.passed }}
+      parent_wins: ${{ steps.verdict.outputs.parent_wins }}
+      candidate_wins: ${{ steps.verdict.outputs.candidate_wins }}
+      pvalue: ${{ steps.verdict.outputs.pvalue }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with: {name: sts1-v21-build-candidate-${{ github.run_id }}, path: evidence/sts1/v21-candidate}
+      - name: Prepare simulator and parent
+        env: {GH_TOKEN: ${{ github.token }}}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v21-gate; mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_STATE_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"; unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+      - name: Protected Heldout500 Gate
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v21-gate \
+            --parent-weight "$parent" --candidate-weight evidence/sts1/v21-candidate/candidate.pt \
+            --seed-file control/sts1-v16-benchmark-seeds-500.txt \
+            --output evidence/sts1/v21-candidate/heldout500.json \
+            --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label heldout500
+      - id: verdict
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v21-candidate/heldout500.json"))
+          print("passed="+str(x["pass"]).lower()); print("parent_wins="+str(x["parent_wins"])); print("candidate_wins="+str(x["candidate_wins"])); print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: sts1-v21-heldout500-${{ github.run_id }}, path: evidence/sts1/v21-candidate/heldout500.json}
+
+  report:
+    needs: [aggregate,train,dev_gate,hidden_gate,fresh_gate,heldout500]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report v2.1 status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV_RESULT: ${{ needs.dev_gate.result }}
+          DEV_PASS: ${{ needs.dev_gate.outputs.passed }}
+          DEV_PARENT: ${{ needs.dev_gate.outputs.parent_wins }}
+          DEV_CAND: ${{ needs.dev_gate.outputs.candidate_wins }}
+          HID_RESULT: ${{ needs.hidden_gate.result }}
+          HID_PASS: ${{ needs.hidden_gate.outputs.passed }}
+          HID_PARENT: ${{ needs.hidden_gate.outputs.parent_wins }}
+          HID_CAND: ${{ needs.hidden_gate.outputs.candidate_wins }}
+          FRESH_RESULT: ${{ needs.fresh_gate.result }}
+          FRESH_PASS: ${{ needs.fresh_gate.outputs.passed }}
+          FRESH_PARENT: ${{ needs.fresh_gate.outputs.parent_wins }}
+          FRESH_CAND: ${{ needs.fresh_gate.outputs.candidate_wins }}
+          FRESH_P: ${{ needs.fresh_gate.outputs.pvalue }}
+          H500_RESULT: ${{ needs.heldout500.result }}
+          H500_PASS: ${{ needs.heldout500.outputs.passed }}
+          H500_PARENT: ${{ needs.heldout500.outputs.parent_wins }}
+          H500_CAND: ${{ needs.heldout500.outputs.candidate_wins }}
+          H500_P: ${{ needs.heldout500.outputs.pvalue }}
+        run: |
+          if [ "$H500_PASS" = "true" ]; then readiness="READY_FOR_REAL_GAME_GATE"; else readiness="HOLD_PARENT"; fi
+          cat > "$RUNNER_TEMP/body.txt" <<EOF
+          @ericpeng0604-coder
+
+          ## STS1 Build Rescue Teacher Loop v2.1
+
+          - Dev30: **$DEV_RESULT** Parent $DEV_PARENT / Candidate $DEV_CAND / PASS=$DEV_PASS
+          - Hidden50: **$HID_RESULT** Parent $HID_PARENT / Candidate $HID_CAND / PASS=$HID_PASS
+          - Fresh100: **$FRESH_RESULT** Parent $FRESH_PARENT / Candidate $FRESH_CAND / p=$FRESH_P / PASS=$FRESH_PASS
+          - Heldout500: **$H500_RESULT** Parent $H500_PARENT / Candidate $H500_CAND / p=$H500_P / PASS=$H500_PASS
+          - Final readiness: **$readiness**
+          - 正式 Champion 未自動更換；通過後仍需 Real Game Gate。
+          EOF
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

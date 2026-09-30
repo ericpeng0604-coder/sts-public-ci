@@ -23,10 +23,6 @@ env:
   G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
   SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
 
-concurrency:
-  group: sts1-build-rescue-v24-fast7
-  cancel-in-progress: true
-
 jobs:
   fast7:
     runs-on: ubuntu-24.04
@@ -70,7 +66,7 @@ jobs:
               rows=list(r.get("teachers") or [])
               expected=1 if r.get("status")=="NEW_FULL_WIN_ONE_STEP" else 2
               if len(rows)!=expected:
-                  raise SystemExit(f"Fast7 seed {seed} expected {expected} teacher(s), got {len(rows)}")
+                  raise SystemExit(f"Fast7 seed {seed} expected {expected} teacher rows, got {len(rows)}")
               teachers.extend(rows)
           if len(teachers)!=7 or {int(x["seed"]) for x in teachers}!=wanted:
               raise SystemExit("Fast7 teacher identity contract failed")

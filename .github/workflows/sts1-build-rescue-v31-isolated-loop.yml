@@ -47,7 +47,7 @@ jobs:
           a=Path("scripts/sts1/sts1_build_rescue_adapter_v30.py").read_text()
           required=[
               ("screen",s,["V31_SCREEN_PASS","priority-output","priority-count"]),
-              ("miner",m,["V24_NEW_WIN_MINER_RESULT","boss_mcts_sims=50000","NEW_FULL_WIN"]),
+              ("miner",m,["V24_NEW_WIN_MINER_RESULT","boss_sims=50000","NEW_FULL_WIN"]),
               ("adapter",a,["V30_ADAPTER_TRAIN_PASS",".adapter.pt","fully_learned_seeds"]),
           ]
           missing={name:[x for x in req if x not in body] for name,body,req in required}

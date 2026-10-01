@@ -29,8 +29,10 @@ class ArmGLocalRescueAdapterPolicy(ArmGNoncombatPolicy):
         if not adapter_path.is_file():
             raise SimulatorRunError(f"Local Rescue Adapter missing: {adapter_path}")
         payload=json.loads(adapter_path.read_text(encoding="utf-8"))
-        if payload.get("schema_version")!="sts1-local-rescue-adapter-v31":
+        schema=str(payload.get("schema_version",""))
+        if schema not in {"sts1-local-rescue-adapter-v31","sts1-local-rescue-adapter-v33"}:
             raise SimulatorRunError("Local Rescue Adapter schema mismatch")
+        self.context_guarded=bool(payload.get("context_guarded",False))
         self.obs_scale=[float(x) for x in payload["obs_scale"]]
         self.desc_scale=[float(x) for x in payload["desc_scale"]]
         if len(self.obs_scale)!=412 or len(self.desc_scale)!=368:
@@ -45,6 +47,7 @@ class ArmGLocalRescueAdapterPolicy(ArmGNoncombatPolicy):
             self.prototypes.append({
                 "seed":int(row["seed"]),
                 "floor":int(row.get("floor",0) or 0),
+                "act":int(row.get("act",0) or 0),
                 "kind":str(row["kind"]),
                 "obs":obs,
                 "teacher_desc":desc,
@@ -88,8 +91,14 @@ class ArmGLocalRescueAdapterPolicy(ArmGNoncombatPolicy):
         vecs=[[float(x) for x in row] for row in snap["candidate_desc_368"]]
 
         best=None
+        floor=int(getattr(gc,"floor_num",0) or 0)
+        act=int(getattr(gc,"act",0) or 0)
         for proto_idx,proto in enumerate(self.prototypes):
             if proto["kind"]!=str(kind):
+                continue
+            if self.context_guarded and (
+                int(proto["floor"])!=floor or int(proto["act"])!=act
+            ):
                 continue
             radius=float(proto["radius"])
             for cand_idx,desc in enumerate(vecs):
@@ -108,6 +117,7 @@ class ArmGLocalRescueAdapterPolicy(ArmGNoncombatPolicy):
         self.last_adapter_match={
             "prototype_seed":proto["seed"],
             "prototype_floor":proto["floor"],
+            "prototype_act":proto["act"],
             "kind":str(kind),
             "distance":float(distance),
             "radius":float(proto["radius"]),

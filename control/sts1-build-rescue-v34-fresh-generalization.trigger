@@ -10,4 +10,5 @@ fresh100=100
 fresh500=500
 no_holdout_training=true
 promotion=manual_after_real_game_only
-revision=v34-generalization-2
+revision=v34-generalization-3
+matrix_contract=40_unique_seeds

@@ -1,5 +1,5 @@
-attempt=214
-retry_count=0
+attempt=215
+retry_count=1
 games_per_worker=80
 rng_seed=2026092801
 temperature=1
@@ -17,7 +17,7 @@ report_issue=15
 strategy_profile=teacher_reanchor
 stagnation_seen=46
 ppo_version=1.7
-reason=adaptive_stagnation_teacher_reanchor
+reason=auto_retry_after_failure
 strategy_teacher_coef=0.05
 strategy_teacher_max_examples=1024
 strategy_teacher_required=1

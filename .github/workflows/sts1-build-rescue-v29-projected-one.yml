@@ -1,0 +1,365 @@
+name: STS1 Build Rescue v2.9 Projected One
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v29-projected-one.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '36731071450'
+  V21_DATASET_RUN_ID: '36699995040'
+  V21_DATASET_ARTIFACT: 'v21-verified-36699995040'
+  V23_TRACE_RUN_ID: '36722951474'
+  V23_TRACE_ARTIFACT: 'sts1-v23-regression-trace-36722951474'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v29-projected-one
+  cancel-in-progress: true
+
+jobs:
+  projected:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        seed:
+          - 469494371
+          - 523373928
+          - 620908546
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate v2.9 Projected-One contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/sts1/sts1_build_rescue_projected_v29.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("scripts/sts1/sts1_build_rescue_projected_v29.py").read_text()
+          required=[
+              "exactly one projected Teacher",
+              "_build_covariance",
+              "_solve_update",
+              "protection_scale",
+              "V29_PROJECTED_TRIAL",
+              "V29_PROJECTED_ONE_PASS",
+              "parent_high_conf_top1_agreement",
+          ]
+          missing=[x for x in required if x not in p]
+          if missing:
+              raise SystemExit(f"missing v2.9 projected contract: {missing}")
+          print("V29_PROJECTED_CONTRACT_PASS")
+          PY
+
+      - name: Download projected full-win Teacher
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v24-mine-${{ matrix.seed }}
+          path: evidence/sts1/v29-raw
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Freeze exactly one projected Teacher
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v29-projected
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          seed=int(os.environ["FOCUSED_SEED"])
+          rows=[]
+          for p in Path("evidence/sts1/v29-raw").glob("result-*.json"):
+              r=json.loads(p.read_text())
+              if int(r["seed"])!=seed:
+                  continue
+              if r.get("status")!="NEW_FULL_WIN_ONE_STEP":
+                  raise SystemExit(f"seed {seed} is not one-step full-win: {r.get('status')}")
+              rows=list(r.get("teachers") or [])
+          if len(rows)!=1:
+              raise SystemExit(f"seed {seed} expected exactly one Teacher, got {len(rows)}")
+          t=rows[0]
+          if int(t["seed"])!=seed or t.get("type")!="v24_new_win_full_victory":
+              raise SystemExit("projected Teacher identity/type mismatch")
+          if t.get("confidence_weight")!=1.0 or t.get("teacher_consensus_fraction")!=1.0:
+              raise SystemExit("projected Teacher confidence mismatch")
+          Path("evidence/sts1/v29-projected/new-win-teacher.jsonl").write_text(
+              json.dumps(t,sort_keys=True)+"\n"
+          )
+          print("V29_FOCUSED_DATASET_PASS",seed,t["kind"],t["floor"])
+          PY
+        env:
+          FOCUSED_SEED: ${{ matrix.seed }}
+
+      - name: Download frozen old Rescue pool
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V21_DATASET_ARTIFACT }}
+          path: evidence/sts1/v21-verified
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V21_DATASET_RUN_ID }}
+
+      - name: Download frozen regression anchors
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V23_TRACE_ARTIFACT }}
+          path: evidence/sts1/v23-trace
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V23_TRACE_RUN_ID }}
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v29-${{ matrix.seed }}
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test -n "$parent"
+          test -n "$elite"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Build Projected-One Candidate
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v29-candidate-${{ matrix.seed }}
+          mkdir -p "$out"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python scripts/sts1/sts1_build_rescue_projected_v29.py \
+            --armg-root .cache/sts1-v29-${{ matrix.seed }} \
+            --base-weight "$parent" \
+            --elite-replay "$elite" \
+            --new-win-replay evidence/sts1/v29-projected/new-win-teacher.jsonl \
+            --preservation-replay evidence/sts1/v23-trace/preservation.jsonl \
+            --output "$out/candidate.pt" \
+            --report "$out/train-report.json" \
+            --retention-eval-max 2048 \
+            --protection-train-max 8192 \
+            --target-margin 0.01 \
+            --ridge 0.001 \
+            --min-parent-agreement 0.995 \
+            --max-parent-kl 0.002 \
+            --max-winner-drop 0.01 \
+            --threads 4
+
+      - name: Build projected gate seeds
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v29-candidate-${{ matrix.seed }}
+          printf '%s\n' '${{ matrix.seed }}' > "$out/target1-seed.txt"
+          cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2-seeds.txt"
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > "$out/dev30-seeds.txt"
+          cp control/sts1-v14-final-promotion-seeds-50.txt "$out/hidden50-seeds.txt"
+          python - <<'PY'
+          import random
+          from pathlib import Path
+          def read(path):
+              return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
+          protected=set(read("control/sts1-v15-dev-seeds-50.txt"))
+          protected.update(read("control/sts1-v14-final-promotion-seeds-50.txt"))
+          protected.update(read("control/sts1-v16-benchmark-seeds-500.txt"))
+          rng=random.Random(2026093028)
+          fresh=[]
+          while len(fresh)<100:
+              x=rng.randrange(1,2_000_000_000)
+              if x not in protected and x not in fresh:
+                  fresh.append(x)
+          out=Path("evidence/sts1/v29-candidate-"+str(${{ matrix.seed }}))
+          (out/"fresh100-seeds.txt").write_text("\n".join(map(str,fresh))+"\n")
+          PY
+
+      - name: Target1 exact New-Win Gate
+        id: target
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v29-candidate-${{ matrix.seed }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v29-${{ matrix.seed }}             --parent-weight "$parent"             --candidate-weight "$out/candidate.pt"             --seed-file "$out/target1-seed.txt"             --output "$out/target1.json"             --mcts-sims 2000 --workers 1 --min-win-delta 1 --max-pvalue 1.0 --label v29-target-${{ matrix.seed }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v29-candidate-${{ matrix.seed }}/target1.json"))
+          passed=(x["parent_wins"]==0 and x["candidate_wins"]==1 and x["candidate_only_wins"]==1 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          PY
+
+      - name: Regression2 preservation Gate
+        id: reg
+        if: steps.target.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v29-candidate-${{ matrix.seed }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v29-${{ matrix.seed }}             --parent-weight "$parent"             --candidate-weight "$out/candidate.pt"             --seed-file "$out/regression2-seeds.txt"             --output "$out/regression2.json"             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0 --label v29-regression2-${{ matrix.seed }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v29-candidate-${{ matrix.seed }}/regression2.json"))
+          passed=(x["parent_wins"]==2 and x["candidate_wins"]==2 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          PY
+
+      - name: Dev30 New-Win Gate
+        id: dev
+        if: steps.reg.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v29-candidate-${{ matrix.seed }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v29-${{ matrix.seed }}             --parent-weight "$parent"             --candidate-weight "$out/candidate.pt"             --seed-file "$out/dev30-seeds.txt"             --output "$out/dev30.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v29-dev30-${{ matrix.seed }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v29-candidate-${{ matrix.seed }}/dev30.json"))
+          passed=(x["parent_wins"]==6 and x["candidate_wins"]>=7 and x["candidate_only_wins"]>=1 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          PY
+
+      - name: Hidden50 Gate
+        id: hidden
+        if: steps.dev.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v29-candidate-${{ matrix.seed }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v29-${{ matrix.seed }}             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/hidden50-seeds.txt" --output "$out/hidden50.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v29-hidden50-${{ matrix.seed }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v29-candidate-${{ matrix.seed }}/hidden50.json"))
+          print("passed="+str(x["pass"]).lower())
+          PY
+
+      - name: Fresh100 Gate
+        id: fresh
+        if: steps.hidden.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v29-candidate-${{ matrix.seed }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v29-${{ matrix.seed }}             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/fresh100-seeds.txt" --output "$out/fresh100.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v29-fresh100-${{ matrix.seed }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v29-candidate-${{ matrix.seed }}/fresh100.json"))
+          print("passed="+str(x["pass"]).lower())
+          PY
+
+      - name: Heldout500 Gate
+        id: h500
+        if: steps.fresh.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v29-candidate-${{ matrix.seed }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v29-${{ matrix.seed }}             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file control/sts1-v16-benchmark-seeds-500.txt --output "$out/heldout500.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v29-heldout500-${{ matrix.seed }}
+
+      - name: Write projected summary
+        if: always()
+        env:
+          TARGET: ${{ steps.target.outputs.passed }}
+          TARGET_PARENT: ${{ steps.target.outputs.parent }}
+          TARGET_CAND: ${{ steps.target.outputs.candidate }}
+          REG: ${{ steps.reg.outputs.passed }}
+          DEV: ${{ steps.dev.outputs.passed }}
+          DEV_PARENT: ${{ steps.dev.outputs.parent }}
+          DEV_CAND: ${{ steps.dev.outputs.candidate }}
+          DEV_CONLY: ${{ steps.dev.outputs.candidate_only }}
+          DEV_PONLY: ${{ steps.dev.outputs.parent_only }}
+          HID: ${{ steps.hidden.outputs.passed }}
+          FRESH: ${{ steps.fresh.outputs.passed }}
+          H500: ${{ steps.h500.outcome }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          seed=str(${{ matrix.seed }})
+          out=Path("evidence/sts1/v29-candidate-"+seed)
+          out.mkdir(parents=True,exist_ok=True)
+          train={}
+          if (out/"train-report.json").exists():
+              train=json.loads((out/"train-report.json").read_text())
+          summary={
+              "schema_version":"sts1-v29-projected-one-summary",
+              "seed":int(seed),
+              "training":{
+                  "selected_alpha":train.get("selected_alpha"),
+                  "before_new_win":train.get("before",{}).get("new_win"),
+                  "after_new_win":train.get("after",{}).get("new_win"),
+                  "before_margin":train.get("before",{}).get("new_win_margin"),
+                  "after_margin":train.get("after",{}).get("new_win_margin"),
+                  "retention_after":train.get("after",{}).get("retention"),
+              },
+              "target1":{"pass":os.environ.get("TARGET")=="true","parent":os.environ.get("TARGET_PARENT"),"candidate":os.environ.get("TARGET_CAND")},
+              "regression2_pass":os.environ.get("REG")=="true",
+              "dev30":{"pass":os.environ.get("DEV")=="true","parent":os.environ.get("DEV_PARENT"),"candidate":os.environ.get("DEV_CAND"),"candidate_only":os.environ.get("DEV_CONLY"),"parent_only":os.environ.get("DEV_PONLY")},
+              "hidden50_pass":os.environ.get("HID")=="true",
+              "fresh100_pass":os.environ.get("FRESH")=="true",
+              "heldout500_outcome":os.environ.get("H500"),
+          }
+          (out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("V29_FOCUSED_FINAL",json.dumps(summary,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v29-projected-${{ matrix.seed }}-${{ github.run_id }}
+          path: evidence/sts1/v29-candidate-${{ matrix.seed }}/
+          if-no-files-found: warn
+          retention-days: 90
+
+  report:
+    needs: projected
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report completion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="@ericpeng0604-coder
+
+          ## Build Rescue v2.9 Projected-One
+          - Three one-step full-win Teachers were trained independently.
+          - Each lane uses Target1 -> Regression2 -> Dev30 -> Hidden50 -> Fresh100 -> Heldout500.
+          - See per-seed artifacts for exact paired results.
+          - G7 remains unchanged unless a lane passes the formal gates."
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$body"

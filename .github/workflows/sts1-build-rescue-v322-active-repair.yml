@@ -1,0 +1,414 @@
+name: STS1 Build Rescue v3.2.2 Active Constraint Repair
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v322-active-repair.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  V31_RUN_ID: '36804227660'
+  V31_TEACHERS_ARTIFACT: 'sts1-v31-teachers-36804227660'
+  V32_RUN_ID: '36822453786'
+  V32_ARTIFACT: 'sts1-v32-regression-safe-36822453786'
+  V321_RUN_ID: '36823118775'
+  V321_ARTIFACT: 'sts1-v321-minimal-repair-36823118775'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v322-active-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static v3.2.2 contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/sts1/sts1_build_rescue_adapter_v32.py \
+            scripts/sts1/sts1_build_rescue_regression_trace.py \
+            scripts/sts1/sts1_build_rescue_gate_v21.py
+          echo V322_ACTIVE_REPAIR_CONTRACT_PASS
+
+      - name: Download teachers
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V31_TEACHERS_ARTIFACT }}
+          path: evidence/sts1/v31-teachers
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V31_RUN_ID }}
+
+      - name: Download base preservation memory
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V32_ARTIFACT }}
+          path: evidence/sts1/v32-source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V32_RUN_ID }}
+
+      - name: Download stable v3.2.1 candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V321_ARTIFACT }}
+          path: evidence/sts1/v321-source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V321_RUN_ID }}
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v322
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/g7.zip" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test -n "$parent"; test -n "$elite"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Active constraint repair loop
+        id: loop
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v322
+          mkdir -p "$out"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+
+          cp evidence/sts1/v321-source/candidate.pt "$out/stable.pt"
+          cp evidence/sts1/v321-source/candidate.pt.adapter.pt "$out/stable.pt.adapter.pt"
+          cp evidence/sts1/v32-source/preservation-combined.jsonl "$out/preservation-active.jsonl"
+          cp evidence/sts1/v31-teachers/teacher-seeds.txt "$out/training-recall.txt"
+          cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2-seeds.txt"
+          printf '%s\n' 148131968 > "$out/lost-regression.txt"
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.load(open("evidence/sts1/v321-source/training-recall.json"))
+          wins=[int(r["seed"]) for r in x["rows"] if str(r["candidate"]["outcome"]).lower()=="victory"]
+          assert len(wins)>=4, wins
+          Path("evidence/sts1/v322/stable-win-seeds.txt").write_text("\n".join(map(str,wins))+"\n")
+          print("V322_STABLE_WINS",wins)
+          PY
+
+          # The stable v3.2.1 model still loses 148131968.
+          # Capture its next divergence before the first proposal.
+          python scripts/sts1/sts1_build_rescue_regression_trace.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v322 \
+            --parent-weight "$parent" \
+            --candidate-weight "$out/stable.pt" \
+            --seed-file "$out/lost-regression.txt" \
+            --heldout-seeds-file "$out/regression2-seeds.txt" \
+            --output "$out/regression-trace-initial.json" \
+            --preservation-output "$out/regression-anchor-initial.jsonl"
+          cat "$out/regression-anchor-initial.jsonl" >> "$out/preservation-active.jsonl"
+
+          passed=false
+          for round in 1 2 3 4; do
+            echo "V322_ROUND_START round=$round"
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("evidence/sts1/v322/preservation-active.jsonl")
+          rows=[]; seen=set()
+          for line in p.read_text().splitlines():
+              if not line.strip(): continue
+              obj=json.loads(line)
+              key=json.dumps(obj,sort_keys=True,separators=(",",":"))
+              if key in seen: continue
+              seen.add(key); rows.append(obj)
+          p.write_text("".join(json.dumps(x,sort_keys=True)+"\n" for x in rows))
+          print("V322_ACTIVE_ANCHORS",len(rows))
+          PY
+
+            python scripts/sts1/sts1_build_rescue_adapter_v32.py \
+              --armg-root .cache/sts1-v322 \
+              --base-weight "$parent" \
+              --elite-replay "$elite" \
+              --new-win-replay evidence/sts1/v31-teachers/new-win-teachers.jsonl \
+              --preservation-replay "$out/preservation-active.jsonl" \
+              --init-adapter-sidecar "$out/stable.pt.adapter.pt" \
+              --output "$out/proposal.pt" \
+              --report "$out/train-report-r${round}.json" \
+              --hidden-dim 48 --epochs 1 --lr 0.00018 \
+              --elite-train-max 8192 --retention-eval-max 2048 \
+              --teacher-margin 0.05 --teacher-coef 4.5 --distill-coef 10.0 \
+              --zero-residual-coef 0.75 --preservation-coef 16.0 \
+              --preservation-margin 0.03 --min-preservation-margin 0.005 \
+              --weight-decay 0.00001 --min-fully-learned-seeds 10 \
+              --min-parent-agreement 0.995 --max-parent-kl 0.002 \
+              --max-winner-drop 0.01 --threads 4
+
+            python scripts/sts1/sts1_build_rescue_gate_v21.py \
+              --module-dir external/sts_lightspeed/source/build-probe \
+              --armg-root .cache/sts1-v322 \
+              --parent-weight "$parent" --candidate-weight "$out/proposal.pt" \
+              --seed-file "$out/training-recall.txt" \
+              --output "$out/training-recall-r${round}.json" \
+              --mcts-sims 2000 --workers 4 --min-win-delta 4 --max-pvalue 1.0 \
+              --label "v322-recall-r${round}"
+
+            python scripts/sts1/sts1_build_rescue_gate_v21.py \
+              --module-dir external/sts_lightspeed/source/build-probe \
+              --armg-root .cache/sts1-v322 \
+              --parent-weight "$parent" --candidate-weight "$out/proposal.pt" \
+              --seed-file "$out/regression2-seeds.txt" \
+              --output "$out/regression2-r${round}.json" \
+              --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0 \
+              --label "v322-regression-r${round}"
+
+            python - "$round" <<'PY' > "$out/round-status.env"
+          import json,sys
+          from pathlib import Path
+          r=sys.argv[1]
+          recall=json.load(open(f"evidence/sts1/v322/training-recall-r{r}.json"))
+          reg=json.load(open(f"evidence/sts1/v322/regression2-r{r}.json"))
+          stable=set(int(x) for x in Path("evidence/sts1/v322/stable-win-seeds.txt").read_text().split())
+          cand_wins={int(x["seed"]) for x in recall["rows"] if str(x["candidate"]["outcome"]).lower()=="victory"}
+          lost=sorted(stable-cand_wins)
+          reg_lost=[int(x["seed"]) for x in reg["rows"] if str(x["parent"]["outcome"]).lower()=="victory" and str(x["candidate"]["outcome"]).lower()!="victory"]
+          recall_ok=recall["candidate_wins"]>=4 and recall["candidate_only_wins"]>=4 and recall["parent_only_wins"]==0
+          reg_ok=reg["parent_wins"]==2 and reg["candidate_wins"]==2 and reg["parent_only_wins"]==0
+          Path("evidence/sts1/v322/lost-newwin.txt").write_text("\n".join(map(str,lost))+("\n" if lost else ""))
+          Path("evidence/sts1/v322/lost-regression-next.txt").write_text("\n".join(map(str,reg_lost))+("\n" if reg_lost else ""))
+          print(f"RECALL_OK={'true' if recall_ok else 'false'}")
+          print(f"REG_OK={'true' if reg_ok else 'false'}")
+          print(f"RECALL_WINS={recall['candidate_wins']}")
+          print(f"REG_WINS={reg['candidate_wins']}")
+          print(f"LOST_NEWWIN={len(lost)}")
+          print(f"LOST_REG={len(reg_lost)}")
+          PY
+            cat "$out/round-status.env"
+            . "$out/round-status.env"
+
+            if [ "$RECALL_OK" = "true" ] && [ "$REG_OK" = "true" ]; then
+              cp "$out/proposal.pt" "$out/final.pt"
+              cp "$out/proposal.pt.adapter.pt" "$out/final.pt.adapter.pt"
+              echo "$round" > "$out/passed-round.txt"
+              passed=true
+              echo "V322_REPAIR_PASS round=$round recall=$RECALL_WINS regression=$REG_WINS"
+              break
+            fi
+
+            # Add the next regression divergence(s) against G7.
+            if [ -s "$out/lost-regression-next.txt" ]; then
+              python scripts/sts1/sts1_build_rescue_regression_trace.py \
+                --module-dir external/sts_lightspeed/source/build-probe \
+                --armg-root .cache/sts1-v322 \
+                --parent-weight "$parent" \
+                --candidate-weight "$out/proposal.pt" \
+                --seed-file "$out/lost-regression-next.txt" \
+                --heldout-seeds-file "$out/regression2-seeds.txt" \
+                --output "$out/regression-trace-r${round}.json" \
+                --preservation-output "$out/regression-anchor-r${round}.jsonl"
+              cat "$out/regression-anchor-r${round}.jsonl" >> "$out/preservation-active.jsonl"
+            fi
+
+            # If the proposal lost one of the four known New-Win victories,
+            # preserve the stable v3.2.1 action at the first divergence.
+            if [ -s "$out/lost-newwin.txt" ]; then
+              python scripts/sts1/sts1_build_rescue_regression_trace.py \
+                --module-dir external/sts_lightspeed/source/build-probe \
+                --armg-root .cache/sts1-v322 \
+                --parent-weight "$out/stable.pt" \
+                --candidate-weight "$out/proposal.pt" \
+                --seed-file "$out/lost-newwin.txt" \
+                --heldout-seeds-file "$out/training-recall.txt" \
+                --output "$out/newwin-trace-r${round}.json" \
+                --preservation-output "$out/newwin-anchor-r${round}.jsonl"
+              cat "$out/newwin-anchor-r${round}.jsonl" >> "$out/preservation-active.jsonl"
+            fi
+          done
+
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+          if [ "$passed" != "true" ]; then
+            echo V322_REPAIR_HOLD
+          fi
+
+      - name: Build formal seed files
+        if: steps.loop.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v322
+          cp control/sts1-v14-final-promotion-seeds-50.txt "$out/hidden50-seeds.txt"
+          python - <<'PY'
+          import random
+          from pathlib import Path
+          def read(path):
+              return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
+          protected=set(read("control/sts1-v31-train-seeds-80.txt"))
+          protected.update(read("control/sts1-v15-dev-seeds-50.txt"))
+          protected.update(read("control/sts1-v14-final-promotion-seeds-50.txt"))
+          protected.update(read("control/sts1-v16-benchmark-seeds-500.txt"))
+          rng=random.Random(20261001322)
+          fresh=[]
+          while len(fresh)<100:
+              x=rng.randrange(1,2_000_000_000)
+              if x not in protected and x not in fresh:
+                  fresh.append(x)
+          Path("evidence/sts1/v322/fresh100-seeds.txt").write_text("\n".join(map(str,fresh))+"\n")
+          PY
+
+      - name: Hidden50 unseen Gate
+        id: hidden
+        if: steps.loop.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v322
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v322 \
+            --parent-weight "$parent" --candidate-weight "$out/final.pt" \
+            --seed-file "$out/hidden50-seeds.txt" --output "$out/hidden50.json" \
+            --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 \
+            --label v322-hidden50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v322/hidden50.json"))
+          passed=(x["candidate_wins"]>x["parent_wins"] and x["candidate_only_wins"]>x["parent_only_wins"])
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          PY
+
+      - name: Fresh100 formal Gate
+        id: fresh
+        if: steps.hidden.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v322
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v322 \
+            --parent-weight "$parent" --candidate-weight "$out/final.pt" \
+            --seed-file "$out/fresh100-seeds.txt" --output "$out/fresh100.json" \
+            --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 \
+            --label v322-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v322/fresh100.json"))
+          print("passed="+str(x["pass"]).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Heldout500 formal Gate
+        id: h500
+        if: steps.fresh.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v322
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v322 \
+            --parent-weight "$parent" --candidate-weight "$out/final.pt" \
+            --seed-file control/sts1-v16-benchmark-seeds-500.txt \
+            --output "$out/heldout500.json" \
+            --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 \
+            --label v322-heldout500
+
+      - name: Write summary
+        if: always()
+        env:
+          LOOP: ${{ steps.loop.outputs.passed }}
+          HID: ${{ steps.hidden.outputs.passed }}
+          FRESH: ${{ steps.fresh.outputs.passed }}
+          H500: ${{ steps.h500.outcome }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path("evidence/sts1/v322"); out.mkdir(parents=True,exist_ok=True)
+          def read(name):
+              p=out/name
+              return json.loads(p.read_text()) if p.exists() else None
+          summary={
+            "schema_version":"sts1-v322-active-repair-summary",
+            "parent":"G7",
+            "repair_pass":os.environ.get("LOOP")=="true",
+            "passed_round":(out/"passed-round.txt").read_text().strip() if (out/"passed-round.txt").exists() else None,
+            "hidden50":read("hidden50.json"),
+            "fresh100":read("fresh100.json"),
+            "heldout500":read("heldout500.json"),
+            "hidden50_pass":os.environ.get("HID")=="true",
+            "fresh100_pass":os.environ.get("FRESH")=="true",
+            "heldout500_outcome":os.environ.get("H500"),
+          }
+          summary["readiness"]="READY_FOR_REAL_GAME_GATE" if summary["heldout500_outcome"]=="success" else "HOLD_PARENT"
+          (out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("V322_FINAL",json.dumps(summary,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v322-active-repair-${{ github.run_id }}
+          path: evidence/sts1/v322/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOOP: ${{ steps.loop.outputs.passed }}
+          HID: ${{ steps.hidden.outputs.passed }}
+          FRESH: ${{ steps.fresh.outputs.passed }}
+          H500: ${{ steps.h500.outcome }}
+        run: |
+          round="$(cat evidence/sts1/v322/passed-round.txt 2>/dev/null || true)"
+          body="@ericpeng0604-coder
+
+          ## Build Rescue v3.2.2 Active Constraint Repair
+          - Active repair pass: ${LOOP:-false}
+          - Passed round: ${round:-none}
+          - Hidden50: ${HID:-not-run}
+          - Fresh100: ${FRESH:-not-run}
+          - Heldout500: ${H500:-not-run}
+          - G7 Champion stays unchanged unless all formal gates pass."
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$body"

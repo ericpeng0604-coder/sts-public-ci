@@ -1,0 +1,11 @@
+launch=2026-10-01
+mode=fresh-generalization
+parent=G7
+training_pool=160
+priority_mining=40
+min_independent_rescued_seeds=6
+unseen_gate50=50
+fresh_gate100=100
+heldout500=500
+hidden50_training_contamination=false
+revision=v34-generalization-1

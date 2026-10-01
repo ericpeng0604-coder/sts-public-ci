@@ -262,6 +262,22 @@ jobs:
         with:
           name: sts1-v34-teachers-${{ github.run_id }}
           path: evidence/sts1/v34-data
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v34-screen-${{ github.run_id }}
+          path: evidence/sts1/v34-screen/
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v31-teachers-36804227660
+          path: evidence/sts1/v31-frozen/
+          github-token: ${{ github.token }}
+          run-id: '36804227660'
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v322-active-repair-36823568672
+          path: evidence/sts1/v322-frozen/
+          github-token: ${{ github.token }}
+          run-id: '36823568672'
       - name: Download frozen regression anchors
         uses: actions/download-artifact@v4
         with:
@@ -295,15 +311,70 @@ jobs:
           elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
           test -n "$parent"; test -n "$elite"
           test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
-      - name: Train isolated-pool residual adapter
+      - name: Merge independent old and verified fresh Full-Win Teachers
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v34-candidate
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("evidence/sts1")
+          def readrows(path):
+              return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+          def seedset(name):
+              return {int(v) for v in (root/"v34-screen"/name).read_text().split()}
+          old=readrows(root/"v31-frozen/new-win-teachers.jsonl")
+          fresh=readrows(root/"v34-data/new-win-teachers.jsonl")
+          train=seedset("train160.txt")
+          forbidden=seedset("gate50.txt")|seedset("fresh100.txt")|seedset("fresh500.txt")
+          old_ids={int(x["seed"]) for x in old}
+          new_ids={int(x["seed"]) for x in fresh}
+          if len(new_ids)<6 or not new_ids.issubset(train):
+              raise RuntimeError("insufficient full-win Teachers from new training Seeds")
+          if (new_ids|old_ids)&forbidden or new_ids&old_ids:
+              raise RuntimeError("teacher data leakage/reuse")
+          uniq={}
+          for row in old+fresh:
+              key=(int(row["seed"]),int(row["floor"]),str(row["kind"]),int(row["current_armg_index"]),int(row["teacher_best_index"]))
+              uniq[key]=row
+          out=root/"v34-candidate"
+          out.joinpath("combined-teachers.jsonl").write_text("".join(json.dumps(x,sort_keys=True)+"\n" for x in uniq.values()))
+          out.joinpath("old12.txt").write_text((root/"v31-frozen/teacher-seeds.txt").read_text())
+          out.joinpath("new-teachers.txt").write_text((root/"v34-data/teacher-seeds.txt").read_text())
+          summary={"fresh_teacher_seeds":len(new_ids),"fresh_teacher_examples":len(fresh),
+                   "old_teacher_examples":len(old),"combined_teacher_examples":len(uniq),
+                   "fresh_teacher_kinds":sorted({str(x["kind"]) for x in fresh}),
+                   "seed_leakage_count":0}
+          out.joinpath("provenance.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("V34_TEACHER_PROVENANCE_PASS",json.dumps(summary,sort_keys=True))
+          PY
+
+      - name: Warm-train from v3.2.2 on combined Full-Win Teachers
         run: |
           set -euo pipefail
           out=evidence/sts1/v34-candidate
-          mkdir -p "$out"
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
           elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
-          python scripts/sts1/sts1_build_rescue_adapter_v30.py             --armg-root .cache/sts1-v34 --base-weight "$parent" --elite-replay "$elite"             --new-win-replay evidence/sts1/v34-data/new-win-teachers.jsonl             --preservation-replay evidence/sts1/v23-trace/preservation.jsonl             --output "$out/candidate.pt" --report "$out/train-report.json"             --hidden-dim 48 --epochs 200 --lr 0.001             --elite-train-max 8192 --retention-eval-max 2048             --teacher-margin 0.05 --teacher-coef 4.0 --distill-coef 6.0             --zero-residual-coef 0.50 --preservation-coef 3.0 --preservation-margin 0.001             --weight-decay 0.00001 --min-fully-learned-seeds 2             --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-winner-drop 0.01 --threads 4
-          test -s "$out/candidate.pt"; test -s "$out/candidate.pt.adapter.pt"
+          test -s evidence/sts1/v322-frozen/final.pt.adapter.pt
+          test -s evidence/sts1/v322-frozen/preservation-active.jsonl
+          test "$(sha256sum evidence/sts1/v322-frozen/final.pt | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+          python scripts/sts1/sts1_build_rescue_adapter_v34.py \
+            --armg-root .cache/sts1-v34 --base-weight "$parent" \
+            --elite-replay "$elite" --new-win-replay "$out/combined-teachers.jsonl" \
+            --preservation-replay evidence/sts1/v322-frozen/preservation-active.jsonl \
+            --init-adapter-sidecar evidence/sts1/v322-frozen/final.pt.adapter.pt \
+            --output "$out/candidate.pt" --report "$out/train-report.json" \
+            --hidden-dim 48 --epochs 6 --lr 0.00012 \
+            --elite-train-max 8192 --retention-eval-max 2048 \
+            --teacher-margin 0.05 --teacher-coef 4.0 --distill-coef 12.0 \
+            --zero-residual-coef 0.75 --preservation-coef 18.0 \
+            --preservation-margin 0.03 --min-preservation-margin 0.01 \
+            --weight-decay 0.00001 --min-fully-learned-seeds 10 \
+            --min-parent-agreement 0.995 --max-parent-kl 0.002 \
+            --max-winner-drop 0.01 --threads 4
+          test -s "$out/candidate.pt"
+          test -s "$out/candidate.pt.adapter.pt"
+
       - name: Build evaluation seeds
         run: |
           set -euo pipefail

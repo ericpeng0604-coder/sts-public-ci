@@ -38,8 +38,13 @@ jobs:
       - name: Validate v3.1 contracts
         run: |
           set -euo pipefail
-          python -m py_compile             scripts/sts1/sts1_build_rescue_screen_v31.py             scripts/sts1/sts1_build_rescue_new_win_miner_v24.py             scripts/sts1/sts1_build_rescue_adapter_v30.py
-          test "$(wc -l < control/sts1-v34-train-seeds-80.txt)" -eq 80
+          python -m py_compile             scripts/sts1/sts1_build_rescue_screen_v31.py             scripts/sts1/sts1_build_rescue_new_win_miner_v24.py             scripts/sts1/sts1_build_rescue_adapter_v34.py
+          python -m py_compile scripts/sts1/sts1_build_rescue_v34_seed_ledger.py
+          python scripts/sts1/sts1_build_rescue_v34_seed_ledger.py --output-dir evidence/sts1/v34-screen
+          test "$(wc -l < evidence/sts1/v34-screen/train160.txt)" -eq 160
+          test "$(wc -l < evidence/sts1/v34-screen/gate50.txt)" -eq 50
+          test "$(wc -l < evidence/sts1/v34-screen/fresh100.txt)" -eq 100
+          test "$(wc -l < evidence/sts1/v34-screen/fresh500.txt)" -eq 500
           python - <<'PY'
           from pathlib import Path
           s=Path("scripts/sts1/sts1_build_rescue_screen_v31.py").read_text()
@@ -81,21 +86,21 @@ jobs:
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
           test -n "$parent"
           test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
-      - name: Screen isolated 80-seed pool
+      - name: Screen disjoint 160-seed training pool
         run: |
           set -euo pipefail
           mkdir -p evidence/sts1/v34-screen
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_screen_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34             --weight "$parent"             --seed-file control/sts1-v34-train-seeds-80.txt             --output evidence/sts1/v34-screen/screen.json             --priority-output evidence/sts1/v34-screen/priority20.txt             --priority-count 20 --workers 4
+          python scripts/sts1/sts1_build_rescue_screen_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34             --weight "$parent"             --seed-file evidence/sts1/v34-screen/train160.txt             --output evidence/sts1/v34-screen/screen.json             --priority-output evidence/sts1/v34-screen/priority40.txt             --priority-count 40 --workers 4
       - name: Build mining matrix
         id: matrix
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           from pathlib import Path
-          seeds=[int(x) for x in Path("evidence/sts1/v34-screen/priority20.txt").read_text().split()]
-          if len(seeds)!=20 or len(set(seeds))!=20:
-              raise SystemExit("priority20 contract failed")
+          seeds=[int(x) for x in Path("evidence/sts1/v34-screen/priority40.txt").read_text().split()]
+          if len(seeds)!=40 or len(set(seeds))!=20:
+              raise SystemExit("priority40 contract failed")
           print("matrix="+json.dumps(seeds,separators=(",",":")))
           PY
       - uses: actions/upload-artifact@v4
@@ -111,7 +116,7 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      max-parallel: 10
+      max-parallel: 8
       matrix:
         seed: ${{ fromJSON(needs.screen.outputs.matrix) }}
     steps:
@@ -144,12 +149,16 @@ jobs:
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
           test -n "$parent"
           test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v34-screen-${{ github.run_id }}
+          path: evidence/sts1/v34-screen/
       - name: Mine isolated priority Seed
         run: |
           set -euo pipefail
           mkdir -p evidence/sts1/v34-mine
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_new_win_miner_v24.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34             --weight "$parent"             --heldout-seeds-file control/sts1-v34-train-seeds-80.txt             --seed ${{ matrix.seed }}             --output evidence/sts1/v34-mine/result-${{ matrix.seed }}.json             --teacher-output evidence/sts1/v34-mine/teacher-${{ matrix.seed }}.jsonl             --max-states 20 --max-alternatives 2             --max-two-step-states 8 --max-second-states 4 --max-second-alternatives 2             --timeout-seconds 180 --retries 1
+          python scripts/sts1/sts1_build_rescue_new_win_miner_v24.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34             --weight "$parent"             --heldout-seeds-file evidence/sts1/v34-screen/train160.txt             --seed ${{ matrix.seed }}             --output evidence/sts1/v34-mine/result-${{ matrix.seed }}.json             --teacher-output evidence/sts1/v34-mine/teacher-${{ matrix.seed }}.jsonl             --max-states 20 --max-alternatives 2             --max-two-step-states 8 --max-second-states 4 --max-second-alternatives 2             --timeout-seconds 180 --retries 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -172,6 +181,10 @@ jobs:
           pattern: v34-mine-*
           path: evidence/sts1/v34-all
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v34-screen-${{ github.run_id }}
+          path: evidence/sts1/v34-screen/
       - name: Aggregate verified isolated Teachers
         id: agg
         run: |
@@ -183,11 +196,16 @@ jobs:
           from pathlib import Path
           root=Path("evidence/sts1/v34-all")
           results=[json.loads(p.read_text()) for p in sorted(root.glob("result-*.json"))]
+          def read(name):
+              return {int(v) for v in Path("evidence/sts1/v34-screen",name).read_text().split()}
+          training=read("train160.txt")
+          heldout=read("gate50.txt")|read("fresh100.txt")|read("fresh500.txt")
+          if len(results)!=40 or any(int(r["seed"]) not in training for r in results):
+              raise RuntimeError("v3.4 mining source contract failed")
           rows=[]
           for r in results:
               if r.get("status") not in {
                   "NEW_FULL_WIN_ONE_STEP","NEW_FULL_WIN_TWO_STEP",
-                  "NEW_BOSS_RESCUE_ONE_STEP","NEW_BOSS_RESCUE_TWO_STEP",
               }:
                   continue
               rows.extend(list(r.get("teachers") or []))
@@ -198,6 +216,8 @@ jobs:
               seen.add(key); unique.append(r)
           unique.sort(key=lambda r:(int(r["seed"]),int(r["floor"]),int(r.get("intervention_step",1))))
           seeds=sorted({int(r["seed"]) for r in unique})
+          if set(seeds)&heldout or not set(seeds).issubset(training):
+              raise RuntimeError("heldout Seed contaminated verified Teachers")
           Path("evidence/sts1/v34-data/new-win-teachers.jsonl").write_text(
               "".join(json.dumps(r,sort_keys=True)+"\n" for r in unique)
           )
@@ -230,7 +250,7 @@ jobs:
 
   train:
     needs: aggregate
-    if: fromJSON(needs.aggregate.outputs.teacher_seed_count) >= 5
+    if: fromJSON(needs.aggregate.outputs.teacher_seed_count) >= 6
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -296,7 +316,7 @@ jobs:
           from pathlib import Path
           def read(path):
               return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
-          protected=set(read("control/sts1-v34-train-seeds-80.txt"))
+          protected=set(read("evidence/sts1/v34-screen/train160.txt"))
           protected.update(read("control/sts1-v15-dev-seeds-50.txt"))
           protected.update(read("control/sts1-v14-final-promotion-seeds-50.txt"))
           protected.update(read("control/sts1-v16-benchmark-seeds-500.txt"))
@@ -422,7 +442,7 @@ jobs:
 
   bottleneck:
     needs: aggregate
-    if: fromJSON(needs.aggregate.outputs.teacher_seed_count) < 5
+    if: fromJSON(needs.aggregate.outputs.teacher_seed_count) < 6
     runs-on: ubuntu-24.04
     steps:
       - name: Report data bottleneck
@@ -436,7 +456,7 @@ jobs:
           ## Build Rescue v3.1 Isolated Loop
           - Verified Teacher examples: **$TEACHERS**
           - Teacher seeds: **$SEEDS**
-          - Need at least 5 independent rescued seeds before adapter training.
+          - Need at least 6 independent rescued seeds before adapter training.
           - Status: **DATA_BOTTLENECK / HOLD_PARENT**
           - G7 remains unchanged."
           gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$body"

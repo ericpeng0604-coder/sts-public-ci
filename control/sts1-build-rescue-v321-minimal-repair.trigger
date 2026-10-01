@@ -1,0 +1,9 @@
+launch=2026-10-01
+mode=minimal-one-epoch-regression-safe-repair
+source_v31_run=36804227660
+source_v32_run=36822453786
+parent=G7
+epochs=1
+new_win_recall_target=4/12
+regression2_target=2/2
+revision=v321-1

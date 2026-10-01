@@ -1,0 +1,367 @@
+name: STS1 Build Rescue v3.1 Local Similarity Adapter
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v31-local-adapter.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '36731071450'
+  V23_TRACE_RUN_ID: '36722951474'
+  V23_TRACE_ARTIFACT: 'sts1-v23-regression-trace-36722951474'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v31-local-adapter
+  cancel-in-progress: true
+
+jobs:
+  local-adapter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate v3.1 local-adapter contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile             src/roguelike_ai/sts1_phase3/rescue_adapter.py             scripts/sts1/sts1_build_rescue_memory_builder_v30.py             scripts/sts1/sts1_build_rescue_adapter_builder_v31.py             scripts/sts1/sts1_build_rescue_adapter_gate_v31.py
+          python - <<'PY'
+          from pathlib import Path
+          policy=Path("src/roguelike_ai/sts1_phase3/rescue_adapter.py").read_text()
+          builder=Path("scripts/sts1/sts1_build_rescue_adapter_builder_v31.py").read_text()
+          gate=Path("scripts/sts1/sts1_build_rescue_adapter_gate_v31.py").read_text()
+          required=[
+              "class ArmGLocalRescueAdapterPolicy",
+              "calibrated, local nearest-prototype override",
+              "V31_ADAPTER_FACTOR",
+              "winner_replay_changes",
+              "preservation_changes",
+              "V31_LOCAL_ADAPTER_BUILD_PASS",
+              "V31_LOCAL_ADAPTER_GATE_RESULT",
+              "candidate_adapter_overrides",
+          ]
+          blob=policy+"\n"+builder+"\n"+gate
+          missing=[x for x in required if x not in blob]
+          if missing:
+              raise SystemExit(f"missing v3.1 local-adapter contract: {missing}")
+          print("V31_LOCAL_ADAPTER_CONTRACT_PASS")
+          PY
+
+      - name: Download verified v2.4 mining evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v24-mine-*
+          path: evidence/sts1/v31-source
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Freeze seven verified Teacher memories
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v31-adapter
+          python scripts/sts1/sts1_build_rescue_memory_builder_v30.py             --source-dir evidence/sts1/v31-source             --output evidence/sts1/v31-adapter/teachers.jsonl             --summary evidence/sts1/v31-adapter/teacher-summary.json
+          test "$(wc -l < evidence/sts1/v31-adapter/teachers.jsonl)" -eq 7
+
+      - name: Download frozen regression anchors
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V23_TRACE_ARTIFACT }}
+          path: evidence/sts1/v23-trace
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V23_TRACE_RUN_ID }}
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v31-adapter
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test -n "$parent"
+          test -n "$elite"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Calibrate Local Similarity Adapter
+        run: |
+          set -euo pipefail
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_builder_v31.py             --elite-replay "$elite"             --teacher-memory evidence/sts1/v31-adapter/teachers.jsonl             --preservation-replay evidence/sts1/v23-trace/preservation.jsonl             --output evidence/sts1/v31-adapter/adapter.json             --report evidence/sts1/v31-adapter/calibration-report.json             --scale-floor 0.05             --max-factor 2.0
+
+      - name: Build fixed evaluation seed files
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v31-adapter
+          printf '%s\n'             341684210 469494371 523373928 572162032 620908546             > "$out/mined5-seeds.txt"
+          cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2-seeds.txt"
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > "$out/dev30-seeds.txt"
+          cp control/sts1-v14-final-promotion-seeds-50.txt "$out/hidden50-seeds.txt"
+          python - <<'PY'
+          import random
+          from pathlib import Path
+          def read(path):
+              return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
+          protected=set(read("control/sts1-v15-dev-seeds-50.txt"))
+          protected.update(read("control/sts1-v14-final-promotion-seeds-50.txt"))
+          protected.update(read("control/sts1-v16-benchmark-seeds-500.txt"))
+          protected.update(read("control/sts1-v24-dev30-double-loss-seeds-24.txt"))
+          rng=random.Random(2026100131)
+          fresh=[]
+          while len(fresh)<100:
+              x=rng.randrange(1,2_000_000_000)
+              if x not in protected and x not in fresh:
+                  fresh.append(x)
+          Path("evidence/sts1/v31-adapter/fresh100-seeds.txt").write_text(
+              "\n".join(map(str,fresh))+"\n"
+          )
+          assert len(fresh)==100 and not(set(fresh)&protected)
+          PY
+
+      - name: Mined5 Boss50k adapter replay
+        id: mined
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-adapter             --base-weight "$parent"             --adapter evidence/sts1/v31-adapter/adapter.json             --seed-file evidence/sts1/v31-adapter/mined5-seeds.txt             --output evidence/sts1/v31-adapter/mined5-boss50k.json             --mcts-sims 2000 --boss-mcts-sims 50000 --boss-floors 16,33,50             --workers 5 --min-win-delta 1 --max-pvalue 1.0             --label v31-mined5-boss50k
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-adapter/mined5-boss50k.json"))
+          passed=(
+              x["parent_wins"]==0 and x["candidate_wins"]==5
+              and x["candidate_only_wins"]==5 and x["parent_only_wins"]==0
+              and x["candidate_adapter_overrides"]>=7
+          )
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("hits="+str(x["candidate_adapter_hits"]))
+          print("overrides="+str(x["candidate_adapter_overrides"]))
+          PY
+
+      - name: Regression2 safety Gate
+        id: reg
+        if: steps.mined.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-adapter             --base-weight "$parent"             --adapter evidence/sts1/v31-adapter/adapter.json             --seed-file evidence/sts1/v31-adapter/regression2-seeds.txt             --output evidence/sts1/v31-adapter/regression2.json             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0             --label v31-regression2
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-adapter/regression2.json"))
+          passed=(x["parent_wins"]==2 and x["candidate_wins"]==2 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          print("hits="+str(x["candidate_adapter_hits"]))
+          print("overrides="+str(x["candidate_adapter_overrides"]))
+          PY
+          python - <<'PY'
+          import json
+          x=json.load(open("evidence/sts1/v31-adapter/regression2.json"))
+          if not (x["parent_wins"]==2 and x["candidate_wins"]==2 and x["parent_only_wins"]==0):
+              raise SystemExit("v3.1 adapter regressed a frozen G7 win")
+          print("V31_REGRESSION2_PASS")
+          PY
+
+      - name: Dev30 contaminated integration check
+        id: dev
+        if: steps.reg.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-adapter             --base-weight "$parent"             --adapter evidence/sts1/v31-adapter/adapter.json             --seed-file evidence/sts1/v31-adapter/dev30-seeds.txt             --output evidence/sts1/v31-adapter/dev30-contaminated.json             --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0             --label v31-dev30-contaminated
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-adapter/dev30-contaminated.json"))
+          for key,out in [
+              ("parent_wins","parent"),("candidate_wins","candidate"),
+              ("candidate_only_wins","candidate_only"),("parent_only_wins","parent_only"),
+              ("candidate_adapter_hits","hits"),("candidate_adapter_overrides","overrides"),
+          ]:
+              print(out+"="+str(x[key]))
+          PY
+
+      - name: Hidden50 first unseen Gate
+        id: hidden
+        if: steps.reg.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-adapter             --base-weight "$parent"             --adapter evidence/sts1/v31-adapter/adapter.json             --seed-file evidence/sts1/v31-adapter/hidden50-seeds.txt             --output evidence/sts1/v31-adapter/hidden50.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0             --label v31-hidden50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-adapter/hidden50.json"))
+          for key,out in [
+              ("pass","passed"),("parent_wins","parent"),("candidate_wins","candidate"),
+              ("candidate_only_wins","candidate_only"),("parent_only_wins","parent_only"),
+              ("candidate_adapter_hits","hits"),("candidate_adapter_overrides","overrides"),
+          ]:
+              value=x[key]
+              print(out+"="+(str(value).lower() if isinstance(value,bool) else str(value)))
+          PY
+
+      - name: Fresh100 formal Gate
+        id: fresh
+        if: steps.hidden.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-adapter             --base-weight "$parent"             --adapter evidence/sts1/v31-adapter/adapter.json             --seed-file evidence/sts1/v31-adapter/fresh100-seeds.txt             --output evidence/sts1/v31-adapter/fresh100.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v31-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-adapter/fresh100.json"))
+          print("passed="+str(x["pass"]).lower())
+          print("hits="+str(x["candidate_adapter_hits"]))
+          print("overrides="+str(x["candidate_adapter_overrides"]))
+          PY
+
+      - name: Heldout500 formal Gate
+        id: h500
+        if: steps.fresh.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-adapter             --base-weight "$parent"             --adapter evidence/sts1/v31-adapter/adapter.json             --seed-file control/sts1-v16-benchmark-seeds-500.txt             --output evidence/sts1/v31-adapter/heldout500.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v31-heldout500
+
+      - name: Write v3.1 final summary
+        if: always()
+        env:
+          MINED: ${{ steps.mined.outputs.passed }}
+          MINED_PARENT: ${{ steps.mined.outputs.parent }}
+          MINED_CAND: ${{ steps.mined.outputs.candidate }}
+          MINED_HITS: ${{ steps.mined.outputs.hits }}
+          MINED_OVERRIDES: ${{ steps.mined.outputs.overrides }}
+          REG: ${{ steps.reg.outputs.passed }}
+          DEV_PARENT: ${{ steps.dev.outputs.parent }}
+          DEV_CAND: ${{ steps.dev.outputs.candidate }}
+          DEV_CONLY: ${{ steps.dev.outputs.candidate_only }}
+          DEV_PONLY: ${{ steps.dev.outputs.parent_only }}
+          DEV_HITS: ${{ steps.dev.outputs.hits }}
+          DEV_OVERRIDES: ${{ steps.dev.outputs.overrides }}
+          HID: ${{ steps.hidden.outputs.passed }}
+          HID_PARENT: ${{ steps.hidden.outputs.parent }}
+          HID_CAND: ${{ steps.hidden.outputs.candidate }}
+          HID_CONLY: ${{ steps.hidden.outputs.candidate_only }}
+          HID_PONLY: ${{ steps.hidden.outputs.parent_only }}
+          HID_HITS: ${{ steps.hidden.outputs.hits }}
+          HID_OVERRIDES: ${{ steps.hidden.outputs.overrides }}
+          FRESH: ${{ steps.fresh.outputs.passed }}
+          H500: ${{ steps.h500.outcome }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path("evidence/sts1/v31-adapter")
+          calibration={}
+          if (out/"calibration-report.json").exists():
+              calibration=json.loads((out/"calibration-report.json").read_text())
+          x={
+              "schema_version":"sts1-v31-local-adapter-summary",
+              "calibration":{
+                  "selected_factor":calibration.get("selected_factor"),
+                  "factor_trials":calibration.get("factor_trials"),
+                  "teacher_self_replay":calibration.get("teacher_self_replay"),
+              },
+              "mined5_boss50k":{
+                  "pass":os.environ.get("MINED")=="true",
+                  "parent":os.environ.get("MINED_PARENT"),
+                  "candidate":os.environ.get("MINED_CAND"),
+                  "hits":os.environ.get("MINED_HITS"),
+                  "overrides":os.environ.get("MINED_OVERRIDES"),
+              },
+              "regression2_pass":os.environ.get("REG")=="true",
+              "dev30_contaminated":{
+                  "parent":os.environ.get("DEV_PARENT"),
+                  "candidate":os.environ.get("DEV_CAND"),
+                  "candidate_only":os.environ.get("DEV_CONLY"),
+                  "parent_only":os.environ.get("DEV_PONLY"),
+                  "hits":os.environ.get("DEV_HITS"),
+                  "overrides":os.environ.get("DEV_OVERRIDES"),
+                  "promotion_evidence":False,
+              },
+              "hidden50":{
+                  "pass":os.environ.get("HID")=="true",
+                  "parent":os.environ.get("HID_PARENT"),
+                  "candidate":os.environ.get("HID_CAND"),
+                  "candidate_only":os.environ.get("HID_CONLY"),
+                  "parent_only":os.environ.get("HID_PONLY"),
+                  "hits":os.environ.get("HID_HITS"),
+                  "overrides":os.environ.get("HID_OVERRIDES"),
+                  "promotion_evidence":True,
+              },
+              "fresh100_pass":os.environ.get("FRESH")=="true",
+              "heldout500_outcome":os.environ.get("H500"),
+          }
+          x["readiness"]="READY_FOR_REAL_GAME_GATE" if x["heldout500_outcome"]=="success" else "HOLD_G7"
+          (out/"v31-final-summary.json").write_text(json.dumps(x,indent=2,sort_keys=True)+"\n")
+          print("V31_LOCAL_ADAPTER_FINAL",json.dumps(x,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v31-local-adapter-${{ github.run_id }}
+          path: evidence/sts1/v31-adapter/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report v3.1 local-adapter status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          print("@ericpeng0604-coder")
+          print()
+          print("## Build Rescue v3.1 Local Similarity Adapter")
+          p=Path("evidence/sts1/v31-adapter/v31-final-summary.json")
+          if not p.exists():
+              print("- Run failed before final summary. G7 remains unchanged.")
+          else:
+              x=json.loads(p.read_text())
+              print(f"- Calibrated radius factor: **{x['calibration'].get('selected_factor')}**")
+              m=x["mined5_boss50k"]
+              print(f"- Mined5 Boss50k: G7 **{m.get('parent')}/5** / Adapter **{m.get('candidate')}/5** / hits={m.get('hits')} / overrides={m.get('overrides')} / PASS={m.get('pass')}")
+              print(f"- Regression2 safety PASS: **{x['regression2_pass']}**")
+              d=x["dev30_contaminated"]
+              print(f"- Dev30 contaminated sanity: G7 **{d.get('parent')}/30** / Adapter **{d.get('candidate')}/30** / hits={d.get('hits')} / overrides={d.get('overrides')}")
+              h=x["hidden50"]
+              print(f"- Hidden50 unseen: G7 **{h.get('parent')}/50** / Adapter **{h.get('candidate')}/50** / Candidate-only={h.get('candidate_only')} / Parent-only={h.get('parent_only')} / hits={h.get('hits')} / overrides={h.get('overrides')} / PASS={h.get('pass')}")
+              print(f"- Fresh100 PASS: **{x['fresh100_pass']}**")
+              print(f"- Heldout500 outcome: **{x['heldout500_outcome']}**")
+              print(f"- Readiness: **{x['readiness']}**")
+          print("- G7 weights remain frozen; only the sidecar adapter can change a decision.")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

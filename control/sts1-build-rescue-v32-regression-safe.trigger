@@ -1,0 +1,9 @@
+launch=2026-10-01
+mode=regression-safe-warm-repair
+source_v31_run=36804227660
+parent=G7
+lost_regression_seed=148131968
+new_win_recall_target=4/12
+regression2_target=2/2
+warm_start=true
+revision=v32-regsafe-1

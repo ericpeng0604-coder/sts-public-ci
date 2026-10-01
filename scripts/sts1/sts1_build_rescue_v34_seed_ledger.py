@@ -71,7 +71,7 @@ def make(root: Path, out: Path) -> dict:
         },
         "pairwise_overlap": 0,
         "overlap_with_protected": 0,
-        "policy": "new heldout sets are never used for teacher mining, training, or model selection",
+        "policy": "heldout sets are used for one-time advancement gates only; never as teacher labels or training data",
     }
     (out / "seed-ledger.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"

@@ -99,7 +99,7 @@ jobs:
           import json
           from pathlib import Path
           seeds=[int(x) for x in Path("evidence/sts1/v34-screen/priority40.txt").read_text().split()]
-          if len(seeds)!=40 or len(set(seeds))!=20:
+          if len(seeds)!=40 or len(set(seeds))!=40:
               raise SystemExit("priority40 contract failed")
           print("matrix="+json.dumps(seeds,separators=(",",":")))
           PY

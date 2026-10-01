@@ -1,0 +1,246 @@
+name: STS1 Build Rescue v3.3 Context-Guarded Radius Sweep
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v33-context-radius-sweep.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '36731071450'
+  V23_TRACE_RUN_ID: '36722951474'
+  V23_TRACE_ARTIFACT: 'sts1-v23-regression-trace-36722951474'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v33-context-radius-sweep
+  cancel-in-progress: true
+
+jobs:
+  radius:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        factor: [0.50, 0.75, 0.90]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static v3.2 sweep contract
+        run: |
+          set -euo pipefail
+          python -m py_compile             src/roguelike_ai/sts1_phase3/rescue_adapter.py             scripts/sts1/sts1_build_rescue_memory_builder_v30.py             scripts/sts1/sts1_build_rescue_adapter_builder_v31.py             scripts/sts1/sts1_build_rescue_adapter_gate_v31.py
+          grep -q 'context_guarded' src/roguelike_ai/sts1_phase3/rescue_adapter.py
+          grep -q 'context-guarded' scripts/sts1/sts1_build_rescue_adapter_builder_v31.py
+          echo V33_CONTEXT_RADIUS_SWEEP_CONTRACT_PASS
+
+      - name: Download verified mining evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v24-mine-*
+          path: evidence/sts1/v33-source
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Freeze seven Teachers
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v33-${{ matrix.factor }}
+          mkdir -p "$out"
+          python scripts/sts1/sts1_build_rescue_memory_builder_v30.py             --source-dir evidence/sts1/v33-source             --output "$out/teachers.jsonl"             --summary "$out/teacher-summary.json"
+
+      - name: Download frozen regression anchors
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V23_TRACE_ARTIFACT }}
+          path: evidence/sts1/v23-trace
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V23_TRACE_RUN_ID }}
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v33-${{ matrix.factor }}
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test -n "$parent"
+          test -n "$elite"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Calibrate fixed radius factor
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v33-${{ matrix.factor }}
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_builder_v31.py             --elite-replay "$elite"             --teacher-memory "$out/teachers.jsonl"             --preservation-replay evidence/sts1/v23-trace/preservation.jsonl             --output "$out/adapter.json"             --report "$out/calibration-report.json"             --scale-floor 0.05             --max-factor ${{ matrix.factor }}             --context-guarded
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          factor=float("${{ matrix.factor }}")
+          x=json.loads(Path("evidence/sts1/v33-${{ matrix.factor }}/calibration-report.json").read_text())
+          if abs(float(x["selected_factor"])-factor)>1e-9:
+              raise SystemExit(f"requested factor {factor}, selected {x['selected_factor']}")
+          print("V33_FIXED_FACTOR_PASS",factor)
+          PY
+
+      - name: Build evaluation seed files
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v33-${{ matrix.factor }}
+          printf '%s\n' 341684210 469494371 523373928 572162032 620908546 > "$out/mined5.txt"
+          cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2.txt"
+          cp control/sts1-v14-final-promotion-seeds-50.txt "$out/hidden50.txt"
+          python - <<'PY'
+          import random
+          from pathlib import Path
+          def read(path):
+              return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
+          protected=set(read("control/sts1-v15-dev-seeds-50.txt"))
+          protected.update(read("control/sts1-v14-final-promotion-seeds-50.txt"))
+          protected.update(read("control/sts1-v16-benchmark-seeds-500.txt"))
+          rng=random.Random(2026100132+int(float("${{ matrix.factor }}")*100))
+          fresh=[]
+          while len(fresh)<100:
+              x=rng.randrange(1,2_000_000_000)
+              if x not in protected and x not in fresh:
+                  fresh.append(x)
+          Path("evidence/sts1/v33-${{ matrix.factor }}/fresh100.txt").write_text(
+              "\n".join(map(str,fresh))+"\n"
+          )
+          PY
+
+      - name: Mined5 Boss50k replay
+        id: mined
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v33-${{ matrix.factor }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v33-${{ matrix.factor }}             --base-weight "$parent" --adapter "$out/adapter.json"             --seed-file "$out/mined5.txt" --output "$out/mined5.json"             --mcts-sims 2000 --boss-mcts-sims 50000 --boss-floors 16,33,50             --workers 5 --min-win-delta 1 --max-pvalue 1.0             --label v33-mined5-${{ matrix.factor }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v33-${{ matrix.factor }}/mined5.json"))
+          passed=(x["parent_wins"]==0 and x["candidate_wins"]==5 and x["candidate_only_wins"]==5 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          print("candidate="+str(x["candidate_wins"]))
+          print("hits="+str(x["candidate_adapter_hits"]))
+          print("overrides="+str(x["candidate_adapter_overrides"]))
+          PY
+
+      - name: Regression2 safety Gate
+        id: reg
+        if: steps.mined.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v33-${{ matrix.factor }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v33-${{ matrix.factor }}             --base-weight "$parent" --adapter "$out/adapter.json"             --seed-file "$out/regression2.txt" --output "$out/regression2.json"             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0             --label v33-regression2-${{ matrix.factor }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v33-${{ matrix.factor }}/regression2.json"))
+          passed=(x["parent_wins"]==2 and x["candidate_wins"]==2 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          print("hits="+str(x["candidate_adapter_hits"]))
+          print("overrides="+str(x["candidate_adapter_overrides"]))
+          PY
+
+      - name: Hidden50 first unseen Gate
+        id: hidden
+        if: steps.reg.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v33-${{ matrix.factor }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v33-${{ matrix.factor }}             --base-weight "$parent" --adapter "$out/adapter.json"             --seed-file "$out/hidden50.txt" --output "$out/hidden50.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0             --label v33-hidden50-${{ matrix.factor }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v33-${{ matrix.factor }}/hidden50.json"))
+          for key,out in [
+              ("pass","passed"),("parent_wins","parent"),("candidate_wins","candidate"),
+              ("candidate_only_wins","candidate_only"),("parent_only_wins","parent_only"),
+              ("candidate_adapter_hits","hits"),("candidate_adapter_overrides","overrides"),
+          ]:
+              v=x[key]
+              print(out+"="+(str(v).lower() if isinstance(v,bool) else str(v)))
+          PY
+
+      - name: Fresh100 formal Gate
+        id: fresh
+        if: steps.hidden.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v33-${{ matrix.factor }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v33-${{ matrix.factor }}             --base-weight "$parent" --adapter "$out/adapter.json"             --seed-file "$out/fresh100.txt" --output "$out/fresh100.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v33-fresh100-${{ matrix.factor }}
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v33-${{ matrix.factor }}/fresh100.json"))
+          print("passed="+str(x["pass"]).lower())
+          PY
+
+      - name: Heldout500 formal Gate
+        if: steps.fresh.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v33-${{ matrix.factor }}
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_adapter_gate_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v33-${{ matrix.factor }}             --base-weight "$parent" --adapter "$out/adapter.json"             --seed-file control/sts1-v16-benchmark-seeds-500.txt             --output "$out/heldout500.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v33-heldout500-${{ matrix.factor }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v33-radius-${{ matrix.factor }}-${{ github.run_id }}
+          path: evidence/sts1/v33-${{ matrix.factor }}/
+          if-no-files-found: warn
+          retention-days: 90
+
+  report:
+    needs: radius
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report sweep completion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="@ericpeng0604-coder
+
+          ## Build Rescue v3.3 Context-Guarded Radius Sweep
+          - Factors tested: **0.50 / 0.75 / 0.90** with exact Act+floor+kind context guards
+          - Each factor must first reproduce Mined5 **5/5**, then preserve Regression2, before Hidden50 unseen evaluation.
+          - See per-factor artifacts for exact hits / overrides / wins.
+          - G7 remains unchanged."
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$body"

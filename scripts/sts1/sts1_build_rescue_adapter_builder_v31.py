@@ -106,6 +106,7 @@ def main()->int:
     p.add_argument("--report",type=Path,required=True)
     p.add_argument("--scale-floor",type=float,default=0.05)
     p.add_argument("--max-factor",type=float,default=2.0)
+    p.add_argument("--context-guarded",action="store_true")
     a=p.parse_args()
     if not 1e-4<=a.scale_floor<=1.0:
         raise RuntimeError("scale-floor outside safe bound")
@@ -130,6 +131,7 @@ def main()->int:
         prototypes.append({
             "seed":int(row["seed"]),
             "floor":int(row.get("floor",0) or 0),
+            "act":int(row.get("act",0) or 0),
             "kind":str(row["kind"]),
             "obs":obs.tolist(),
             "teacher_desc":descs[teacher].tolist(),
@@ -258,8 +260,9 @@ def main()->int:
         })
 
     payload={
-        "schema_version":SCHEMA,
-        "mode":"calibrated-local-nearest-prototype",
+        "schema_version":("sts1-local-rescue-adapter-v33" if a.context_guarded else SCHEMA),
+        "mode":("act-floor-kind-guarded-nearest-prototype" if a.context_guarded else "calibrated-local-nearest-prototype"),
+        "context_guarded":bool(a.context_guarded),
         "calibration_factor":best_factor,
         "obs_scale":[float(x) for x in obs_scale],
         "desc_scale":[float(x) for x in desc_scale],
@@ -273,6 +276,7 @@ def main()->int:
         "schema_version":"sts1-local-rescue-adapter-v31-report",
         "teacher_examples":len(teachers),
         "teacher_seeds":len({int(x["seed"]) for x in teachers}),
+        "context_guarded":bool(a.context_guarded),
         "selected_factor":best_factor,
         "nearest_protected_distance":[float(x) for x in nearest],
         "radii":[float(x) for x in radii],
@@ -287,6 +291,7 @@ def main()->int:
         "teacher_examples":len(teachers),
         "teacher_seeds":len({int(x["seed"]) for x in teachers}),
         "selected_factor":best_factor,
+        "context_guarded":bool(a.context_guarded),
         "winner_replay_decisions":int(n),
         "self_replay_pass":True,
     },sort_keys=True),flush=True)

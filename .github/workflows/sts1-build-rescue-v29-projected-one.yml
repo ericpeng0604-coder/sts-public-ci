@@ -53,7 +53,7 @@ jobs:
           from pathlib import Path
           p=Path("scripts/sts1/sts1_build_rescue_projected_v29.py").read_text()
           required=[
-              "exactly one projected Teacher",
+              "exactly one focused Teacher",
               "_build_covariance",
               "_solve_update",
               "protection_scale",

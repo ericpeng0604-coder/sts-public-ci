@@ -102,7 +102,7 @@ jobs:
           Path("evidence/sts1/v29-projected/new-win-teacher.jsonl").write_text(
               json.dumps(t,sort_keys=True)+"\n"
           )
-          print("V29_FOCUSED_DATASET_PASS",seed,t["kind"],t["floor"])
+          print("V29_PROJECTED_DATASET_PASS",seed,t["kind"],t["floor"])
           PY
         env:
           FOCUSED_SEED: ${{ matrix.seed }}
@@ -320,11 +320,9 @@ jobs:
               "schema_version":"sts1-v29-projected-one-summary",
               "seed":int(seed),
               "training":{
-                  "selected_alpha":train.get("selected_alpha"),
+                  "selected_trial":train.get("selected_trial"),
                   "before_new_win":train.get("before",{}).get("new_win"),
                   "after_new_win":train.get("after",{}).get("new_win"),
-                  "before_margin":train.get("before",{}).get("new_win_margin"),
-                  "after_margin":train.get("after",{}).get("new_win_margin"),
                   "retention_after":train.get("after",{}).get("retention"),
               },
               "target1":{"pass":os.environ.get("TARGET")=="true","parent":os.environ.get("TARGET_PARENT"),"candidate":os.environ.get("TARGET_CAND")},
@@ -335,7 +333,7 @@ jobs:
               "heldout500_outcome":os.environ.get("H500"),
           }
           (out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
-          print("V29_FOCUSED_FINAL",json.dumps(summary,sort_keys=True))
+          print("V29_PROJECTED_FINAL",json.dumps(summary,sort_keys=True))
           PY
 
       - uses: actions/upload-artifact@v4

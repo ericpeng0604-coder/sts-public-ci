@@ -1,0 +1,363 @@
+name: STS1 Build Rescue v3.0 Exact Rescue Memory
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v30-rescue-memory.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '36731071450'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v30-rescue-memory
+  cancel-in-progress: true
+
+jobs:
+  exact-memory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate v3.0 exact-memory contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile             src/roguelike_ai/sts1_phase3/rescue_memory.py             scripts/sts1/sts1_build_rescue_memory_builder_v30.py             scripts/sts1/sts1_build_rescue_memory_gate_v30.py
+          python - <<'PY'
+          from pathlib import Path
+          policy=Path("src/roguelike_ai/sts1_phase3/rescue_memory.py").read_text()
+          builder=Path("scripts/sts1/sts1_build_rescue_memory_builder_v30.py").read_text()
+          gate=Path("scripts/sts1/sts1_build_rescue_memory_gate_v30.py").read_text()
+          required_policy=[
+              "class ArmGRescueMemoryPolicy",
+              "Exact matching is intentionally conservative",
+              "obs_tolerance",
+              "desc_tolerance",
+              "memory_hits",
+          ]
+          required_builder=[
+              "expected 7 frozen memory rows",
+              "formal_generalization_starts_at",
+              "Hidden50",
+          ]
+          required_gate=[
+              "candidate_memory_hits",
+              "boss-mcts-sims",
+              "V30_RESCUE_MEMORY_GATE_RESULT",
+          ]
+          missing=[
+              x for x in required_policy if x not in policy
+          ] + [
+              x for x in required_builder if x not in builder
+          ] + [
+              x for x in required_gate if x not in gate
+          ]
+          if missing:
+              raise SystemExit(f"missing v3.0 exact-memory contract: {missing}")
+          print("V30_EXACT_MEMORY_CONTRACT_PASS")
+          PY
+
+      - name: Download verified v2.4 mining evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v24-mine-*
+          path: evidence/sts1/v30-source
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Freeze exact Rescue Memory
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v30-memory
+          python scripts/sts1/sts1_build_rescue_memory_builder_v30.py             --source-dir evidence/sts1/v30-source             --output evidence/sts1/v30-memory/rescue-memory.jsonl             --summary evidence/sts1/v30-memory/summary.json
+          test "$(wc -l < evidence/sts1/v30-memory/rescue-memory.jsonl)" -eq 7
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v30-memory
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Build fixed evaluation seed files
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v30-memory
+          printf '%s\n'             341684210 469494371 523373928 572162032 620908546             > "$out/mined5-seeds.txt"
+          cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2-seeds.txt"
+          grep -v '^#' control/sts1-v15-dev-seeds-50.txt | sed '/^$/d' | head -30 > "$out/dev30-seeds.txt"
+          cp control/sts1-v14-final-promotion-seeds-50.txt "$out/hidden50-seeds.txt"
+          python - <<'PY'
+          import random
+          from pathlib import Path
+          def read(path):
+              return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
+          protected=set(read("control/sts1-v15-dev-seeds-50.txt"))
+          protected.update(read("control/sts1-v14-final-promotion-seeds-50.txt"))
+          protected.update(read("control/sts1-v16-benchmark-seeds-500.txt"))
+          protected.update(read("control/sts1-v24-dev30-double-loss-seeds-24.txt"))
+          rng=random.Random(2026100130)
+          fresh=[]
+          while len(fresh)<100:
+              x=rng.randrange(1,2_000_000_000)
+              if x not in protected and x not in fresh:
+                  fresh.append(x)
+          Path("evidence/sts1/v30-memory/fresh100-seeds.txt").write_text(
+              "\n".join(map(str,fresh))+"\n"
+          )
+          assert len(fresh)==100 and not(set(fresh)&protected)
+          PY
+
+      - name: Mined5 Boss50k parity replay
+        id: mined
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_memory_gate_v30.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v30-memory             --base-weight "$parent"             --memory evidence/sts1/v30-memory/rescue-memory.jsonl             --seed-file evidence/sts1/v30-memory/mined5-seeds.txt             --output evidence/sts1/v30-memory/mined5-boss50k.json             --mcts-sims 2000             --boss-mcts-sims 50000             --boss-floors 16,33,50             --workers 5             --min-win-delta 1             --max-pvalue 1.0             --label v30-mined5-boss50k
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v30-memory/mined5-boss50k.json"))
+          exact=(
+              x["parent_wins"]==0
+              and x["candidate_wins"]==5
+              and x["candidate_only_wins"]==5
+              and x["parent_only_wins"]==0
+              and x["candidate_memory_hits"]>=7
+          )
+          print("passed="+str(exact).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("hits="+str(x["candidate_memory_hits"]))
+          PY
+          python - <<'PY'
+          import json
+          x=json.load(open("evidence/sts1/v30-memory/mined5-boss50k.json"))
+          if not (
+              x["parent_wins"]==0 and x["candidate_wins"]==5
+              and x["candidate_only_wins"]==5 and x["parent_only_wins"]==0
+              and x["candidate_memory_hits"]>=7
+          ):
+              raise SystemExit("exact Rescue Memory failed to reproduce the five verified mining wins")
+          print("V30_MINED5_BOSS50K_PASS")
+          PY
+
+      - name: Regression2 exact safety Gate
+        id: reg
+        if: steps.mined.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_memory_gate_v30.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v30-memory             --base-weight "$parent"             --memory evidence/sts1/v30-memory/rescue-memory.jsonl             --seed-file evidence/sts1/v30-memory/regression2-seeds.txt             --output evidence/sts1/v30-memory/regression2.json             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0             --label v30-regression2
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v30-memory/regression2.json"))
+          passed=(
+              x["parent_wins"]==2 and x["candidate_wins"]==2
+              and x["parent_only_wins"]==0
+              and x["candidate_memory_hits"]==0
+          )
+          print("passed="+str(passed).lower())
+          print("hits="+str(x["candidate_memory_hits"]))
+          PY
+          python - <<'PY'
+          import json
+          x=json.load(open("evidence/sts1/v30-memory/regression2.json"))
+          if not (
+              x["parent_wins"]==2 and x["candidate_wins"]==2
+              and x["parent_only_wins"]==0 and x["candidate_memory_hits"]==0
+          ):
+              raise SystemExit("exact Rescue Memory changed a frozen regression win")
+          print("V30_REGRESSION2_PASS")
+          PY
+
+      - name: Dev30 contaminated sanity check
+        id: dev
+        if: steps.reg.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_memory_gate_v30.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v30-memory             --base-weight "$parent"             --memory evidence/sts1/v30-memory/rescue-memory.jsonl             --seed-file evidence/sts1/v30-memory/dev30-seeds.txt             --output evidence/sts1/v30-memory/dev30-contaminated.json             --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0             --label v30-dev30-contaminated
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v30-memory/dev30-contaminated.json"))
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          print("hits="+str(x["candidate_memory_hits"]))
+          PY
+
+      - name: Hidden50 first unseen Gate
+        id: hidden
+        if: steps.reg.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_memory_gate_v30.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v30-memory             --base-weight "$parent"             --memory evidence/sts1/v30-memory/rescue-memory.jsonl             --seed-file evidence/sts1/v30-memory/hidden50-seeds.txt             --output evidence/sts1/v30-memory/hidden50.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0             --label v30-hidden50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v30-memory/hidden50.json"))
+          print("passed="+str(x["pass"]).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          print("hits="+str(x["candidate_memory_hits"]))
+          PY
+
+      - name: Fresh100 formal Gate
+        id: fresh
+        if: steps.hidden.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_memory_gate_v30.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v30-memory             --base-weight "$parent"             --memory evidence/sts1/v30-memory/rescue-memory.jsonl             --seed-file evidence/sts1/v30-memory/fresh100-seeds.txt             --output evidence/sts1/v30-memory/fresh100.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v30-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v30-memory/fresh100.json"))
+          print("passed="+str(x["pass"]).lower())
+          PY
+
+      - name: Heldout500 formal Gate
+        id: h500
+        if: steps.fresh.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_memory_gate_v30.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v30-memory             --base-weight "$parent"             --memory evidence/sts1/v30-memory/rescue-memory.jsonl             --seed-file control/sts1-v16-benchmark-seeds-500.txt             --output evidence/sts1/v30-memory/heldout500.json             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v30-heldout500
+
+      - name: Write v3.0 summary
+        if: always()
+        env:
+          MINED: ${{ steps.mined.outputs.passed }}
+          MINED_PARENT: ${{ steps.mined.outputs.parent }}
+          MINED_CAND: ${{ steps.mined.outputs.candidate }}
+          MINED_HITS: ${{ steps.mined.outputs.hits }}
+          REG: ${{ steps.reg.outputs.passed }}
+          DEV_PARENT: ${{ steps.dev.outputs.parent }}
+          DEV_CAND: ${{ steps.dev.outputs.candidate }}
+          DEV_CONLY: ${{ steps.dev.outputs.candidate_only }}
+          DEV_PONLY: ${{ steps.dev.outputs.parent_only }}
+          DEV_HITS: ${{ steps.dev.outputs.hits }}
+          HID: ${{ steps.hidden.outputs.passed }}
+          HID_PARENT: ${{ steps.hidden.outputs.parent }}
+          HID_CAND: ${{ steps.hidden.outputs.candidate }}
+          HID_CONLY: ${{ steps.hidden.outputs.candidate_only }}
+          HID_PONLY: ${{ steps.hidden.outputs.parent_only }}
+          HID_HITS: ${{ steps.hidden.outputs.hits }}
+          FRESH: ${{ steps.fresh.outputs.passed }}
+          H500: ${{ steps.h500.outcome }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path("evidence/sts1/v30-memory")
+          memory=json.loads((out/"summary.json").read_text()) if (out/"summary.json").exists() else {}
+          summary={
+              "schema_version":"sts1-v30-exact-rescue-memory-summary",
+              "memory":memory,
+              "mined5_boss50k":{
+                  "pass":os.environ.get("MINED")=="true",
+                  "parent":os.environ.get("MINED_PARENT"),
+                  "candidate":os.environ.get("MINED_CAND"),
+                  "hits":os.environ.get("MINED_HITS"),
+              },
+              "regression2_pass":os.environ.get("REG")=="true",
+              "dev30_contaminated":{
+                  "parent":os.environ.get("DEV_PARENT"),
+                  "candidate":os.environ.get("DEV_CAND"),
+                  "candidate_only":os.environ.get("DEV_CONLY"),
+                  "parent_only":os.environ.get("DEV_PONLY"),
+                  "memory_hits":os.environ.get("DEV_HITS"),
+                  "promotion_evidence":False,
+              },
+              "hidden50":{
+                  "pass":os.environ.get("HID")=="true",
+                  "parent":os.environ.get("HID_PARENT"),
+                  "candidate":os.environ.get("HID_CAND"),
+                  "candidate_only":os.environ.get("HID_CONLY"),
+                  "parent_only":os.environ.get("HID_PONLY"),
+                  "memory_hits":os.environ.get("HID_HITS"),
+                  "promotion_evidence":True,
+              },
+              "fresh100_pass":os.environ.get("FRESH")=="true",
+              "heldout500_outcome":os.environ.get("H500"),
+          }
+          summary["readiness"]="READY_FOR_REAL_GAME_GATE" if summary["heldout500_outcome"]=="success" else "HOLD_G7"
+          (out/"v30-final-summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("V30_EXACT_MEMORY_FINAL",json.dumps(summary,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v30-rescue-memory-${{ github.run_id }}
+          path: evidence/sts1/v30-memory/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report v3.0 exact-memory status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          print("@ericpeng0604-coder")
+          print()
+          print("## Build Rescue v3.0 Exact Rescue Memory")
+          p=Path("evidence/sts1/v30-memory/v30-final-summary.json")
+          if not p.exists():
+              print("- Run failed before final summary. G7 remains unchanged.")
+          else:
+              x=json.loads(p.read_text())
+              m=x["mined5_boss50k"]
+              print(f"- Frozen memory: **7 verified decisions / 5 mined seeds**")
+              print(f"- Mined5 Boss50k replay: G7 **{m.get('parent')}/5** / Memory **{m.get('candidate')}/5** / hits={m.get('hits')} / PASS={m.get('pass')}")
+              print(f"- Regression2 safety PASS: **{x['regression2_pass']}**")
+              d=x["dev30_contaminated"]
+              print(f"- Dev30 (training-contaminated, not promotion evidence): G7 **{d.get('parent')}/30** / Memory **{d.get('candidate')}/30** / hits={d.get('memory_hits')}")
+              h=x["hidden50"]
+              print(f"- Hidden50 (first unseen): G7 **{h.get('parent')}/50** / Memory **{h.get('candidate')}/50** / Candidate-only={h.get('candidate_only')} / Parent-only={h.get('parent_only')} / hits={h.get('memory_hits')} / PASS={h.get('pass')}")
+              print(f"- Fresh100 PASS: **{x['fresh100_pass']}**")
+              print(f"- Heldout500 outcome: **{x['heldout500_outcome']}**")
+              print(f"- Readiness: **{x['readiness']}**")
+          print("- G7 weights are never modified by this workflow.")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

@@ -375,38 +375,23 @@ jobs:
           test -s "$out/candidate.pt"
           test -s "$out/candidate.pt.adapter.pt"
 
-      - name: Build evaluation seeds
+      - name: Freeze evaluation seeds from independent v3.4 ledger
         run: |
           set -euo pipefail
           out=evidence/sts1/v34-candidate
-          cp evidence/sts1/v34-data/teacher-seeds.txt "$out/training-recall.txt"
+          cp "$out/new-teachers.txt" "$out/training-recall.txt"
+          cp "$out/old12.txt" "$out/old-recall.txt"
           cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2-seeds.txt"
-          cp control/sts1-v14-final-promotion-seeds-50.txt "$out/hidden50-seeds.txt"
-          python - <<'PY'
-          import random
-          from pathlib import Path
-          def read(path):
-              return [int(x) for x in Path(path).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
-          protected=set(read("evidence/sts1/v34-screen/train160.txt"))
-          protected.update(read("control/sts1-v15-dev-seeds-50.txt"))
-          protected.update(read("control/sts1-v14-final-promotion-seeds-50.txt"))
-          protected.update(read("control/sts1-v16-benchmark-seeds-500.txt"))
-          rng=random.Random(2026100131)
-          fresh=[]
-          while len(fresh)<100:
-              x=rng.randrange(1,2_000_000_000)
-              if x not in protected and x not in fresh:
-                  fresh.append(x)
-          Path("evidence/sts1/v34-candidate/fresh100-seeds.txt").write_text("\n".join(map(str,fresh))+"\n")
-          assert len(fresh)==100 and not(set(fresh)&protected)
-          PY
+          cp evidence/sts1/v34-screen/gate50.txt "$out/hidden50-seeds.txt"
+          cp evidence/sts1/v34-screen/fresh100.txt "$out/fresh100-seeds.txt"
+          cp evidence/sts1/v34-screen/fresh500.txt "$out/fresh500-seeds.txt"
       - name: Training recall diagnostic
         id: recall
         run: |
           set -euo pipefail
           out=evidence/sts1/v34-candidate
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/training-recall.txt" --output "$out/training-recall.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v31-training-recall
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/training-recall.txt" --output "$out/training-recall.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v34-new-training-recall
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           x=json.load(open("evidence/sts1/v34-candidate/training-recall.json"))
@@ -414,14 +399,33 @@ jobs:
           print("passed="+str(passed).lower())
           print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
           PY
-      - name: Regression2 Gate
-        id: reg
-        if: steps.recall.outputs.passed == 'true'
+      - name: Preserve old v3.2.2 New-Win four
+        id: old
         run: |
           set -euo pipefail
           out=evidence/sts1/v34-candidate
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/regression2-seeds.txt" --output "$out/regression2.json"             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0 --label v31-regression2
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v34 \
+            --parent-weight "$parent" --candidate-weight "$out/candidate.pt" \
+            --seed-file "$out/old-recall.txt" --output "$out/old-recall.json" \
+            --mcts-sims 2000 --workers 4 --min-win-delta 4 --max-pvalue 1.0 \
+            --label v34-old12
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v34-candidate/old-recall.json"))
+          passed=(x["candidate_wins"]>=4 and x["candidate_only_wins"]>=4 and x["parent_only_wins"]==0)
+          print("passed="+str(passed).lower())
+          print("candidate="+str(x["candidate_wins"]))
+          PY
+      - name: Regression2 Gate
+        id: reg
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v34-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/regression2-seeds.txt" --output "$out/regression2.json"             --mcts-sims 2000 --workers 2 --min-win-delta 0 --max-pvalue 1.0 --label v34-regression2
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           x=json.load(open("evidence/sts1/v34-candidate/regression2.json"))
@@ -430,12 +434,12 @@ jobs:
           PY
       - name: Hidden50 unseen Gate
         id: hidden
-        if: steps.reg.outputs.passed == 'true'
+        if: steps.reg.outputs.passed == 'true' && steps.old.outputs.passed == 'true' && steps.recall.outputs.passed == 'true'
         run: |
           set -euo pipefail
           out=evidence/sts1/v34-candidate
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/hidden50-seeds.txt" --output "$out/hidden50.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v31-hidden50
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/hidden50-seeds.txt" --output "$out/hidden50.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v34-gate50
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           x=json.load(open("evidence/sts1/v34-candidate/hidden50.json"))
@@ -451,7 +455,7 @@ jobs:
           set -euo pipefail
           out=evidence/sts1/v34-candidate
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/fresh100-seeds.txt" --output "$out/fresh100.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v31-fresh100
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/fresh100-seeds.txt" --output "$out/fresh100.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v34-fresh100
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           x=json.load(open("evidence/sts1/v34-candidate/fresh100.json"))
@@ -466,11 +470,12 @@ jobs:
           set -euo pipefail
           out=evidence/sts1/v34-candidate
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file control/sts1-v16-benchmark-seeds-500.txt --output "$out/heldout500.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v31-heldout500
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file evidence/sts1/v34-screen/fresh500.txt --output "$out/heldout500.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v34-fresh500
       - name: Write v3.1 summary
         if: always()
         env:
           RECALL: ${{ steps.recall.outputs.passed }}
+          OLD: ${{ steps.old.outputs.passed }}
           REG: ${{ steps.reg.outputs.passed }}
           HID: ${{ steps.hidden.outputs.passed }}
           HID_PARENT: ${{ steps.hidden.outputs.parent }}
@@ -494,6 +499,8 @@ jobs:
               "schema_version":"sts1-v34-summary","parent":"G7","dataset":data,
               "training_after":train.get("after",{}),"selected_epoch":train.get("selected_epoch"),
               "training_recall_pass":os.environ.get("RECALL")=="true",
+               "old12_recall_pass":os.environ.get("OLD")=="true",
+               "old12_recall":json.loads((out/"old-recall.json").read_text()) if (out/"old-recall.json").exists() else None,
               "regression2_pass":os.environ.get("REG")=="true",
               "hidden50":{"pass":os.environ.get("HID")=="true","parent":os.environ.get("HID_PARENT"),"candidate":os.environ.get("HID_CAND"),"candidate_only":os.environ.get("HID_CONLY"),"parent_only":os.environ.get("HID_PONLY")},
               "fresh100":{"pass":os.environ.get("FRESH")=="true","parent":os.environ.get("FRESH_PARENT"),"candidate":os.environ.get("FRESH_CAND"),"pvalue":os.environ.get("FRESH_P")},
@@ -501,7 +508,7 @@ jobs:
           }
           summary["readiness"]="READY_FOR_REAL_GAME_GATE" if summary["heldout500_outcome"]=="success" else "HOLD_PARENT"
           (out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
-          print("V31_FINAL",json.dumps(summary,sort_keys=True))
+          print("V34_FINAL",json.dumps(summary,sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
         if: always()

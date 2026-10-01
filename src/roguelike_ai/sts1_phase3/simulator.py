@@ -424,10 +424,41 @@ class ArmGNoncombatPolicy:
         except Exception as exc:
             raise SimulatorRunError(f"could not load ArmG weight: {exc}") from exc
 
+        # Optional v3 residual adapter sidecar.  The base G7 checkpoint stays
+        # byte-for-byte unchanged; only candidate checkpoints that have
+        # "<weight>.adapter.pt" next to them receive the local score correction.
+        adapter = None
+        adapter_kinds: set[str] = set()
+        adapter_path = Path(str(weight_path) + ".adapter.pt")
+        if adapter_path.is_file():
+            try:
+                payload = torch.load(adapter_path, weights_only=True, map_location="cpu")
+                if payload.get("schema_version") != "sts1-armg-residual-adapter-v1":
+                    raise RuntimeError(
+                        f"unsupported adapter schema: {payload.get('schema_version')}"
+                    )
+                input_dim = int(payload["input_dim"])
+                hidden_dim = int(payload["hidden_dim"])
+                adapter = torch.nn.Sequential(
+                    torch.nn.Linear(input_dim, hidden_dim),
+                    torch.nn.Tanh(),
+                    torch.nn.Linear(hidden_dim, 1),
+                )
+                adapter.load_state_dict(payload["state_dict"])
+                adapter.eval()
+                adapter_kinds = {str(x) for x in payload.get("kinds", [])}
+                if not adapter_kinds:
+                    raise RuntimeError("adapter has no enabled decision kinds")
+            except Exception as exc:
+                raise SimulatorRunError(f"could not load ArmG residual adapter: {exc}") from exc
+
         self.module = module
         self.torch = torch
         self.net = net
         self.map_net = map_net
+        self.adapter = adapter
+        self.adapter_kinds = adapter_kinds
+        self.adapter_path = adapter_path if adapter is not None else None
         self.weight_path = weight_path
         self.map_weight_path = map_weight_path or weight_path
         self.contextual_card_rerank = os.environ.get("STS1_TEACHER_V2_CONTEXTUAL_RERANK", "0") == "1"
@@ -444,6 +475,15 @@ class ArmGNoncombatPolicy:
         net = self.map_net if kind == "map" else self.net
         with self.torch.no_grad():
             scores = net.score(obs, descs)
+            if self.adapter is not None and kind in self.adapter_kinds:
+                desc_tensor = self.torch.tensor(descs, dtype=self.torch.float32)
+                x = self.torch.cat([obs.repeat(len(descs), 1), desc_tensor], 1)
+                if int(x.shape[1]) != int(self.adapter[0].in_features):
+                    raise SimulatorRunError(
+                        f"ArmG residual adapter input mismatch: {int(x.shape[1])} != "
+                        f"{int(self.adapter[0].in_features)}"
+                    )
+                scores = scores + self.adapter(x).squeeze(1)
         return kind, descs, scores
 
     def choose_index(self, gc: Any, sts: Any) -> tuple[str, int, int]:

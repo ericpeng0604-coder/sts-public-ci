@@ -496,7 +496,7 @@ jobs:
           data=json.loads(Path("evidence/sts1/v34-data/summary.json").read_text())
           train=json.loads((out/"train-report.json").read_text()) if (out/"train-report.json").exists() else {}
           summary={
-              "schema_version":"sts1-v34-summary","parent":"G7","dataset":data,
+              "schema_version":"sts1-v34-fresh-generalization-summary","parent":"G7","dataset":data,
               "training_after":train.get("after",{}),"selected_epoch":train.get("selected_epoch"),
               "training_recall_pass":os.environ.get("RECALL")=="true",
                "old12_recall_pass":os.environ.get("OLD")=="true",
@@ -506,7 +506,14 @@ jobs:
               "fresh100":{"pass":os.environ.get("FRESH")=="true","parent":os.environ.get("FRESH_PARENT"),"candidate":os.environ.get("FRESH_CAND"),"pvalue":os.environ.get("FRESH_P")},
               "heldout500_outcome":os.environ.get("H500"),
           }
-          summary["readiness"]="READY_FOR_REAL_GAME_GATE" if summary["heldout500_outcome"]=="success" else "HOLD_PARENT"
+          final_path=out/"heldout500.json"
+          final_pass=final_path.exists() and bool(json.loads(final_path.read_text()).get("pass"))
+          all_ok=(os.environ.get("OLD")=="true" and os.environ.get("RECALL")=="true"
+                  and os.environ.get("REG")=="true" and os.environ.get("HID")=="true"
+                  and os.environ.get("FRESH")=="true" and final_pass)
+          summary["fresh500_pass"]=bool(final_pass)
+          summary["all_gates_pass"]=bool(all_ok)
+          summary["readiness"]="READY_FOR_REAL_GAME_GATE" if all_ok else "HOLD_PARENT"
           (out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
           print("V34_FINAL",json.dumps(summary,sort_keys=True))
           PY
@@ -517,6 +524,37 @@ jobs:
           path: evidence/sts1/v34-candidate/
           if-no-files-found: warn
           retention-days: 90
+
+      - name: Post GitHub result for phone notifications
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/v34-report.txt"
+          import json
+          from pathlib import Path
+          out=Path("evidence/sts1/v34-candidate")
+          summary=out/"summary.json"
+          x=json.loads(summary.read_text()) if summary.exists() else {}
+          print("@ericpeng0604-coder\n\n## STS1 v3.4 Fresh Generalization")
+          for title,name in [
+              ("Old12 New-Win","old-recall.json"),
+              ("G7 Regression2","regression2.json"),
+              ("Fresh Training Recall","training-recall.json"),
+              ("Independent Gate50","hidden50.json"),
+              ("Independent Fresh100","fresh100.json"),
+              ("Independent Fresh500","heldout500.json"),
+          ]:
+              p=out/name
+              if not p.exists():
+                  print(f"- {title}: not run")
+              else:
+                  a=json.loads(p.read_text())
+                  print(f"- {title}: G7 {a['parent_wins']} / Candidate {a['candidate_wins']} over {a['seeds']} seeds")
+          print("- Readiness: "+x.get("readiness","FAILED_BEFORE_SUMMARY"))
+          print("- Champion G7 unchanged. Heldout seeds were never used for training.")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -F "body=@$RUNNER_TEMP/v34-report.txt"
 
   bottleneck:
     needs: aggregate

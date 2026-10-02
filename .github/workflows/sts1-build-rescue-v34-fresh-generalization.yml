@@ -34,6 +34,7 @@ jobs:
       train_only: ${{ steps.recovery.outputs.train_only }}
       trace_only: ${{ steps.recovery.outputs.trace_only }}
       trace_candidate_run: ${{ steps.recovery.outputs.trace_candidate_run }}
+      regression_trace_run: ${{ steps.recovery.outputs.regression_trace_run }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,12 +46,16 @@ jobs:
           marker=control/sts1-build-rescue-v34-fresh-generalization.trigger
           run_id=""
           trace_candidate_run=""
+          regression_trace_run=""
           train_only=false
           trace_only=false
           if [ "$GITHUB_EVENT_NAME" = "push" ] && [ -f "$marker" ]; then
             run_id="$(sed -n 's/^resume_from_run=//p' "$marker" | tail -n 1)"
             mode="$(sed -n 's/^recovery_mode=//p' "$marker" | tail -n 1)"
-            if [ "$mode" = "train_only" ]; then train_only=true; fi
+            if [ "$mode" = "train_only" ]; then
+              train_only=true
+              regression_trace_run="$(sed -n 's/^regression_trace_run=//p' "$marker" | tail -n 1)"
+            fi
             if [ "$mode" = "trace_only" ]; then
               train_only=true
               trace_only=true
@@ -62,11 +67,16 @@ jobs:
             echo "trace_only requires a numeric trace_candidate_run"
             exit 1
           fi
+          if [ -n "$regression_trace_run" ] && ! [[ "$regression_trace_run" =~ ^[0-9]+$ ]]; then
+            echo "regression_trace_run must be numeric"
+            exit 1
+          fi
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "train_only=$train_only" >> "$GITHUB_OUTPUT"
           echo "trace_only=$trace_only" >> "$GITHUB_OUTPUT"
           echo "trace_candidate_run=$trace_candidate_run" >> "$GITHUB_OUTPUT"
-          echo "V34_RECOVERY_RUN_ID=$run_id TRAIN_ONLY=$train_only TRACE_ONLY=$trace_only CANDIDATE_RUN=$trace_candidate_run"
+          echo "regression_trace_run=$regression_trace_run" >> "$GITHUB_OUTPUT"
+          echo "V34_RECOVERY_RUN_ID=$run_id TRAIN_ONLY=$train_only TRACE_ONLY=$trace_only CANDIDATE_RUN=$trace_candidate_run REGRESSION_TRACE_RUN=$regression_trace_run"
       - name: Validate v3.4 isolated training contracts
         run: |
           set -euo pipefail
@@ -439,7 +449,7 @@ jobs:
           retention-days: 90
 
   train:
-    needs: aggregate
+    needs: [aggregate, screen]
     if: ${{ always() && needs.aggregate.result == 'success' && fromJSON(needs.aggregate.outputs.teacher_seed_count) >= 6 }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -475,6 +485,15 @@ jobs:
           path: evidence/sts1/v23-trace
           github-token: ${{ github.token }}
           run-id: ${{ env.V23_TRACE_RUN_ID }}
+      - name: Download verified regression trace anchor
+        if: needs.screen.outputs.regression_trace_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: sts1-v34-regression-trace-${{ needs.screen.outputs.regression_trace_run }}
+          path: evidence/sts1/v34-trace/
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.screen.outputs.regression_trace_run }}
       - name: Install, hydrate, and build pinned simulator
         run: |
           set -euo pipefail
@@ -539,6 +558,44 @@ jobs:
           print("V34_TEACHER_PROVENANCE_PASS",json.dumps(summary,sort_keys=True))
           PY
 
+      - name: Add regression-only action preservation anchor
+        if: needs.screen.outputs.regression_trace_run != ''
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('evidence/sts1')
+          trace=root/'v34-trace'/'regression2-trace.json'
+          anchor_file=root/'v34-trace'/'regression2-anchors.jsonl'
+          if not trace.is_file() or not anchor_file.is_file(): raise SystemExit('regression trace artifact is incomplete')
+          report=json.loads(trace.read_text())
+          anchors=[json.loads(x) for x in anchor_file.read_text().splitlines() if x.strip()]
+          expected={int(x) for x in Path('control/sts1-v22-parent-only-seeds-2.txt').read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')}
+          def seeds(name): return {int(x) for x in (root/'v34-screen'/name).read_text().split()}
+          formal=seeds('gate50.txt')|seeds('fresh100.txt')|seeds('fresh500.txt')
+          anchor_ids={int(x['seed']) for x in anchors}
+          if len(anchors)!=1 or len(report.get('rows',[]))!=1: raise SystemExit(f'expected one diagnostic anchor, got anchors={len(anchors)} rows={len(report.get("rows",[]))}')
+          if not anchor_ids.issubset(expected): raise SystemExit(f'anchor Seed outside frozen Regression2 set: {sorted(anchor_ids-expected)}')
+          if anchor_ids & formal: raise SystemExit(f'regression anchor leaks into formal Fresh Gates: {sorted(anchor_ids & formal)}')
+          if any(not (x.get('first_divergence') or {}).get('candidate_identity_match', False) for x in report['rows']): raise SystemExit('trace contains structural action drift; refusing preservation training')
+          p=root/'v322-frozen'/'preservation-active.jsonl'
+          rows=[json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+          seen={json.dumps(x,sort_keys=True,separators=(',',':')) for x in rows}
+          added=0
+          for row in anchors:
+              key=json.dumps(row,sort_keys=True,separators=(',',':'))
+              if key not in seen: rows.append(row); seen.add(key); added+=1
+          p.write_text(''.join(json.dumps(x,sort_keys=True)+'\n' for x in rows))
+          prov=root/'v34-candidate'/'provenance.json'
+          data=json.loads(prov.read_text())
+          data['regression_trace_run']='36961350902'
+          data['regression_preservation_anchor_seeds']=sorted(anchor_ids)
+          data['regression_anchor_formal_gate_overlap']=len(anchor_ids & formal)
+          data['regression_anchor_count_added']=added
+          prov.write_text(json.dumps(data,indent=2,sort_keys=True)+'\n')
+          print('V34_REGRESSION_ANCHOR_PASS',json.dumps({'source_run':'36961350902','seeds':sorted(anchor_ids),'formal_gate_overlap':len(anchor_ids&formal),'anchors_added':added,'preservation_rows':len(rows)},sort_keys=True))
+          PY
       - name: Warm-train from v3.2.2 on combined Full-Win Teachers
         run: |
           set -euo pipefail

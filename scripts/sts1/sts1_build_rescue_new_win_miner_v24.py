@@ -34,6 +34,10 @@ SAFETY = ("illegal_action_count", "crash_count", "timeout_count", "remote_error_
 BOSS_FLOORS = (16, 33, 50)
 
 
+class StaleForcedAction(RuntimeError):
+    """The replay no longer presents the action state a counterfactual targets."""
+
+
 def _read_seeds(path: Path) -> list[int]:
     rows = [
         int(x.strip())
@@ -112,14 +116,14 @@ class ReplayProductionArmG(ArmGNoncombatPolicy):
         force = self.forced.get(idx)
         if force is not None:
             if str(force["kind"]) != str(kind):
-                raise RuntimeError(
+                raise StaleForcedAction(
                     f"forced kind drift branch={idx}: {force['kind']} != {kind}"
                 )
             if force["descs"] != record["descs"]:
-                raise RuntimeError(f"forced candidate identity drift branch={idx}")
+                raise StaleForcedAction(f"forced candidate identity drift branch={idx}")
             forced_index = int(force["index"])
             if not 0 <= forced_index < len(descs):
-                raise RuntimeError(
+                raise StaleForcedAction(
                     f"forced index {forced_index} outside {len(descs)} candidates"
                 )
             record["unforced_index"] = int(selected)
@@ -307,10 +311,11 @@ def _isolated_variant(
                 "signal_name": sig_name,
             }
         elif payload and payload.get("ok") is False:
+            error_type = payload.get("error_type")
             failure = {
                 "attempt": attempt,
-                "kind": "python_exception",
-                "error_type": payload.get("error_type"),
+                "kind": "stale_forced_action" if error_type == "StaleForcedAction" else "python_exception",
+                "error_type": error_type,
                 "error": payload.get("error"),
             }
         else:
@@ -328,7 +333,7 @@ def _isolated_variant(
         # Deterministic Python/data-contract errors will not improve on retry.
         # Retry only transient child timeouts/signals/exits, and never past the
         # seed-wide deadline.
-        if failure["kind"] in {"python_exception", "decode_error"}:
+        if failure["kind"] in {"python_exception", "decode_error", "stale_forced_action"}:
             break
         if deadline is not None and time.monotonic() >= deadline:
             break
@@ -432,7 +437,7 @@ def mine_seed(
             "search_config": search_config,
             "completed_variants": completed,
             "failed_variants": failed_variants,
-            "updated_at_monotonic": time.monotonic(),
+            "updated_at_epoch": time.time(),
         }
         temp_path = checkpoint.with_suffix(checkpoint.suffix + ".tmp")
         temp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
@@ -467,6 +472,7 @@ def mine_seed(
         key = variant_key(boss_sims, forced)
         cached = completed.get(key)
         if cached is not None:
+            failures.extend(list(cached.get("failures") or []))
             return dict(cached["result"]), list(cached["records"])
 
         prior_failure = failed_variants.get(key)

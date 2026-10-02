@@ -32,6 +32,8 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       recovery_run_id: ${{ steps.recovery.outputs.run_id }}
       train_only: ${{ steps.recovery.outputs.train_only }}
+      trace_only: ${{ steps.recovery.outputs.trace_only }}
+      trace_candidate_run: ${{ steps.recovery.outputs.trace_candidate_run }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,21 +44,34 @@ jobs:
         run: |
           marker=control/sts1-build-rescue-v34-fresh-generalization.trigger
           run_id=""
+          trace_candidate_run=""
           train_only=false
+          trace_only=false
           if [ "$GITHUB_EVENT_NAME" = "push" ] && [ -f "$marker" ]; then
             run_id="$(sed -n 's/^resume_from_run=//p' "$marker" | tail -n 1)"
             mode="$(sed -n 's/^recovery_mode=//p' "$marker" | tail -n 1)"
             if [ "$mode" = "train_only" ]; then train_only=true; fi
+            if [ "$mode" = "trace_only" ]; then
+              train_only=true
+              trace_only=true
+              trace_candidate_run="$(sed -n 's/^trace_candidate_run=//p' "$marker" | tail -n 1)"
+            fi
           fi
-          if ! [[ "$run_id" =~ ^[0-9]+$ ]]; then run_id=""; train_only=false; fi
+          if ! [[ "$run_id" =~ ^[0-9]+$ ]]; then run_id=""; train_only=false; trace_only=false; trace_candidate_run=""; fi
+          if [ "$trace_only" = true ] && ! [[ "$trace_candidate_run" =~ ^[0-9]+$ ]]; then
+            echo "trace_only requires a numeric trace_candidate_run"
+            exit 1
+          fi
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "train_only=$train_only" >> "$GITHUB_OUTPUT"
-          echo "V34_RECOVERY_RUN_ID=$run_id TRAIN_ONLY=$train_only"
+          echo "trace_only=$trace_only" >> "$GITHUB_OUTPUT"
+          echo "trace_candidate_run=$trace_candidate_run" >> "$GITHUB_OUTPUT"
+          echo "V34_RECOVERY_RUN_ID=$run_id TRAIN_ONLY=$train_only TRACE_ONLY=$trace_only CANDIDATE_RUN=$trace_candidate_run"
       - name: Validate v3.4 isolated training contracts
         run: |
           set -euo pipefail
           python -m py_compile scripts/sts1/sts1_build_rescue_screen_v31.py scripts/sts1/sts1_build_rescue_new_win_miner_v24.py scripts/sts1/sts1_build_rescue_adapter_v34.py
-          python -m py_compile scripts/sts1/sts1_build_rescue_v34_seed_ledger.py scripts/sts1/sts1_build_rescue_v34_aggregate.py
+          python -m py_compile scripts/sts1/sts1_build_rescue_v34_seed_ledger.py scripts/sts1/sts1_build_rescue_v34_aggregate.py scripts/sts1/sts1_build_rescue_regression_trace.py
           python scripts/sts1/sts1_build_rescue_v34_seed_ledger.py --output-dir evidence/sts1/v34-screen
           test "$(wc -l < evidence/sts1/v34-screen/train160.txt)" -eq 160
           test "$(wc -l < evidence/sts1/v34-screen/gate50.txt)" -eq 50
@@ -303,7 +318,7 @@ jobs:
 
   aggregate:
     needs: [screen, mine]
-    if: always() && needs.screen.result == 'success'
+    if: always() && needs.screen.result == 'success' && needs.screen.outputs.trace_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -337,6 +352,89 @@ jobs:
         with:
           name: sts1-v34-teachers-${{ github.run_id }}
           path: evidence/sts1/v34-data/
+          if-no-files-found: error
+          retention-days: 90
+
+  trace-regression:
+    needs: screen
+    if: ${{ always() && needs.screen.result == 'success' && needs.screen.outputs.trace_only == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download failed Candidate artifact for read-only trace
+        uses: actions/download-artifact@v4
+        with:
+          name: sts1-v34-candidate-${{ needs.screen.outputs.trace_candidate_run }}
+          path: evidence/sts1/v34-source/
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.screen.outputs.trace_candidate_run }}
+      - name: Install and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v34
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -s "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+      - name: Trace the first changed decision on failed regression Seeds
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v34-source
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('evidence/sts1/v34-source/regression2.json')
+          x=json.loads(p.read_text())
+          seeds=[int(r['seed']) for r in x['rows'] if str(r['parent']['outcome']).lower()=='victory' and str(r['candidate']['outcome']).lower()!='victory']
+          if not seeds: raise SystemExit('no parent-only regression Seed to diagnose')
+          Path('evidence/sts1/v34-source/regression2-lost-seeds.txt').write_text(''.join(f'{s}\n' for s in seeds))
+          print('V34_TRACE_TARGET_SEEDS',seeds)
+          PY
+          python scripts/sts1/sts1_build_rescue_regression_trace.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v34 --parent-weight "$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)" --candidate-weight "$out/candidate.pt" --seed-file "$out/regression2-lost-seeds.txt" --heldout-seeds-file "$out/regression2-seeds.txt" --output "$out/regression2-trace.json" --preservation-output "$out/regression2-anchors.jsonl"
+      - name: Report trace and upload evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' > "$RUNNER_TEMP/v34-trace-comment.txt"
+          import json
+          from pathlib import Path
+          root=Path('evidence/sts1/v34-source')
+          report=json.loads((root/'regression2-trace.json').read_text())
+          print('@ericpeng0604-coder')
+          print('\n## STS1 v3.4 Regression Trace')
+          for row in report['rows']:
+              d=row.get('first_divergence') or {}
+              print(f"- Seed {row['seed']}: G7 {row['parent_outcome']}, Candidate {row['candidate_outcome']}; first difference Act {d.get('act_parent','?')} floor {d.get('floor_parent','?')} {d.get('kind_parent','unknown')}; G7={d.get('parent_choice')}, Candidate={d.get('candidate_choice')}; anchor={row.get('preservation_anchor_created',False)}")
+          print('- Trace is diagnostic only; no formal fresh Gate Seed was added to Teacher training.')
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -F "body=@$RUNNER_TEMP/v34-trace-comment.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sts1-v34-regression-trace-${{ github.run_id }}
+          path: evidence/sts1/v34-source/
           if-no-files-found: error
           retention-days: 90
 

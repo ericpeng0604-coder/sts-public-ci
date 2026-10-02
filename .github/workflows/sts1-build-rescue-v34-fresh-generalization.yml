@@ -22,7 +22,7 @@ env:
 
 concurrency:
   group: sts1-build-rescue-v34-fresh-generalization
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   screen:
@@ -30,16 +30,28 @@ jobs:
     timeout-minutes: 120
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      recovery_run_id: ${{ steps.recovery.outputs.run_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Detect explicit v3.4 artifact recovery
+        id: recovery
+        run: |
+          marker=control/sts1-build-rescue-v34-fresh-generalization.trigger
+          run_id=""
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ -f "$marker" ]; then
+            run_id="$(sed -n 's/^resume_from_run=//p' "$marker" | tail -n 1)"
+          fi
+          if ! [[ "$run_id" =~ ^[0-9]+$ ]]; then run_id=""; fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "V34_RECOVERY_RUN_ID=$run_id"
       - name: Validate v3.4 isolated training contracts
         run: |
           set -euo pipefail
-          python -m py_compile             scripts/sts1/sts1_build_rescue_screen_v31.py             scripts/sts1/sts1_build_rescue_new_win_miner_v24.py             scripts/sts1/sts1_build_rescue_adapter_v34.py
-          python -m py_compile scripts/sts1/sts1_build_rescue_v34_seed_ledger.py
+          python -m py_compile scripts/sts1/sts1_build_rescue_screen_v31.py scripts/sts1/sts1_build_rescue_new_win_miner_v24.py scripts/sts1/sts1_build_rescue_adapter_v34.py
+          python -m py_compile scripts/sts1/sts1_build_rescue_v34_seed_ledger.py scripts/sts1/sts1_build_rescue_v34_aggregate.py
           python scripts/sts1/sts1_build_rescue_v34_seed_ledger.py --output-dir evidence/sts1/v34-screen
           test "$(wc -l < evidence/sts1/v34-screen/train160.txt)" -eq 160
           test "$(wc -l < evidence/sts1/v34-screen/gate50.txt)" -eq 50
@@ -52,7 +64,7 @@ jobs:
           a=Path("scripts/sts1/sts1_build_rescue_adapter_v34.py").read_text()
           required=[
               ("screen",s,["V31_SCREEN_PASS","priority-output","priority-count"]),
-              ("miner",m,["V24_NEW_WIN_MINER_RESULT","boss_sims=50000","NEW_FULL_WIN"]),
+              ("miner",m,["V24_NEW_WIN_MINER_RESULT","boss_sims=50000","NEW_FULL_WIN","StaleForcedAction","seed_timeout_seconds","completed_variants"]),
               ("adapter",a,["V30_ADAPTER_TRAIN_PASS",".adapter.pt","fully_learned_seeds"]),
           ]
           missing={name:[x for x in req if x not in body] for name,body,req in required}
@@ -62,6 +74,7 @@ jobs:
           print("V34_CONTRACT_PASS")
           PY
       - name: Install, hydrate, and build pinned simulator
+        if: steps.recovery.outputs.run_id == ''
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -76,6 +89,7 @@ jobs:
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
           ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
       - name: Download and verify frozen G7
+        if: steps.recovery.outputs.run_id == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -87,21 +101,65 @@ jobs:
           test -n "$parent"
           test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
       - name: Screen disjoint 160-seed training pool
+        if: steps.recovery.outputs.run_id == ''
         run: |
           set -euo pipefail
           mkdir -p evidence/sts1/v34-screen
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
           python scripts/sts1/sts1_build_rescue_screen_v31.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34             --weight "$parent"             --seed-file evidence/sts1/v34-screen/train160.txt             --output evidence/sts1/v34-screen/screen.json             --priority-output evidence/sts1/v34-screen/priority40.txt             --priority-count 40 --workers 4
+      - name: Restore frozen screen artifact for recovery
+        if: steps.recovery.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: sts1-v34-screen-${{ steps.recovery.outputs.run_id }}
+          path: evidence/sts1/v34-screen/
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.recovery.outputs.run_id }}
+      - name: Restore completed Rescue artifacts for recovery
+        if: steps.recovery.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v34-mine-*
+          path: evidence/sts1/v34-recovered/
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.recovery.outputs.run_id }}
       - name: Build mining matrix
         id: matrix
+        env:
+          RECOVERY_RUN_ID: ${{ steps.recovery.outputs.run_id }}
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
+          import json,os
           from pathlib import Path
           seeds=[int(x) for x in Path("evidence/sts1/v34-screen/priority40.txt").read_text().split()]
           if len(seeds)!=40 or len(set(seeds))!=40:
               raise SystemExit("priority40 contract failed")
-          print("matrix="+json.dumps(seeds,separators=(",",":")))
+          pending=seeds
+          if os.environ.get("RECOVERY_RUN_ID"):
+              import subprocess,sys
+              root=Path("evidence/sts1/v34-recovered")
+              validation=Path("evidence/sts1/v34-recovery-validation")
+              subprocess.run([
+                  sys.executable,"scripts/sts1/sts1_build_rescue_v34_aggregate.py",
+                  "--results-dir",str(root),"--screen-dir","evidence/sts1/v34-screen",
+                  "--output-dir",str(validation),
+              ],check=True)
+              failures=json.loads((validation/"failed-seeds.json").read_text())
+              invalid={int(row["seed"]) for row in failures if int(row["seed"])>=0}
+              unexpected=invalid-set(seeds)
+              if unexpected or any(int(row["seed"])<0 for row in failures):
+                  raise SystemExit(f"recovered artifacts contain unexpected or unassigned results: {failures}")
+              pending=[seed for seed in seeds if seed in invalid]
+              for seed in pending:
+                  (root/f"result-{seed}.json").unlink(missing_ok=True)
+                  (root/f"teacher-{seed}.jsonl").unlink(missing_ok=True)
+              print("V34_RECOVERY",json.dumps({
+                  "source_run":os.environ["RECOVERY_RUN_ID"],
+                  "validated_results":len(seeds)-len(pending),"pending":pending,
+                  "teacher_count":json.loads((validation/"summary.json").read_text())["teacher_examples"],
+              },sort_keys=True))
+          print("matrix="+json.dumps(pending,separators=(",",":")))
           PY
       - uses: actions/upload-artifact@v4
         with:
@@ -109,11 +167,17 @@ jobs:
           path: evidence/sts1/v34-screen/
           if-no-files-found: error
           retention-days: 90
-
+      - uses: actions/upload-artifact@v4
+        if: steps.recovery.outputs.run_id != ''
+        with:
+          name: v34-mine-recovered-${{ github.run_id }}
+          path: evidence/sts1/v34-recovered/
+          if-no-files-found: error
+          retention-days: 90
   mine:
     needs: screen
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 95
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -153,12 +217,67 @@ jobs:
         with:
           name: sts1-v34-screen-${{ github.run_id }}
           path: evidence/sts1/v34-screen/
-      - name: Mine isolated priority Seed
+      - name: Restore seed checkpoint for recovery
+        if: needs.screen.outputs.recovery_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: v34-mine-recovered-${{ github.run_id }}
+          path: evidence/sts1/v34-prior/
+      - name: Copy prior checkpoint when available
+        if: needs.screen.outputs.recovery_run_id != ''
+        env:
+          SEED: ${{ matrix.seed }}
         run: |
-          set -euo pipefail
+          mkdir -p evidence/sts1/v34-mine
+          source="evidence/sts1/v34-prior/checkpoint-$SEED.json"
+          if [ -s "$source" ]; then
+            cp "$source" "evidence/sts1/v34-mine/checkpoint-$SEED.json"
+            echo "V34_CHECKPOINT_RESTORED seed=$SEED"
+          fi
+      - name: Mine isolated priority Seed
+        env:
+          SEED: ${{ matrix.seed }}
+        run: |
+          set -uo pipefail
           mkdir -p evidence/sts1/v34-mine
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
-          python scripts/sts1/sts1_build_rescue_new_win_miner_v24.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34             --weight "$parent"             --heldout-seeds-file evidence/sts1/v34-screen/train160.txt             --seed ${{ matrix.seed }}             --output evidence/sts1/v34-mine/result-${{ matrix.seed }}.json             --teacher-output evidence/sts1/v34-mine/teacher-${{ matrix.seed }}.jsonl             --max-states 20 --max-alternatives 2             --max-two-step-states 8 --max-second-states 4 --max-second-alternatives 2             --timeout-seconds 180 --retries 1
+          result="evidence/sts1/v34-mine/result-$SEED.json"
+          teacher="evidence/sts1/v34-mine/teacher-$SEED.jsonl"
+          checkpoint="evidence/sts1/v34-mine/checkpoint-$SEED.json"
+          for pass in 1 2; do
+            if python scripts/sts1/sts1_build_rescue_new_win_miner_v24.py \
+              --module-dir external/sts_lightspeed/source/build-probe \
+              --armg-root .cache/sts1-v34 \
+              --weight "$parent" \
+              --heldout-seeds-file evidence/sts1/v34-screen/train160.txt \
+              --seed "$SEED" --output "$result" --teacher-output "$teacher" \
+              --checkpoint "$checkpoint" --seed-timeout-seconds 2400 \
+              --max-states 20 --max-alternatives 2 \
+              --max-two-step-states 8 --max-second-states 4 --max-second-alternatives 2 \
+              --timeout-seconds 120 --retries 1; then
+              rc=0
+            else
+              rc=$?
+            fi
+            if [ "$rc" -ne 0 ] || [ ! -s "$result" ]; then
+              python - "$SEED" "$rc" "$result" "$teacher" <<'PY'
+          import json,sys
+          from pathlib import Path
+          seed,rc=int(sys.argv[1]),int(sys.argv[2])
+          Path(sys.argv[3]).write_text(json.dumps({
+              "seed":seed,"status":"SEED_SEARCH_FAILURE","teachers":[],
+              "failures":[{"kind":"python_exception","exit_code":rc,"message":"miner exited without a validated result"}],
+          },indent=2,sort_keys=True)+"\n")
+          Path(sys.argv[4]).write_text("")
+          PY
+              break
+            fi
+            status="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$result")"
+            if [ "$status" != "SEED_SEARCH_INCOMPLETE" ]; then break; fi
+            echo "V34_SEED_CHECKPOINT_RESUME seed=$SEED pass=$pass"
+          done
+          test -s "$result"
+          test -f "$teacher"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -168,14 +287,16 @@ jobs:
           retention-days: 90
 
   aggregate:
-    needs: mine
-    if: always() && needs.mine.result == 'success'
+    needs: [screen, mine]
+    if: always() && needs.screen.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       teacher_count: ${{ steps.agg.outputs.teacher_count }}
       teacher_seed_count: ${{ steps.agg.outputs.teacher_seed_count }}
+      failed_seed_count: ${{ steps.agg.outputs.failed_seed_count }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: v34-mine-*
@@ -185,62 +306,18 @@ jobs:
         with:
           name: sts1-v34-screen-${{ github.run_id }}
           path: evidence/sts1/v34-screen/
-      - name: Aggregate verified isolated Teachers
+      - name: Aggregate strictly verified isolated Teachers
         id: agg
         run: |
           set -euo pipefail
           mkdir -p evidence/sts1/v34-data
-          python - <<'PY' | tee "$RUNNER_TEMP/agg.out"
-          import json
-          from collections import Counter
-          from pathlib import Path
-          root=Path("evidence/sts1/v34-all")
-          results=[json.loads(p.read_text()) for p in sorted(root.glob("result-*.json"))]
-          def read(name):
-              return {int(v) for v in Path("evidence/sts1/v34-screen",name).read_text().split()}
-          training=read("train160.txt")
-          heldout=read("gate50.txt")|read("fresh100.txt")|read("fresh500.txt")
-          if len(results)!=40 or any(int(r["seed"]) not in training for r in results):
-              raise RuntimeError("v3.4 mining source contract failed")
-          rows=[]
-          for r in results:
-              if r.get("status") not in {
-                  "NEW_FULL_WIN_ONE_STEP","NEW_FULL_WIN_TWO_STEP",
-              }:
-                  continue
-              rows.extend(list(r.get("teachers") or []))
-          seen=set(); unique=[]
-          for r in rows:
-              key=(int(r["seed"]),int(r["floor"]),str(r["kind"]),int(r["current_armg_index"]),int(r["teacher_best_index"]))
-              if key in seen: continue
-              seen.add(key); unique.append(r)
-          unique.sort(key=lambda r:(int(r["seed"]),int(r["floor"]),int(r.get("intervention_step",1))))
-          seeds=sorted({int(r["seed"]) for r in unique})
-          if set(seeds)&heldout or not set(seeds).issubset(training):
-              raise RuntimeError("heldout Seed contaminated verified Teachers")
-          Path("evidence/sts1/v34-data/new-win-teachers.jsonl").write_text(
-              "".join(json.dumps(r,sort_keys=True)+"\n" for r in unique)
-          )
-          Path("evidence/sts1/v34-data/teacher-seeds.txt").write_text(
-              "\n".join(map(str,seeds))+("\n" if seeds else "")
-          )
-          summary={
-              "schema_version":"sts1-v34-isolated-teacher-pool",
-              "mined_results":len(results),
-              "teacher_examples":len(unique),
-              "teacher_seeds":len(seeds),
-              "teacher_seed_ids":seeds,
-              "status_counts":dict(Counter(str(r.get("status")) for r in results)),
-              "kind_counts":dict(Counter(str(r.get("kind")) for r in unique)),
-              "type_counts":dict(Counter(str(r.get("type")) for r in unique)),
-          }
-          Path("evidence/sts1/v34-data/summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
-          print("V34_AGGREGATE",json.dumps(summary,sort_keys=True))
-          print(f"teacher_count={len(unique)}")
-          print(f"teacher_seed_count={len(seeds)}")
-          PY
+          python scripts/sts1/sts1_build_rescue_v34_aggregate.py \
+            --results-dir evidence/sts1/v34-all \
+            --screen-dir evidence/sts1/v34-screen \
+            --output-dir evidence/sts1/v34-data | tee "$RUNNER_TEMP/agg.out"
           grep '^teacher_count=' "$RUNNER_TEMP/agg.out" >> "$GITHUB_OUTPUT"
           grep '^teacher_seed_count=' "$RUNNER_TEMP/agg.out" >> "$GITHUB_OUTPUT"
+          grep '^failed_seed_count=' "$RUNNER_TEMP/agg.out" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: sts1-v34-teachers-${{ github.run_id }}
@@ -335,7 +412,7 @@ jobs:
               raise RuntimeError("teacher data leakage/reuse")
           uniq={}
           for row in old+fresh:
-              key=(int(row["seed"]),int(row["floor"]),str(row["kind"]),int(row["current_armg_index"]),int(row["teacher_best_index"]))
+              key=json.dumps(row,sort_keys=True,separators=(",",":"))
               uniq[key]=row
           out=root/"v34-candidate"
           out.joinpath("combined-teachers.jsonl").write_text("".join(json.dumps(x,sort_keys=True)+"\n" for x in uniq.values()))
@@ -383,6 +460,11 @@ jobs:
           cp "$out/old12.txt" "$out/old-recall.txt"
           cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2-seeds.txt"
           cp evidence/sts1/v34-screen/gate50.txt "$out/hidden50-seeds.txt"
+          python - <<'PY'
+          from pathlib import Path
+          seeds=Path("evidence/sts1/v34-screen/gate50.txt").read_text().split()
+          Path("evidence/sts1/v34-candidate/gate30-seeds.txt").write_text("\\n".join(seeds[:30])+"\\n")
+          PY
           cp evidence/sts1/v34-screen/fresh100.txt "$out/fresh100-seeds.txt"
           cp evidence/sts1/v34-screen/fresh500.txt "$out/fresh500-seeds.txt"
       - name: Training recall diagnostic
@@ -432,9 +514,30 @@ jobs:
           passed=(x["parent_wins"]==2 and x["candidate_wins"]==2 and x["parent_only_wins"]==0)
           print("passed="+str(passed).lower())
           PY
+      - name: Paired 30-seed MCTS-2000 precheck
+        id: gate30
+        if: steps.reg.outputs.passed == 'true' && steps.old.outputs.passed == 'true' && steps.recall.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v34-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v34 --parent-weight "$parent" \
+            --candidate-weight "$out/candidate.pt" --seed-file "$out/gate30-seeds.txt" \
+            --output "$out/gate30.json" --mcts-sims 2000 --workers 4 \
+            --min-win-delta 1 --max-pvalue 1.0 --label v34-gate30
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v34-candidate/gate30.json"))
+          passed=(x["candidate_wins"]>x["parent_wins"] and x["candidate_only_wins"]>x["parent_only_wins"])
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          PY
       - name: Hidden50 unseen Gate
         id: hidden
-        if: steps.reg.outputs.passed == 'true' && steps.old.outputs.passed == 'true' && steps.recall.outputs.passed == 'true'
+        if: steps.gate30.outputs.passed == 'true'
         run: |
           set -euo pipefail
           out=evidence/sts1/v34-candidate
@@ -477,6 +580,9 @@ jobs:
           RECALL: ${{ steps.recall.outputs.passed }}
           OLD: ${{ steps.old.outputs.passed }}
           REG: ${{ steps.reg.outputs.passed }}
+          G30: ${{ steps.gate30.outputs.passed }}
+          G30_PARENT: ${{ steps.gate30.outputs.parent }}
+          G30_CAND: ${{ steps.gate30.outputs.candidate }}
           HID: ${{ steps.hidden.outputs.passed }}
           HID_PARENT: ${{ steps.hidden.outputs.parent }}
           HID_CAND: ${{ steps.hidden.outputs.candidate }}
@@ -502,6 +608,7 @@ jobs:
                "old12_recall_pass":os.environ.get("OLD")=="true",
                "old12_recall":json.loads((out/"old-recall.json").read_text()) if (out/"old-recall.json").exists() else None,
               "regression2_pass":os.environ.get("REG")=="true",
+              "gate30":{"pass":os.environ.get("G30")=="true","parent":os.environ.get("G30_PARENT"),"candidate":os.environ.get("G30_CAND")},
               "hidden50":{"pass":os.environ.get("HID")=="true","parent":os.environ.get("HID_PARENT"),"candidate":os.environ.get("HID_CAND"),"candidate_only":os.environ.get("HID_CONLY"),"parent_only":os.environ.get("HID_PONLY")},
               "fresh100":{"pass":os.environ.get("FRESH")=="true","parent":os.environ.get("FRESH_PARENT"),"candidate":os.environ.get("FRESH_CAND"),"pvalue":os.environ.get("FRESH_P")},
               "heldout500_outcome":os.environ.get("H500"),
@@ -509,7 +616,7 @@ jobs:
           final_path=out/"heldout500.json"
           final_pass=final_path.exists() and bool(json.loads(final_path.read_text()).get("pass"))
           all_ok=(os.environ.get("OLD")=="true" and os.environ.get("RECALL")=="true"
-                  and os.environ.get("REG")=="true" and os.environ.get("HID")=="true"
+                  and os.environ.get("REG")=="true" and os.environ.get("G30")=="true" and os.environ.get("HID")=="true"
                   and os.environ.get("FRESH")=="true" and final_pass)
           summary["fresh500_pass"]=bool(final_pass)
           summary["all_gates_pass"]=bool(all_ok)
@@ -539,6 +646,7 @@ jobs:
           print("@ericpeng0604-coder\n\n## STS1 v3.4 Fresh Generalization")
           for title,name in [
               ("Old12 New-Win","old-recall.json"),
+              ("Paired Gate30","gate30.json"),
               ("G7 Regression2","regression2.json"),
               ("Fresh Training Recall","training-recall.json"),
               ("Independent Gate50","hidden50.json"),
@@ -551,6 +659,7 @@ jobs:
               else:
                   a=json.loads(p.read_text())
                   print(f"- {title}: G7 {a['parent_wins']} / Candidate {a['candidate_wins']} over {a['seeds']} seeds")
+          print("- Failed or missing Rescue seeds: "+str(x.get("dataset",{}).get("failed_or_missing_seed_count","unknown")))
           print("- Readiness: "+x.get("readiness","FAILED_BEFORE_SUMMARY"))
           print("- Champion G7 unchanged. Heldout seeds were never used for training.")
           PY
@@ -566,12 +675,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TEACHERS: ${{ needs.aggregate.outputs.teacher_count }}
           SEEDS: ${{ needs.aggregate.outputs.teacher_seed_count }}
+          FAILED: ${{ needs.aggregate.outputs.failed_seed_count }}
         run: |
           body="@ericpeng0604-coder
 
-          ## Build Rescue v3.1 Isolated Loop
+          ## Build Rescue v3.4 Partial-Safe Generalization
           - Verified Teacher examples: **$TEACHERS**
           - Teacher seeds: **$SEEDS**
+          - Failed or missing Rescue seeds: **$FAILED**
           - Need at least 6 independent rescued seeds before adapter training.
           - Status: **DATA_BOTTLENECK / HOLD_PARENT**
           - G7 remains unchanged."

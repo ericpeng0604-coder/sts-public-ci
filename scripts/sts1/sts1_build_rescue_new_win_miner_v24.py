@@ -13,6 +13,7 @@ Combat policy outside the target Boss remains MCTS-2000.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -180,12 +181,19 @@ def _isolated_variant(
     forced: dict[int, dict[str, Any]] | None,
     timeout_seconds: int,
     retries: int,
+    deadline: float | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
     failures: list[dict[str, Any]] = []
     if not hasattr(os, "fork"):
         raise RuntimeError("v2.4 miner requires os.fork on the GitHub runner")
 
     for attempt in range(retries + 1):
+        if deadline is not None and time.monotonic() >= deadline:
+            failures.append(
+                {"attempt": attempt, "kind": "seed_deadline", "scope": "seed"}
+            )
+            break
+
         fd, name = tempfile.mkstemp(prefix="sts1-v24-", suffix=".json")
         os.close(fd)
         pid = os.fork()
@@ -226,16 +234,21 @@ def _isolated_variant(
                 finally:
                     os._exit(2)
 
-        deadline = time.monotonic() + timeout_seconds
+        attempt_deadline = time.monotonic() + timeout_seconds
+        if deadline is not None:
+            attempt_deadline = min(attempt_deadline, deadline)
         status = None
         timed_out = False
+        seed_deadline_hit = False
         while status is None:
             waited, raw = os.waitpid(pid, os.WNOHANG)
             if waited == pid:
                 status = raw
                 break
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= attempt_deadline:
                 timed_out = True
+                seed_deadline_hit = deadline is not None and now >= deadline
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -279,6 +292,7 @@ def _isolated_variant(
                 "attempt": attempt,
                 "kind": "timeout",
                 "timeout_seconds": timeout_seconds,
+                "scope": "seed_deadline" if seed_deadline_hit else "variant",
             }
         elif status is not None and os.WIFSIGNALED(status):
             sig = int(os.WTERMSIG(status))
@@ -311,8 +325,15 @@ def _isolated_variant(
             }
         failures.append(failure)
 
-    return None, [], failures
+        # Deterministic Python/data-contract errors will not improve on retry.
+        # Retry only transient child timeouts/signals/exits, and never past the
+        # seed-wide deadline.
+        if failure["kind"] in {"python_exception", "decode_error"}:
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            break
 
+    return None, [], failures
 
 def _teacher(
     *,
@@ -383,10 +404,82 @@ def mine_seed(
     max_second_alternatives: int,
     timeout_seconds: int,
     retries: int,
+    seed_timeout_seconds: int = 0,
+    checkpoint: Path | None = None,
 ) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
+    deadline = time.monotonic() + seed_timeout_seconds if seed_timeout_seconds else None
+    search_config = {
+        "max_states": max_states,
+        "max_alternatives": max_alternatives,
+        "max_two_step_states": max_two_step_states,
+        "max_second_states": max_second_states,
+        "max_second_alternatives": max_second_alternatives,
+    }
+    weight_sha256 = hashlib.sha256(weight.read_bytes()).hexdigest()
+    completed: dict[str, dict[str, Any]] = {}
+    failed_variants: dict[str, dict[str, Any]] = {}
+    checkpoint_schema = "sts1-v24-seed-checkpoint-v1"
+
+    def save_checkpoint() -> None:
+        if checkpoint is None:
+            return
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": checkpoint_schema,
+            "seed": int(seed),
+            "weight_sha256": weight_sha256,
+            "search_config": search_config,
+            "completed_variants": completed,
+            "failed_variants": failed_variants,
+            "updated_at_monotonic": time.monotonic(),
+        }
+        temp_path = checkpoint.with_suffix(checkpoint.suffix + ".tmp")
+        temp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temp_path, checkpoint)
+
+    if checkpoint is not None and checkpoint.exists():
+        saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+        if (
+            saved.get("schema_version") != checkpoint_schema
+            or int(saved.get("seed", -1)) != seed
+            or saved.get("weight_sha256") != weight_sha256
+            or saved.get("search_config") != search_config
+        ):
+            raise RuntimeError("checkpoint does not match this seed, G7 weight, or search configuration")
+        completed = dict(saved.get("completed_variants") or {})
+        failed_variants = dict(saved.get("failed_variants") or {})
+        for item in failed_variants.values():
+            failures.extend(list(item.get("errors") or []))
+
+    budget_expired = False
+
+    def variant_key(boss_sims: int | None, forced: dict[int, dict[str, Any]] | None) -> str:
+        identity = json.dumps(
+            {"boss_sims": boss_sims, "forced": forced},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
     def run(*, boss_sims: int | None, forced=None):
+        nonlocal budget_expired
+        key = variant_key(boss_sims, forced)
+        cached = completed.get(key)
+        if cached is not None:
+            return dict(cached["result"]), list(cached["records"])
+
+        prior_failure = failed_variants.get(key)
+        if prior_failure and prior_failure.get("terminal"):
+            return None, []
+        if prior_failure and int(prior_failure.get("rounds", 0)) >= 2:
+            prior_failure["terminal"] = True
+            save_checkpoint()
+            return None, []
+        if deadline is not None and time.monotonic() >= deadline:
+            budget_expired = True
+            return None, []
+
         result, records, errs = _isolated_variant(
             seed=seed,
             module_dir=module_dir,
@@ -397,12 +490,58 @@ def mine_seed(
             forced=forced,
             timeout_seconds=timeout_seconds,
             retries=retries,
+            deadline=deadline,
         )
         failures.extend(errs)
+        if result is not None:
+            completed[key] = {
+                "result": result,
+                "records": records,
+                "failures": errs,
+            }
+            failed_variants.pop(key, None)
+        else:
+            rounds = int(prior_failure.get("rounds", 0)) + 1 if prior_failure else 1
+            retryable = bool(errs) and all(
+                str(error.get("kind")) in {"timeout", "native_signal", "child_exit", "seed_deadline"}
+                for error in errs
+            )
+            failed_variants[key] = {
+                "rounds": rounds,
+                "terminal": not retryable or rounds >= 2,
+                "errors": list((prior_failure or {}).get("errors") or []) + errs,
+            }
+        if deadline is not None and time.monotonic() >= deadline:
+            budget_expired = True
+        save_checkpoint()
         return result, records
+
+    def incomplete_result(base, baseline50=None, target=None, attempted_one=0, attempted_two=0, candidate_states=0):
+        if not any(item.get("kind") == "seed_deadline" for item in failures):
+            failures.append(
+                {
+                    "kind": "seed_deadline",
+                    "seed_timeout_seconds": seed_timeout_seconds,
+                    "checkpoint": str(checkpoint) if checkpoint is not None else None,
+                }
+            )
+        return {
+            "seed": seed,
+            "status": "SEED_SEARCH_INCOMPLETE",
+            "base": base,
+            "baseline_50k": baseline50,
+            "target_boss_floor": target,
+            "candidate_states": candidate_states,
+            "attempted_one_step": attempted_one,
+            "attempted_two_step": attempted_two,
+            "teachers": [],
+            "failures": failures,
+        }
 
     base, base_records = run(boss_sims=None)
     if base is None:
+        if budget_expired:
+            return incomplete_result(None)
         return {
             "seed": seed,
             "status": "BASE_REPLAY_FAILURE",
@@ -421,6 +560,8 @@ def mine_seed(
     target = _target_boss(_floor(base))
     baseline50, _ = run(boss_sims=50000)
     if baseline50 is None:
+        if budget_expired:
+            return incomplete_result(base, target=target)
         return {
             "seed": seed,
             "status": "BASE_50K_FAILURE",
@@ -459,12 +600,17 @@ def mine_seed(
         }
 
     attempted_one = 0
+    attempted_two = 0
     first_step_cache: list[
         tuple[dict[str, Any], int, dict[str, Any], list[dict[str, Any]]]
     ] = []
 
     for record in records:
+        if budget_expired:
+            break
         for alternative in _rank_alternatives(record, max_alternatives):
+            if budget_expired:
+                break
             attempted_one += 1
             forced = {
                 int(record["branch_index"]): _force_spec(record, alternative)
@@ -515,9 +661,15 @@ def mine_seed(
                 "failures": failures,
             }
 
-    attempted_two = 0
+    if budget_expired:
+        return incomplete_result(
+            base, baseline50, target, attempted_one, attempted_two, len(records)
+        )
+
     first_candidates = first_step_cache[: max_two_step_states * max_alternatives]
     for record, alternative, first10, records10 in first_candidates:
+        if budget_expired:
+            break
         first_idx = int(record["branch_index"])
         subsequent = [
             row
@@ -532,9 +684,13 @@ def mine_seed(
         first_force = _force_spec(record, alternative)
 
         for second in subsequent:
+            if budget_expired:
+                break
             for second_alt in _rank_alternatives(
                 second, max_second_alternatives
             ):
+                if budget_expired:
+                    break
                 attempted_two += 1
                 forced = {
                     first_idx: first_force,
@@ -601,6 +757,11 @@ def mine_seed(
                     "failures": failures,
                 }
 
+    if budget_expired:
+        return incomplete_result(
+            base, baseline50, target, attempted_one, attempted_two, len(records)
+        )
+
     return {
         "seed": seed,
         "status": "NO_NEW_WIN_RESCUE",
@@ -630,6 +791,8 @@ def main() -> int:
     p.add_argument("--max-second-states", type=int, default=4)
     p.add_argument("--max-second-alternatives", type=int, default=2)
     p.add_argument("--timeout-seconds", type=int, default=180)
+    p.add_argument("--seed-timeout-seconds", type=int, default=0)
+    p.add_argument("--checkpoint", type=Path)
     p.add_argument("--retries", type=int, default=1)
     a = p.parse_args()
 
@@ -647,6 +810,8 @@ def main() -> int:
         raise RuntimeError("timeout-seconds outside 30..600")
     if not 0 <= a.retries <= 2:
         raise RuntimeError("retries outside 0..2")
+    if a.seed_timeout_seconds != 0 and not 60 <= a.seed_timeout_seconds <= 14400:
+        raise RuntimeError("seed-timeout-seconds outside 60..14400")
 
     heldout = _read_seeds(a.heldout_seeds_file)
     if a.seed not in heldout:
@@ -665,6 +830,8 @@ def main() -> int:
         max_second_alternatives=a.max_second_alternatives,
         timeout_seconds=a.timeout_seconds,
         retries=a.retries,
+        seed_timeout_seconds=a.seed_timeout_seconds,
+        checkpoint=a.checkpoint,
     )
     a.output.parent.mkdir(parents=True, exist_ok=True)
     a.output.write_text(

@@ -140,11 +140,17 @@ jobs:
               import subprocess,sys
               root=Path("evidence/sts1/v34-recovered")
               validation=Path("evidence/sts1/v34-recovery-validation")
-              subprocess.run([
+              log_path=validation/"recovery-aggregate.log"
+              validation.mkdir(parents=True,exist_ok=True)
+              command=[
                   sys.executable,"scripts/sts1/sts1_build_rescue_v34_aggregate.py",
                   "--results-dir",str(root),"--screen-dir","evidence/sts1/v34-screen",
                   "--output-dir",str(validation),
-              ],check=True)
+              ]
+              with log_path.open("w") as log:
+                  completed=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT)
+              if completed.returncode:
+                  raise SystemExit(f"strict recovery Aggregate failed; see {log_path}")
               failures=json.loads((validation/"failed-seeds.json").read_text())
               invalid={int(row["seed"]) for row in failures if int(row["seed"])>=0}
               unexpected=invalid-set(seeds)
@@ -158,7 +164,7 @@ jobs:
                   "source_run":os.environ["RECOVERY_RUN_ID"],
                   "validated_results":len(seeds)-len(pending),"pending":pending,
                   "teacher_count":json.loads((validation/"summary.json").read_text())["teacher_examples"],
-              },sort_keys=True))
+              },sort_keys=True),file=sys.stderr)
           print("matrix="+json.dumps(pending,separators=(",",":")))
           PY
       - uses: actions/upload-artifact@v4

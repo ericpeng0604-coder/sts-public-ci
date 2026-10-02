@@ -342,7 +342,7 @@ jobs:
 
   train:
     needs: aggregate
-    if: fromJSON(needs.aggregate.outputs.teacher_seed_count) >= 6
+    if: ${{ always() && needs.aggregate.result == 'success' && fromJSON(needs.aggregate.outputs.teacher_seed_count) >= 6 }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -714,7 +714,7 @@ jobs:
 
   bottleneck:
     needs: aggregate
-    if: fromJSON(needs.aggregate.outputs.teacher_seed_count) < 6
+    if: ${{ always() && needs.aggregate.result == 'success' && fromJSON(needs.aggregate.outputs.teacher_seed_count) < 6 }}
     runs-on: ubuntu-24.04
     steps:
       - name: Report data bottleneck

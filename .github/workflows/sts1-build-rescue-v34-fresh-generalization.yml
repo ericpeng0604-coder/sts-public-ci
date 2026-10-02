@@ -476,7 +476,7 @@ jobs:
             --preservation-replay evidence/sts1/v322-frozen/preservation-active.jsonl \
             --init-adapter-sidecar evidence/sts1/v322-frozen/final.pt.adapter.pt \
             --output "$out/candidate.pt" --report "$out/train-report.json" \
-            --hidden-dim 48 --epochs 6 --lr 0.00012 \
+            --hidden-dim 48 --epochs 6 --lr 0.00010 \
             --elite-train-max 8192 --retention-eval-max 2048 \
             --teacher-margin 0.05 --teacher-coef 4.0 --distill-coef 12.0 \
             --zero-residual-coef 0.75 --preservation-coef 18.0 \

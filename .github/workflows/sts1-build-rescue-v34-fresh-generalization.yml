@@ -35,6 +35,8 @@ jobs:
       trace_only: ${{ steps.recovery.outputs.trace_only }}
       trace_candidate_run: ${{ steps.recovery.outputs.trace_candidate_run }}
       regression_trace_run: ${{ steps.recovery.outputs.regression_trace_run }}
+      recovery_teacher_count: ${{ steps.matrix.outputs.recovery_teacher_count }}
+      recovery_teacher_seed_count: ${{ steps.matrix.outputs.recovery_teacher_seed_count }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -193,12 +195,28 @@ jobs:
                   for seed in pending:
                       (root/f"result-{seed}.json").unlink(missing_ok=True)
                       (root/f"teacher-{seed}.jsonl").unlink(missing_ok=True)
+              recovery_summary=json.loads((validation/"summary.json").read_text())
+              teacher_count=int(recovery_summary["teacher_examples"])
+              teacher_seed_count=int(recovery_summary["teacher_seeds"])
+              if train_only:
+                  canonical=Path("evidence/sts1/v34-data")
+                  canonical.mkdir(parents=True,exist_ok=True)
+                  for name in ("summary.json","new-win-teachers.jsonl","teacher-seeds.txt","failed-seeds.json"):
+                      src=validation/name
+                      if src.is_file():
+                          (canonical/name).write_bytes(src.read_bytes())
               print("V34_RECOVERY",json.dumps({
                   "source_run":os.environ["RECOVERY_RUN_ID"],
                   "validated_results":len(seeds)-len(invalid),"pending":pending,
                   "train_only":train_only,
-                  "teacher_count":json.loads((validation/"summary.json").read_text())["teacher_examples"],
+                  "teacher_count":teacher_count,
+                  "teacher_seed_count":teacher_seed_count,
               },sort_keys=True),file=sys.stderr)
+              print("recovery_teacher_count="+str(teacher_count))
+              print("recovery_teacher_seed_count="+str(teacher_seed_count))
+          else:
+              print("recovery_teacher_count=0")
+              print("recovery_teacher_seed_count=0")
           print("matrix="+json.dumps(pending,separators=(",",":")))
           PY
       - uses: actions/upload-artifact@v4
@@ -212,6 +230,13 @@ jobs:
         with:
           name: v34-mine-recovered-${{ github.run_id }}
           path: evidence/sts1/v34-recovered/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: steps.recovery.outputs.train_only == 'true'
+        with:
+          name: sts1-v34-teachers-${{ github.run_id }}
+          path: evidence/sts1/v34-data/
           if-no-files-found: error
           retention-days: 90
   mine:
@@ -450,7 +475,7 @@ jobs:
 
   train:
     needs: [aggregate, screen]
-    if: ${{ always() && needs.aggregate.result == 'success' && fromJSON(needs.aggregate.outputs.teacher_seed_count) >= 6 }}
+    if: ${{ always() && needs.screen.result == 'success' && ((needs.aggregate.result == 'success' && fromJSON(needs.aggregate.outputs.teacher_seed_count) >= 6) || (needs.screen.outputs.train_only == 'true' && fromJSON(needs.screen.outputs.recovery_teacher_seed_count) >= 6)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -914,8 +939,8 @@ jobs:
           gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -F "body=@$RUNNER_TEMP/v34-report.txt"
 
   bottleneck:
-    needs: aggregate
-    if: ${{ always() && needs.aggregate.result == 'success' && fromJSON(needs.aggregate.outputs.teacher_seed_count) < 6 }}
+    needs: [aggregate, screen]
+    if: ${{ always() && ((needs.aggregate.result == 'success' && fromJSON(needs.aggregate.outputs.teacher_seed_count) < 6) || (needs.screen.outputs.train_only == 'true' && fromJSON(needs.screen.outputs.recovery_teacher_seed_count) < 6)) }}
     runs-on: ubuntu-24.04
     steps:
       - name: Report data bottleneck

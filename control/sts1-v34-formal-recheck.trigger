@@ -1,0 +1,7 @@
+launch=2026-10-05
+mode=formal-net-win-recheck
+source_run=37280551745
+gate30=30
+gate50=50
+fresh100=100
+fresh500=500

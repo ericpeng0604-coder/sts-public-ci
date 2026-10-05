@@ -429,14 +429,17 @@ class ArmGNoncombatPolicy:
         # "<weight>.adapter.pt" next to them receive the local score correction.
         adapter = None
         adapter_kinds: set[str] = set()
+        adapter_gate = None
         adapter_path = Path(str(weight_path) + ".adapter.pt")
         if adapter_path.is_file():
             try:
                 payload = torch.load(adapter_path, weights_only=True, map_location="cpu")
-                if payload.get("schema_version") != "sts1-armg-residual-adapter-v1":
-                    raise RuntimeError(
-                        f"unsupported adapter schema: {payload.get('schema_version')}"
-                    )
+                schema = payload.get("schema_version")
+                if schema not in {
+                    "sts1-armg-residual-adapter-v1",
+                    "sts1-armg-residual-adapter-v2",
+                }:
+                    raise RuntimeError(f"unsupported adapter schema: {schema}")
                 input_dim = int(payload["input_dim"])
                 hidden_dim = int(payload["hidden_dim"])
                 adapter = torch.nn.Sequential(
@@ -449,6 +452,55 @@ class ArmGNoncombatPolicy:
                 adapter_kinds = {str(x) for x in payload.get("kinds", [])}
                 if not adapter_kinds:
                     raise RuntimeError("adapter has no enabled decision kinds")
+
+                if schema == "sts1-armg-residual-adapter-v2":
+                    gate = payload.get("gate")
+                    if not isinstance(gate, dict):
+                        raise RuntimeError("v2 adapter is missing confidence gate")
+                    mean = gate.get("obs_mean")
+                    std = gate.get("obs_std")
+                    if not hasattr(mean, "numel") or int(mean.numel()) != int(module.OBS_DIM):
+                        raise RuntimeError("adapter gate mean dimension mismatch")
+                    if not hasattr(std, "numel") or int(std.numel()) != int(module.OBS_DIM):
+                        raise RuntimeError("adapter gate std dimension mismatch")
+                    if bool(torch.any(std <= 0)):
+                        raise RuntimeError("adapter gate std must be positive")
+                    positive = gate.get("positive_centers") or {}
+                    negative = gate.get("negative_centers") or {}
+                    if not isinstance(positive, dict) or not isinstance(negative, dict):
+                        raise RuntimeError("adapter gate centers are malformed")
+                    for kind in adapter_kinds:
+                        centers = positive.get(kind)
+                        if centers is None or not hasattr(centers, "shape"):
+                            raise RuntimeError(f"adapter gate has no positive centers for {kind}")
+                        if len(centers.shape) != 2 or int(centers.shape[1]) != int(module.OBS_DIM):
+                            raise RuntimeError(f"adapter gate positive center shape mismatch for {kind}")
+                        neg = negative.get(kind)
+                        if neg is not None and (
+                            not hasattr(neg, "shape")
+                            or len(neg.shape) != 2
+                            or int(neg.shape[1]) != int(module.OBS_DIM)
+                        ):
+                            raise RuntimeError(f"adapter gate negative center shape mismatch for {kind}")
+                    ratio = float(gate.get("positive_to_negative_ratio", 0.80))
+                    if not 0.0 < ratio <= 1.0:
+                        raise RuntimeError("adapter gate ratio outside (0,1]")
+                    max_distance = {
+                        str(k): float(v)
+                        for k, v in (gate.get("max_positive_distance") or {}).items()
+                    }
+                    adapter_gate = {
+                        "obs_mean": mean.to(dtype=torch.float32),
+                        "obs_std": std.to(dtype=torch.float32),
+                        "positive_centers": {
+                            str(k): v.to(dtype=torch.float32) for k, v in positive.items()
+                        },
+                        "negative_centers": {
+                            str(k): v.to(dtype=torch.float32) for k, v in negative.items()
+                        },
+                        "positive_to_negative_ratio": ratio,
+                        "max_positive_distance": max_distance,
+                    }
             except Exception as exc:
                 raise SimulatorRunError(f"could not load ArmG residual adapter: {exc}") from exc
 
@@ -458,10 +510,31 @@ class ArmGNoncombatPolicy:
         self.map_net = map_net
         self.adapter = adapter
         self.adapter_kinds = adapter_kinds
+        self.adapter_gate = adapter_gate
         self.adapter_path = adapter_path if adapter is not None else None
         self.weight_path = weight_path
         self.map_weight_path = map_weight_path or weight_path
         self.contextual_card_rerank = os.environ.get("STS1_TEACHER_V2_CONTEXTUAL_RERANK", "0") == "1"
+
+    def _adapter_gate_allows(self, kind: str, obs: Any) -> bool:
+        if self.adapter_gate is None:
+            return True
+        gate = self.adapter_gate
+        positive = gate["positive_centers"].get(str(kind))
+        if positive is None or int(positive.shape[0]) == 0:
+            return False
+        z = (obs - gate["obs_mean"]) / gate["obs_std"]
+        d_pos = self.torch.mean((positive - z.unsqueeze(0)) ** 2, dim=1).min()
+        max_distance = gate["max_positive_distance"].get(str(kind))
+        if max_distance is not None and float(d_pos) > float(max_distance):
+            return False
+        negative = gate["negative_centers"].get(str(kind))
+        if negative is not None and int(negative.shape[0]) > 0:
+            d_neg = self.torch.mean((negative - z.unsqueeze(0)) ** 2, dim=1).min()
+            ratio = float(gate["positive_to_negative_ratio"])
+            if float(d_pos) > float(d_neg) * ratio:
+                return False
+        return True
 
     def choices(self, gc: Any) -> tuple[str, list[Any], list[Any]]:
         kind, descs, execs = self.module.build_choices(gc)
@@ -475,7 +548,11 @@ class ArmGNoncombatPolicy:
         net = self.map_net if kind == "map" else self.net
         with self.torch.no_grad():
             scores = net.score(obs, descs)
-            if self.adapter is not None and kind in self.adapter_kinds:
+            if (
+                self.adapter is not None
+                and kind in self.adapter_kinds
+                and self._adapter_gate_allows(kind, obs)
+            ):
                 desc_tensor = self.torch.tensor(descs, dtype=self.torch.float32)
                 x = self.torch.cat([obs.repeat(len(descs), 1), desc_tensor], 1)
                 if int(x.shape[1]) != int(self.adapter[0].in_features):

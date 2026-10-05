@@ -1,0 +1,266 @@
+name: STS1 v3.4 Formal Net-Win Recheck
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v34-formal-recheck.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '37280551745'
+  SOURCE_CANDIDATE_ARTIFACT: 'sts1-v34-candidate-37280551745'
+  SOURCE_SCREEN_ARTIFACT: 'sts1-v34-screen-37280551745'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-v34-formal-recheck
+  cancel-in-progress: true
+
+jobs:
+  recheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download frozen v3.4 Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_CANDIDATE_ARTIFACT }}
+          path: evidence/sts1/v34-recheck
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Download frozen disjoint seed ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_SCREEN_ARTIFACT }}
+          path: evidence/sts1/v34-screen
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Validate frozen evaluation contract
+        run: |
+          set -euo pipefail
+          test -s evidence/sts1/v34-recheck/candidate.pt
+          test -s evidence/sts1/v34-recheck/candidate.pt.adapter.pt
+          test "$(wc -l < evidence/sts1/v34-screen/gate50.txt)" -eq 50
+          test "$(wc -l < evidence/sts1/v34-screen/fresh100.txt)" -eq 100
+          test "$(wc -l < evidence/sts1/v34-screen/fresh500.txt)" -eq 500
+          head -30 evidence/sts1/v34-screen/gate50.txt > evidence/sts1/v34-recheck/gate30-seeds.txt
+          test "$(wc -l < evidence/sts1/v34-recheck/gate30-seeds.txt)" -eq 30
+          python - <<'PY'
+          from pathlib import Path
+          for name,n in [("gate30-seeds.txt",30)]:
+              rows=Path("evidence/sts1/v34-recheck",name).read_text().splitlines()
+              assert len(rows)==n and all(x.isdigit() for x in rows)
+          sets={}
+          for name in ["gate50.txt","fresh100.txt","fresh500.txt"]:
+              sets[name]={int(x) for x in Path("evidence/sts1/v34-screen",name).read_text().split()}
+          assert not (sets["gate50.txt"] & sets["fresh100.txt"])
+          assert not (sets["gate50.txt"] & sets["fresh500.txt"])
+          assert not (sets["fresh100.txt"] & sets["fresh500.txt"])
+          print("V34_FORMAL_SEED_CONTRACT_PASS")
+          PY
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v34-recheck
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Gate30 unseen Net-Win precheck
+        id: g30
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v34-recheck
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34-recheck             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file "$out/gate30-seeds.txt" --output "$out/gate30.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0             --label v34-formal-gate30
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v34-recheck/gate30.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=(net>0 and x["candidate_wins"]>x["parent_wins"])
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          print("net="+str(net))
+          PY
+
+      - name: Gate50 unseen Net-Win Gate
+        id: g50
+        if: steps.g30.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v34-recheck
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34-recheck             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file evidence/sts1/v34-screen/gate50.txt --output "$out/gate50.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0             --label v34-formal-gate50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v34-recheck/gate50.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=(net>0 and x["candidate_wins"]>x["parent_wins"])
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          print("net="+str(net))
+          PY
+
+      - name: Fresh100 formal Net-Win Gate
+        id: f100
+        if: steps.g50.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v34-recheck
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34-recheck             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file evidence/sts1/v34-screen/fresh100.txt --output "$out/fresh100.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v34-formal-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v34-recheck/fresh100.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=(net>0 and x["candidate_wins"]>x["parent_wins"] and x["paired_sign_pvalue_one_sided"]<=0.10)
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          print("net="+str(net)); print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Fresh500 formal Net-Win Gate
+        id: f500
+        if: steps.f100.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v34-recheck
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v34-recheck             --parent-weight "$parent" --candidate-weight "$out/candidate.pt"             --seed-file evidence/sts1/v34-screen/fresh500.txt --output "$out/fresh500.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v34-formal-fresh500
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v34-recheck/fresh500.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=(net>0 and x["candidate_wins"]>x["parent_wins"] and x["paired_sign_pvalue_one_sided"]<=0.10)
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          print("net="+str(net)); print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Write formal recheck summary
+        if: always()
+        env:
+          G30: ${{ steps.g30.outputs.passed }}
+          G30_PARENT: ${{ steps.g30.outputs.parent }}
+          G30_CAND: ${{ steps.g30.outputs.candidate }}
+          G30_CONLY: ${{ steps.g30.outputs.candidate_only }}
+          G30_PONLY: ${{ steps.g30.outputs.parent_only }}
+          G30_NET: ${{ steps.g30.outputs.net }}
+          G50: ${{ steps.g50.outputs.passed }}
+          G50_PARENT: ${{ steps.g50.outputs.parent }}
+          G50_CAND: ${{ steps.g50.outputs.candidate }}
+          G50_CONLY: ${{ steps.g50.outputs.candidate_only }}
+          G50_PONLY: ${{ steps.g50.outputs.parent_only }}
+          G50_NET: ${{ steps.g50.outputs.net }}
+          F100: ${{ steps.f100.outputs.passed }}
+          F100_PARENT: ${{ steps.f100.outputs.parent }}
+          F100_CAND: ${{ steps.f100.outputs.candidate }}
+          F100_CONLY: ${{ steps.f100.outputs.candidate_only }}
+          F100_PONLY: ${{ steps.f100.outputs.parent_only }}
+          F100_NET: ${{ steps.f100.outputs.net }}
+          F100_P: ${{ steps.f100.outputs.pvalue }}
+          F500: ${{ steps.f500.outputs.passed }}
+          F500_PARENT: ${{ steps.f500.outputs.parent }}
+          F500_CAND: ${{ steps.f500.outputs.candidate }}
+          F500_CONLY: ${{ steps.f500.outputs.candidate_only }}
+          F500_PONLY: ${{ steps.f500.outputs.parent_only }}
+          F500_NET: ${{ steps.f500.outputs.net }}
+          F500_P: ${{ steps.f500.outputs.pvalue }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path("evidence/sts1/v34-recheck")
+          def row(prefix):
+              return {
+                  "pass":os.environ.get(prefix)=="true",
+                  "parent":os.environ.get(prefix+"_PARENT"),
+                  "candidate":os.environ.get(prefix+"_CAND"),
+                  "candidate_only":os.environ.get(prefix+"_CONLY"),
+                  "parent_only":os.environ.get(prefix+"_PONLY"),
+                  "net_new_wins":os.environ.get(prefix+"_NET"),
+              }
+          summary={
+              "schema_version":"sts1-v34-formal-net-win-recheck",
+              "source_run":37280551745,
+              "gate30":row("G30"),
+              "gate50":row("G50"),
+              "fresh100":{**row("F100"),"pvalue":os.environ.get("F100_P")},
+              "fresh500":{**row("F500"),"pvalue":os.environ.get("F500_P")},
+          }
+          summary["readiness"]="READY_FOR_REAL_GAME_GATE" if summary["fresh500"]["pass"] else "HOLD_PARENT"
+          (out/"formal-summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("V34_FORMAL_RECHECK_FINAL",json.dumps(summary,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v34-formal-recheck-${{ github.run_id }}
+          path: evidence/sts1/v34-recheck/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report formal recheck
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          print("@ericpeng0604-coder")
+          print()
+          print("## STS1 v3.4 Formal Net-Win Recheck")
+          p=Path("evidence/sts1/v34-recheck/formal-summary.json")
+          if not p.exists():
+              print("- Recheck failed before final summary. G7 remains unchanged.")
+          else:
+              x=json.loads(p.read_text())
+              for name in ["gate30","gate50","fresh100","fresh500"]:
+                  r=x[name]
+                  print(f"- {name}: G7 {r.get('parent')} / Candidate {r.get('candidate')} / Candidate-only={r.get('candidate_only')} / Parent-only={r.get('parent_only')} / Net={r.get('net_new_wins')} / PASS={r.get('pass')}")
+              print(f"- Readiness: {x.get('readiness')}")
+          print("- Champion G7 remains unchanged unless all unseen formal gates pass.")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -F "body=@$RUNNER_TEMP/body.txt"

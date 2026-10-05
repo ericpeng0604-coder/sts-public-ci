@@ -1,0 +1,292 @@
+name: STS1 v3.1 Net-Gain Recheck
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v31-net-gain-recheck.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '36804227660'
+  SOURCE_ARTIFACT: 'sts1-v31-candidate-36804227660'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-v31-net-gain-recheck
+  cancel-in-progress: true
+
+jobs:
+  recheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate net-gain Gate contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/sts1/sts1_build_rescue_gate_v21.py src/roguelike_ai/sts1_phase3/simulator.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path(".github/workflows/sts1-build-rescue-v31-isolated-loop.yml").read_text()
+          required=[
+              "Hidden50 unseen Net-Win Gate",
+              "if: steps.recall.outputs.passed == 'true'",
+              "net_new_wins",
+              'summary["heldout500"]["pass"]',
+          ]
+          missing=[x for x in required if x not in p]
+          if missing:
+              raise SystemExit(f"net-gain workflow contract missing: {missing}")
+          print("V31_NET_GAIN_CONTRACT_PASS")
+          PY
+
+      - name: Download frozen v3.1 Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: evidence/sts1/v31-recheck
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Validate frozen Candidate artifact
+        run: |
+          set -euo pipefail
+          test -s evidence/sts1/v31-recheck/candidate.pt
+          test -s evidence/sts1/v31-recheck/candidate.pt.adapter.pt
+          test -s evidence/sts1/v31-recheck/hidden50-seeds.txt
+          test -s evidence/sts1/v31-recheck/fresh100-seeds.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path("evidence/sts1/v31-recheck/summary.json").read_text())
+          if not s.get("training_recall_pass"):
+              raise SystemExit("source v3.1 Candidate did not pass training recall")
+          r=json.loads(Path("evidence/sts1/v31-recheck/regression2.json").read_text())
+          print("V31_SOURCE_REGRESSION_DIAGNOSTIC",{
+              "parent":r["parent_wins"],
+              "candidate":r["candidate_wins"],
+              "candidate_only":r["candidate_only_wins"],
+              "parent_only":r["parent_only_wins"],
+              "net":r["candidate_only_wins"]-r["parent_only_wins"],
+          })
+          PY
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v31-recheck
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Regression2 diagnostic only
+        id: reg
+        run: |
+          set -euo pipefail
+          x=evidence/sts1/v31-recheck/regression2.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-recheck/regression2.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          print("net="+str(net))
+          PY
+
+      - name: Hidden50 unseen Net-Win Gate
+        id: hidden
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v31-recheck
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-recheck             --parent-weight "$parent"             --candidate-weight "$out/candidate.pt"             --seed-file "$out/hidden50-seeds.txt"             --output "$out/hidden50-net.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0             --label v31-net-hidden50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-recheck/hidden50-net.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=(net>0 and x["candidate_wins"]>x["parent_wins"])
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          print("net="+str(net))
+          PY
+
+      - name: Fresh100 formal Net-Win Gate
+        id: fresh
+        if: steps.hidden.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v31-recheck
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-recheck             --parent-weight "$parent"             --candidate-weight "$out/candidate.pt"             --seed-file "$out/fresh100-seeds.txt"             --output "$out/fresh100-net.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v31-net-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-recheck/fresh100-net.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=(net>0 and x["candidate_wins"]>x["parent_wins"] and x["paired_sign_pvalue_one_sided"]<=0.10)
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          print("net="+str(net))
+          print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Heldout500 formal Net-Win Gate
+        id: h500
+        if: steps.fresh.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v31-recheck
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v31-recheck             --parent-weight "$parent"             --candidate-weight "$out/candidate.pt"             --seed-file control/sts1-v16-benchmark-seeds-500.txt             --output "$out/heldout500-net.json"             --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10             --label v31-net-heldout500
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v31-recheck/heldout500-net.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=(net>0 and x["candidate_wins"]>x["parent_wins"] and x["paired_sign_pvalue_one_sided"]<=0.10)
+          print("passed="+str(passed).lower())
+          print("parent="+str(x["parent_wins"]))
+          print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"]))
+          print("parent_only="+str(x["parent_only_wins"]))
+          print("net="+str(net))
+          print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Write net-gain summary
+        if: always()
+        env:
+          REG_PARENT: ${{ steps.reg.outputs.parent }}
+          REG_CAND: ${{ steps.reg.outputs.candidate }}
+          REG_CONLY: ${{ steps.reg.outputs.candidate_only }}
+          REG_PONLY: ${{ steps.reg.outputs.parent_only }}
+          REG_NET: ${{ steps.reg.outputs.net }}
+          HID_PASS: ${{ steps.hidden.outputs.passed }}
+          HID_PARENT: ${{ steps.hidden.outputs.parent }}
+          HID_CAND: ${{ steps.hidden.outputs.candidate }}
+          HID_CONLY: ${{ steps.hidden.outputs.candidate_only }}
+          HID_PONLY: ${{ steps.hidden.outputs.parent_only }}
+          HID_NET: ${{ steps.hidden.outputs.net }}
+          FRESH_PASS: ${{ steps.fresh.outputs.passed }}
+          FRESH_PARENT: ${{ steps.fresh.outputs.parent }}
+          FRESH_CAND: ${{ steps.fresh.outputs.candidate }}
+          FRESH_CONLY: ${{ steps.fresh.outputs.candidate_only }}
+          FRESH_PONLY: ${{ steps.fresh.outputs.parent_only }}
+          FRESH_NET: ${{ steps.fresh.outputs.net }}
+          FRESH_P: ${{ steps.fresh.outputs.pvalue }}
+          H500_PASS: ${{ steps.h500.outputs.passed }}
+          H500_PARENT: ${{ steps.h500.outputs.parent }}
+          H500_CAND: ${{ steps.h500.outputs.candidate }}
+          H500_CONLY: ${{ steps.h500.outputs.candidate_only }}
+          H500_PONLY: ${{ steps.h500.outputs.parent_only }}
+          H500_NET: ${{ steps.h500.outputs.net }}
+          H500_P: ${{ steps.h500.outputs.pvalue }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path("evidence/sts1/v31-recheck")
+          summary={
+              "schema_version":"sts1-v31-net-gain-recheck",
+              "source_run":36804227660,
+              "regression2_diagnostic":{
+                  "parent":os.environ.get("REG_PARENT"),"candidate":os.environ.get("REG_CAND"),
+                  "candidate_only":os.environ.get("REG_CONLY"),"parent_only":os.environ.get("REG_PONLY"),
+                  "net_new_wins":os.environ.get("REG_NET"),"blocks_promotion":False,
+              },
+              "hidden50":{
+                  "pass":os.environ.get("HID_PASS")=="true","parent":os.environ.get("HID_PARENT"),
+                  "candidate":os.environ.get("HID_CAND"),"candidate_only":os.environ.get("HID_CONLY"),
+                  "parent_only":os.environ.get("HID_PONLY"),"net_new_wins":os.environ.get("HID_NET"),
+              },
+              "fresh100":{
+                  "pass":os.environ.get("FRESH_PASS")=="true","parent":os.environ.get("FRESH_PARENT"),
+                  "candidate":os.environ.get("FRESH_CAND"),"candidate_only":os.environ.get("FRESH_CONLY"),
+                  "parent_only":os.environ.get("FRESH_PONLY"),"net_new_wins":os.environ.get("FRESH_NET"),
+                  "pvalue":os.environ.get("FRESH_P"),
+              },
+              "heldout500":{
+                  "pass":os.environ.get("H500_PASS")=="true","parent":os.environ.get("H500_PARENT"),
+                  "candidate":os.environ.get("H500_CAND"),"candidate_only":os.environ.get("H500_CONLY"),
+                  "parent_only":os.environ.get("H500_PONLY"),"net_new_wins":os.environ.get("H500_NET"),
+                  "pvalue":os.environ.get("H500_P"),
+              },
+          }
+          summary["readiness"]="READY_FOR_REAL_GAME_GATE" if summary["heldout500"]["pass"] else "HOLD_PARENT"
+          (out/"net-gain-summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("V31_NET_GAIN_FINAL",json.dumps(summary,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v31-net-gain-recheck-${{ github.run_id }}
+          path: evidence/sts1/v31-recheck/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report net-gain status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          print("@ericpeng0604-coder")
+          print()
+          print("## v3.1 Net-Gain Recheck")
+          p=Path("evidence/sts1/v31-recheck/net-gain-summary.json")
+          if not p.exists():
+              print("- Recheck failed before final summary. G7 remains unchanged.")
+          else:
+              x=json.loads(p.read_text())
+              r=x["regression2_diagnostic"]
+              print(f"- Regression2 diagnostic: Parent {r.get('parent')}/2 / Candidate {r.get('candidate')}/2 / Net={r.get('net_new_wins')} (non-blocking)")
+              h=x["hidden50"]
+              print(f"- Hidden50: Parent {h.get('parent')}/50 / Candidate {h.get('candidate')}/50 / Candidate-only={h.get('candidate_only')} / Parent-only={h.get('parent_only')} / Net={h.get('net_new_wins')} / PASS={h.get('pass')}")
+              f=x["fresh100"]
+              print(f"- Fresh100: Parent {f.get('parent')}/100 / Candidate {f.get('candidate')}/100 / Net={f.get('net_new_wins')} / p={f.get('pvalue')} / PASS={f.get('pass')}")
+              z=x["heldout500"]
+              print(f"- Heldout500: Parent {z.get('parent')}/500 / Candidate {z.get('candidate')}/500 / Net={z.get('net_new_wins')} / p={z.get('pvalue')} / PASS={z.get('pass')}")
+              print(f"- Final readiness: {x.get('readiness')}")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

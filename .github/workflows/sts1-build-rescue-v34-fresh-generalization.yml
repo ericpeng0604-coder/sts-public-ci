@@ -665,7 +665,10 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           seeds=Path("evidence/sts1/v34-screen/gate50.txt").read_text().split()
-          Path("evidence/sts1/v34-candidate/gate30-seeds.txt").write_text("\\n".join(seeds[:30])+"\\n")
+          Path("evidence/sts1/v34-candidate/gate30-seeds.txt").write_text("\n".join(seeds[:30])+"\n")
+          rows=Path("evidence/sts1/v34-candidate/gate30-seeds.txt").read_text().splitlines()
+          assert len(rows)==30 and all(x.isdigit() for x in rows)
+          print("V34_GATE30_SEEDS_PASS",len(rows))
           PY
           cp evidence/sts1/v34-screen/fresh100.txt "$out/fresh100-seeds.txt"
           cp evidence/sts1/v34-screen/fresh500.txt "$out/fresh500-seeds.txt"

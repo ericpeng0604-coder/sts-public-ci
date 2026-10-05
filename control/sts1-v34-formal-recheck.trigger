@@ -5,3 +5,5 @@ gate30=30
 gate50=50
 fresh100=100
 fresh500=500
+promotion=manual_after_real_game_only
+revision=v34-formal-recheck-1

@@ -190,7 +190,7 @@ jobs:
               if unexpected or any(int(row["seed"])<0 for row in failures):
                   raise SystemExit(f"recovered artifacts contain unexpected or unassigned results: {failures}")
               train_only=os.environ.get("TRAIN_ONLY")=="true"
-              pending=[] if train_only else [seed for seed in seeds if seed in invalid]
+              pending=[0] if train_only else [seed for seed in seeds if seed in invalid]
               if not train_only:
                   for seed in pending:
                       (root/f"result-{seed}.json").unlink(missing_ok=True)
@@ -241,6 +241,7 @@ jobs:
           retention-days: 90
   mine:
     needs: screen
+    if: ${{ needs.screen.outputs.train_only != 'true' && needs.screen.outputs.trace_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 95
     strategy:

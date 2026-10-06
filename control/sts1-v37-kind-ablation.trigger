@@ -1,0 +1,9 @@
+launch=2026-10-06
+mode=decision-kind-ablation
+source_candidate_run=37431578974
+dev_source=train300-minus-priority80-skip-v36-dev30
+variants=all,card,event,map,rest,shop
+formal_gate50=phaseb_gate50
+formal_fresh100=phaseb_fresh100
+formal_fresh500=phaseb_fresh500
+revision=v37-1

@@ -1,0 +1,273 @@
+name: STS1 v3.7 Decision-Kind Ablation
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v37-kind-ablation.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  CANDIDATE_RUN_ID: '37431578974'
+  CANDIDATE_ARTIFACT: 'sts1-v35br-candidate-37431578974'
+  SCREEN_RUN_ID: '37393165126'
+  SCREEN_ARTIFACT: 'sts1-v35b-screen-37393165126'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-v37-kind-ablation
+  cancel-in-progress: true
+
+jobs:
+  ablate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CANDIDATE_ARTIFACT }}
+          path: evidence/sts1/v37/source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.CANDIDATE_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SCREEN_ARTIFACT }}
+          path: evidence/sts1/v37/screen
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SCREEN_RUN_ID }}
+
+      - name: Build dev50 and kind variants
+        run: |
+          set -euo pipefail
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+          import torch
+          root=Path("evidence/sts1/v37")
+          train=[int(x) for x in (root/"screen/train300.txt").read_text().split()]
+          mined={int(x) for x in (root/"screen/priority80.txt").read_text().split()}
+          untouched=[x for x in train if x not in mined]
+          dev=untouched[30:80]
+          assert len(dev)==50 and not (set(dev)&mined)
+          (root/"dev50.txt").write_text("\n".join(map(str,dev))+"\n")
+          base=root/"source/candidate.pt"
+          side=Path(str(base)+".adapter.pt")
+          payload=torch.load(side,weights_only=True,map_location="cpu")
+          assert payload["schema_version"]=="sts1-armg-residual-adapter-v2"
+          variants={
+              "all":["card","event","map","rest","shop"],
+              "card":["card"],"event":["event"],"map":["map"],"rest":["rest"],"shop":["shop"],
+          }
+          for tag,kinds in variants.items():
+              d=root/f"kind-{tag}"; d.mkdir(parents=True,exist_ok=True)
+              shutil.copy2(base,d/"candidate.pt")
+              p=dict(payload); p["kinds"]=kinds
+              torch.save(p,d/"candidate.pt.adapter.pt")
+          print("V37_DEV_CONTRACT_PASS",{"dev":len(dev),"mined_overlap":0,"variants":sorted(variants)})
+          PY
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v37
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Dev50 all
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/kind-all/candidate.pt --seed-file evidence/sts1/v37/dev50.txt --output evidence/sts1/v37/dev-all.json --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v37-dev-all
+      - name: Dev50 card
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/kind-card/candidate.pt --seed-file evidence/sts1/v37/dev50.txt --output evidence/sts1/v37/dev-card.json --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v37-dev-card
+      - name: Dev50 event
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/kind-event/candidate.pt --seed-file evidence/sts1/v37/dev50.txt --output evidence/sts1/v37/dev-event.json --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v37-dev-event
+      - name: Dev50 map
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/kind-map/candidate.pt --seed-file evidence/sts1/v37/dev50.txt --output evidence/sts1/v37/dev-map.json --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v37-dev-map
+      - name: Dev50 rest
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/kind-rest/candidate.pt --seed-file evidence/sts1/v37/dev50.txt --output evidence/sts1/v37/dev-rest.json --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v37-dev-rest
+      - name: Dev50 shop
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/kind-shop/candidate.pt --seed-file evidence/sts1/v37/dev50.txt --output evidence/sts1/v37/dev-shop.json --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v37-dev-shop
+
+      - id: select
+        name: Select best decision kind on dev50
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json,shutil,sys
+          from pathlib import Path
+          root=Path("evidence/sts1/v37")
+          order={"all":0,"card":1,"event":2,"map":3,"rest":4,"shop":5}
+          rows=[]
+          for tag in order:
+              x=json.loads((root/f"dev-{tag}.json").read_text())
+              net=x["candidate_only_wins"]-x["parent_only_wins"]
+              rows.append((net,x["candidate_wins"],-order[tag],tag,x))
+          rows.sort(reverse=True)
+          net,cwins,_,tag,x=rows[0]
+          chosen=root/"chosen"; chosen.mkdir(exist_ok=True)
+          shutil.copy2(root/f"kind-{tag}/candidate.pt",chosen/"candidate.pt")
+          shutil.copy2(root/f"kind-{tag}/candidate.pt.adapter.pt",chosen/"candidate.pt.adapter.pt")
+          for k,v in {"kind":tag,"net":net,"parent":x["parent_wins"],"candidate":x["candidate_wins"],"candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"],"passed":str(net>0).lower()}.items():
+              print(f"{k}={v}")
+          print("V37_DEV_SELECT",{"kind":tag,"net":net,"parent":x["parent_wins"],"candidate":x["candidate_wins"]},file=sys.stderr)
+          PY
+
+      - name: Formal Gate50
+        id: g50
+        if: steps.select.outputs.passed == 'true'
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/chosen/candidate.pt --seed-file evidence/sts1/v37/screen/phaseb_gate50.txt --output evidence/sts1/v37/gate50.json --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v37-gate50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v37/gate50.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]; passed=net>0 and x["candidate_wins"]>x["parent_wins"]
+          for k,v in {"passed":str(passed).lower(),"net":net,"parent":x["parent_wins"],"candidate":x["candidate_wins"],"candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"]}.items(): print(f"{k}={v}")
+          PY
+
+      - name: Formal Fresh100
+        id: f100
+        if: steps.g50.outputs.passed == 'true'
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/chosen/candidate.pt --seed-file evidence/sts1/v37/screen/phaseb_fresh100.txt --output evidence/sts1/v37/fresh100.json --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v37-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v37/fresh100.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]; passed=net>0 and x["candidate_wins"]>x["parent_wins"] and x["paired_sign_pvalue_one_sided"]<=0.10
+          for k,v in {"passed":str(passed).lower(),"net":net,"parent":x["parent_wins"],"candidate":x["candidate_wins"],"candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"],"pvalue":x["paired_sign_pvalue_one_sided"]}.items(): print(f"{k}={v}")
+          PY
+
+      - name: Formal Fresh500
+        id: f500
+        if: steps.f100.outputs.passed == 'true'
+        run: |
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v37 --parent-weight "$parent" --candidate-weight evidence/sts1/v37/chosen/candidate.pt --seed-file evidence/sts1/v37/screen/phaseb_fresh500.txt --output evidence/sts1/v37/fresh500.json --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v37-fresh500
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v37/fresh500.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]; passed=net>0 and x["candidate_wins"]>x["parent_wins"] and x["paired_sign_pvalue_one_sided"]<=0.10
+          for k,v in {"passed":str(passed).lower(),"net":net,"parent":x["parent_wins"],"candidate":x["candidate_wins"],"candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"],"pvalue":x["paired_sign_pvalue_one_sided"]}.items(): print(f"{k}={v}")
+          PY
+
+      - name: Write v3.7 summary
+        if: always()
+        env:
+          KIND: ${{ steps.select.outputs.kind }}
+          DEV_NET: ${{ steps.select.outputs.net }}
+          DEV_PARENT: ${{ steps.select.outputs.parent }}
+          DEV_CAND: ${{ steps.select.outputs.candidate }}
+          DEV_CONLY: ${{ steps.select.outputs.candidate_only }}
+          DEV_PONLY: ${{ steps.select.outputs.parent_only }}
+          G50: ${{ steps.g50.outputs.passed }}
+          G50_PARENT: ${{ steps.g50.outputs.parent }}
+          G50_CAND: ${{ steps.g50.outputs.candidate }}
+          G50_CONLY: ${{ steps.g50.outputs.candidate_only }}
+          G50_PONLY: ${{ steps.g50.outputs.parent_only }}
+          G50_NET: ${{ steps.g50.outputs.net }}
+          F100: ${{ steps.f100.outputs.passed }}
+          F100_PARENT: ${{ steps.f100.outputs.parent }}
+          F100_CAND: ${{ steps.f100.outputs.candidate }}
+          F100_CONLY: ${{ steps.f100.outputs.candidate_only }}
+          F100_PONLY: ${{ steps.f100.outputs.parent_only }}
+          F100_NET: ${{ steps.f100.outputs.net }}
+          F100_P: ${{ steps.f100.outputs.pvalue }}
+          F500: ${{ steps.f500.outputs.passed }}
+          F500_PARENT: ${{ steps.f500.outputs.parent }}
+          F500_CAND: ${{ steps.f500.outputs.candidate }}
+          F500_CONLY: ${{ steps.f500.outputs.candidate_only }}
+          F500_PONLY: ${{ steps.f500.outputs.parent_only }}
+          F500_NET: ${{ steps.f500.outputs.net }}
+          F500_P: ${{ steps.f500.outputs.pvalue }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path("evidence/sts1/v37")
+          def row(prefix,p=False):
+              d={"pass":os.environ.get(prefix)=="true","parent":os.environ.get(prefix+"_PARENT"),"candidate":os.environ.get(prefix+"_CAND"),"candidate_only":os.environ.get(prefix+"_CONLY"),"parent_only":os.environ.get(prefix+"_PONLY"),"net_new_wins":os.environ.get(prefix+"_NET")}
+              if p:d["pvalue"]=os.environ.get(prefix+"_P")
+              return d
+          s={"schema_version":"sts1-v37-kind-ablation","source_candidate_run":37431578974,"parent":"G7",
+             "dev50":{"kind":os.environ.get("KIND"),"net_new_wins":os.environ.get("DEV_NET"),"parent":os.environ.get("DEV_PARENT"),"candidate":os.environ.get("DEV_CAND"),"candidate_only":os.environ.get("DEV_CONLY"),"parent_only":os.environ.get("DEV_PONLY")},
+             "gate50":row("G50"),"fresh100":row("F100",True),"fresh500":row("F500",True)}
+          s["readiness"]="READY_FOR_REAL_GAME_GATE" if s["fresh500"]["pass"] else "HOLD_PARENT"
+          (root/"summary.json").write_text(json.dumps(s,indent=2,sort_keys=True)+"\n")
+          print("V37_FINAL",json.dumps(s,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v37-kind-ablation-${{ github.run_id }}
+          path: evidence/sts1/v37/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report v3.7 result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          print("@ericpeng0604-coder")
+          print()
+          print("## STS1 v3.7 Decision-Kind Ablation")
+          p=Path("evidence/sts1/v37/summary.json")
+          if p.exists():
+              x=json.loads(p.read_text())
+              print(f"- Dev50 selected kind: {x['dev50'].get('kind')} / Net={x['dev50'].get('net_new_wins')}")
+              for name in ["gate50","fresh100","fresh500"]:
+                  r=x[name]
+                  print(f"- {name}: G7 {r.get('parent')} / Candidate {r.get('candidate')} / Candidate-only={r.get('candidate_only')} / Parent-only={r.get('parent_only')} / Net={r.get('net_new_wins')} / PASS={r.get('pass')}")
+              print(f"- Readiness: {x.get('readiness')}")
+          else:
+              print("- v3.7 failed before summary. G7 remains Champion.")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

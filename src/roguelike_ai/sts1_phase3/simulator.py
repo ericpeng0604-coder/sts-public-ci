@@ -476,12 +476,17 @@ class ArmGNoncombatPolicy:
                         if len(centers.shape) != 2 or int(centers.shape[1]) != int(module.OBS_DIM):
                             raise RuntimeError(f"adapter gate positive center shape mismatch for {kind}")
                         neg = negative.get(kind)
-                        if neg is not None and (
-                            not hasattr(neg, "shape")
-                            or len(neg.shape) != 2
-                            or int(neg.shape[1]) != int(module.OBS_DIM)
-                        ):
-                            raise RuntimeError(f"adapter gate negative center shape mismatch for {kind}")
+                        if neg is not None:
+                            if not hasattr(neg, "shape"):
+                                raise RuntimeError(f"adapter gate negative center shape mismatch for {kind}")
+                            # Empty negative-center tensors mean this decision kind
+                            # has no negative exemplars. Canonicalize any empty
+                            # representation to (0, OBS_DIM) instead of treating
+                            # it as a malformed gate.
+                            if int(neg.numel()) == 0:
+                                negative[kind] = neg.reshape(0, int(module.OBS_DIM))
+                            elif len(neg.shape) != 2 or int(neg.shape[1]) != int(module.OBS_DIM):
+                                raise RuntimeError(f"adapter gate negative center shape mismatch for {kind}")
                     ratio = float(gate.get("positive_to_negative_ratio", 0.80))
                     if not 0.0 < ratio <= 1.0:
                         raise RuntimeError("adapter gate ratio outside (0,1]")

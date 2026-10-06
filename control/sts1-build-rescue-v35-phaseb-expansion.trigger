@@ -1,0 +1,12 @@
+launch=2026-10-06
+mode=phaseb-generalization-expansion
+parent=G7
+screen_train=300
+priority_mine=80
+min_new_rescue_seeds=6
+positive_negative_training=true
+gate_policy=net-new-wins
+phaseb_gate50=50
+phaseb_fresh100=100
+phaseb_fresh500=500
+revision=v35b-1

@@ -273,6 +273,41 @@ def main() -> int:
 
     opt=torch.optim.AdamW(adapter.parameters(),lr=a.lr,weight_decay=a.weight_decay)
     history=[]; best=None; batch=64
+
+    # Epoch 0 is a first-class candidate: keep the already useful v3.4 weights
+    # exactly unchanged and add only the v3.5 confidence gate.  This prevents
+    # unnecessary gradient updates from destroying a candidate that already
+    # passed Gate30/Gate50 on prior unseen data.
+    learned0=int(before_new["fully_learned_seeds"])>=a.min_fully_learned_seeds
+    pres0=(float(before_pres["top1"])>=1.0 and float(before_pres.get("min_margin",0.0))>=a.min_preservation_margin)
+    ret0=v34._retention_ok(
+        before_ret,before_ret,min_parent_agreement=a.min_parent_agreement,
+        max_parent_kl=a.max_parent_kl,max_winner_drop=a.max_winner_drop,
+    )
+    neg0=float(before_neg["rejected_top1_rate"])<=0.01
+    epoch0={
+        "epoch":0,"train_loss":0.0,"new_win":before_new,"negative":before_neg,
+        "preservation":before_pres,"retention":before_ret,
+        "learned_enough":learned0,"negative_pass":neg0,
+        "preservation_pass":pres0,"retention_pass":ret0,
+        "pass":bool(learned0 and pres0 and ret0 and neg0),
+    }
+    history.append(epoch0)
+    print("V35_ADAPTER_EPOCH",json.dumps(epoch0,sort_keys=True),flush=True)
+    if epoch0["pass"]:
+        score=(
+            int(before_new["fully_learned_seeds"]),
+            -float(before_neg["rejected_top1_rate"]),
+            float(before_neg["current_top1_rate"]),
+            -float(before_ret["parent_kl"]),
+            float(before_ret["winner_top1"]),
+        )
+        best=(
+            score,
+            {k:v.detach().clone() for k,v in adapter.state_dict().items()},
+            epoch0,
+        )
+
     for epoch in range(1,a.epochs+1):
         adapter.train()
         order=elite_train.copy(); rng.shuffle(order)
@@ -319,7 +354,7 @@ def main() -> int:
         pres_ok=(float(pres["top1"])>=1.0 and float(pres.get("min_margin",0.0))>=a.min_preservation_margin)
         neg_ok=(
             float(neg["rejected_top1_rate"])<=float(before_neg["rejected_top1_rate"])+0.01
-            and float(neg["mean_current_minus_rejected"])>=float(before_neg["mean_current_minus_rejected"])-0.05
+            and float(neg["current_top1_rate"])>=float(before_neg["current_top1_rate"])-0.01
         )
         passed=learned and pres_ok and retention_ok and neg_ok
         row={
@@ -334,7 +369,7 @@ def main() -> int:
             score=(
                 int(new["fully_learned_seeds"]),
                 -float(neg["rejected_top1_rate"]),
-                float(neg["mean_current_minus_rejected"]),
+                float(neg["current_top1_rate"]),
                 -float(ret["parent_kl"]),
                 float(ret["winner_top1"]),
             )

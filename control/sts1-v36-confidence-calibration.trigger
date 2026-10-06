@@ -6,4 +6,4 @@ ratios=0.8,0.9,1.0
 formal_gate50=phaseb_gate50
 formal_fresh100=phaseb_fresh100
 formal_fresh500=phaseb_fresh500
-revision=v36-1
+revision=v36-2-torch-order-fixed

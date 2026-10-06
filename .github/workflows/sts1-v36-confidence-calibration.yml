@@ -146,7 +146,8 @@ jobs:
           print("candidate="+str(x["candidate_wins"]))
           print("candidate_only="+str(x["candidate_only_wins"]))
           print("parent_only="+str(x["parent_only_wins"]))
-          print("V36_DEV_SELECT",{"ratio":ratio,"net":x["candidate_only_wins"]-x["parent_only_wins"],"parent":x["parent_wins"],"candidate":x["candidate_wins"]})
+          import sys
+          print("V36_DEV_SELECT",{"ratio":ratio,"net":x["candidate_only_wins"]-x["parent_only_wins"],"parent":x["parent_wins"],"candidate":x["candidate_wins"]},file=sys.stderr)
           PY
 
       - name: Formal Gate50

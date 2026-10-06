@@ -200,7 +200,24 @@ jobs:
           set -euo pipefail
           out=evidence/sts1/v35-candidate
           parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          set +e
           python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35 --parent-weight "$parent"             --candidate-weight "$out/candidate.pt" --seed-file "$out/regression2.txt"             --output "$out/regression2.json" --mcts-sims 2000 --workers 2             --min-win-delta 0 --max-pvalue 1.0 --label v35-regression2
+          rc=$?
+          set -e
+          if [ ! -s "$out/regression2.json" ]; then
+            echo "Regression2 technical execution failed rc=$rc"
+            exit "$rc"
+          fi
+          python - <<'PY'
+          import json
+          x=json.load(open("evidence/sts1/v35-candidate/regression2.json"))
+          print("V35_REGRESSION_DIAGNOSTIC",json.dumps({
+              "parent":x["parent_wins"],"candidate":x["candidate_wins"],
+              "candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"],
+              "net":x["candidate_only_wins"]-x["parent_only_wins"],
+              "logical_pass":x["pass"],
+          },sort_keys=True))
+          PY
 
       - name: Gate30 unseen Net-Win precheck
         id: g30

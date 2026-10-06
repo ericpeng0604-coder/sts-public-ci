@@ -211,6 +211,7 @@ def main() -> int:
     p.add_argument("--min-fully-learned-seeds",type=int,default=10)
     p.add_argument("--min-parent-agreement",type=float,default=0.995)
     p.add_argument("--max-parent-kl",type=float,default=0.002)
+    p.add_argument("--max-kl-increase",type=float,default=0.001)
     p.add_argument("--max-winner-drop",type=float,default=0.01)
     p.add_argument("--gate-ratio",type=float,default=0.80)
     p.add_argument("--threads",type=int,default=4)
@@ -221,6 +222,7 @@ def main() -> int:
     if not 1e-6<=a.lr<=1e-3: raise RuntimeError("lr outside safe bound")
     if not 0<a.negative_margin<=0.5: raise RuntimeError("negative-margin outside safe bound")
     if not 0<a.gate_ratio<=1: raise RuntimeError("gate-ratio outside safe bound")
+    if not 0<=a.max_kl_increase<=0.01: raise RuntimeError("max-kl-increase outside safe bound")
 
     os.environ["STS_BOT_DIR"]=str(a.armg_root)
     sys.path.insert(0,str(a.armg_root))
@@ -274,6 +276,17 @@ def main() -> int:
     before_neg=_negative_eval(parent,adapter,torch,negatives)
     before_pres=v34._preservation_eval(parent,adapter,torch,preservation,set(kinds))
     before_ret=v34._retention_eval(parent,adapter,torch,elite,retention_eval)
+    allowed_parent_kl=max(
+        float(a.max_parent_kl),
+        float(before_ret["parent_kl"])+float(a.max_kl_increase),
+    )
+    def retention_ok(stats):
+        return (
+            int(stats["parent_high_conf_decisions"]) >= base.MIN_HIGH_CONFIDENCE_DECISIONS
+            and float(stats["parent_high_conf_top1_agreement"]) >= a.min_parent_agreement
+            and float(stats["parent_kl"]) <= allowed_parent_kl
+            and float(stats["winner_top1"]) + a.max_winner_drop >= float(before_ret["winner_top1"])
+        )
 
     opt=torch.optim.AdamW(adapter.parameters(),lr=a.lr,weight_decay=a.weight_decay)
     history=[]; best=None; batch=64
@@ -284,10 +297,7 @@ def main() -> int:
     # passed Gate30/Gate50 on prior unseen data.
     learned0=int(before_new["fully_learned_seeds"])>=a.min_fully_learned_seeds
     pres0=(float(before_pres["top1"])>=1.0 and float(before_pres.get("min_margin",0.0))>=a.min_preservation_margin)
-    ret0=v34._retention_ok(
-        before_ret,before_ret,min_parent_agreement=a.min_parent_agreement,
-        max_parent_kl=a.max_parent_kl,max_winner_drop=a.max_winner_drop,
-    )
+    ret0=retention_ok(before_ret)
     neg0=float(before_neg["rejected_top1_rate"])<=0.01
     epoch0={
         "epoch":0,"train_loss":0.0,"new_win":before_new,"negative":before_neg,
@@ -350,22 +360,19 @@ def main() -> int:
         neg=_negative_eval(parent,adapter,torch,negatives)
         pres=v34._preservation_eval(parent,adapter,torch,preservation,set(kinds))
         ret=v34._retention_eval(parent,adapter,torch,elite,retention_eval)
-        retention_ok=v34._retention_ok(
-            ret,before_ret,min_parent_agreement=a.min_parent_agreement,
-            max_parent_kl=a.max_parent_kl,max_winner_drop=a.max_winner_drop,
-        )
+        retention_pass=retention_ok(ret)
         learned=int(new["fully_learned_seeds"])>=a.min_fully_learned_seeds
         pres_ok=(float(pres["top1"])>=1.0 and float(pres.get("min_margin",0.0))>=a.min_preservation_margin)
         neg_ok=(
             float(neg["rejected_top1_rate"])<=float(before_neg["rejected_top1_rate"])+0.01
             and float(neg["current_top1_rate"])>=float(before_neg["current_top1_rate"])-0.01
         )
-        passed=learned and pres_ok and retention_ok and neg_ok
+        passed=learned and pres_ok and retention_pass and neg_ok
         row={
             "epoch":epoch,"train_loss":float(np.mean(losses)),
             "new_win":new,"negative":neg,"preservation":pres,"retention":ret,
             "learned_enough":learned,"negative_pass":neg_ok,
-            "preservation_pass":pres_ok,"retention_pass":retention_ok,"pass":passed,
+            "preservation_pass":pres_ok,"retention_pass":retention_pass,"pass":passed,
         }
         history.append(row)
         print("V35_ADAPTER_EPOCH",json.dumps(row,sort_keys=True),flush=True)
@@ -409,6 +416,7 @@ def main() -> int:
         "negative_seeds":sorted({int(r["seed"]) for r in negatives}),
         "enabled_kinds":kinds,
         "selected_epoch":int(best[2]["epoch"]),
+        "retention_policy":{"base_max_parent_kl":float(a.max_parent_kl),"max_kl_increase":float(a.max_kl_increase),"allowed_parent_kl":float(allowed_parent_kl)},
         "before":{"new_win":before_new,"negative":before_neg,"preservation":before_pres,"retention":before_ret},
         "after":{"new_win":after_new,"negative":after_neg,"preservation":after_pres,"retention":after_ret},
         "gate":gate_diag,

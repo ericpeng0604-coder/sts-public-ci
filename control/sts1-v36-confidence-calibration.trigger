@@ -1,0 +1,9 @@
+launch=2026-10-06
+mode=confidence-calibration
+source_candidate_run=37431578974
+dev_source=train300-minus-priority80
+ratios=0.8,0.9,1.0
+formal_gate50=phaseb_gate50
+formal_fresh100=phaseb_fresh100
+formal_fresh500=phaseb_fresh500
+revision=v36-1

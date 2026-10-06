@@ -1,0 +1,9 @@
+launch=2026-10-06
+mode=formal-recheck
+candidate_run=37431578974
+gate30_result=tie
+gate30_policy=precheck-only
+gate50_requires_net_positive=true
+fresh100_requires_net_positive_and_p<=0.10
+fresh500_requires_net_positive_and_p<=0.10
+revision=v35br-formal-1

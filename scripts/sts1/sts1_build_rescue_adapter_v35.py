@@ -122,7 +122,11 @@ def _build_gate(torch, positives, negatives, *, ratio: float):
         parr=np.asarray(rows,dtype=np.float32)
         narr=np.asarray(neg_by.get(kind,[]),dtype=np.float32)
         positive_centers[kind]=torch.tensor(parr,dtype=torch.float32)
-        negative_centers[kind]=torch.tensor(narr,dtype=torch.float32)
+        negative_centers[kind]=(
+            torch.tensor(narr,dtype=torch.float32)
+            if len(narr)
+            else torch.empty((0,len(mean)),dtype=torch.float32)
+        )
         vals=per_kind_neighbor.get(kind) or []
         if vals:
             radius=float(np.quantile(vals,0.75)*1.35)+1e-6

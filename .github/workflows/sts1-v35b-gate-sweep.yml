@@ -1,0 +1,305 @@
+name: STS1 v3.5 Phase-B Gate Sweep
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v35b-gate-sweep.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '37431560171'
+  SOURCE_ARTIFACT: 'sts1-v35b-retention-repair-37431560171'
+  SCREEN_RUN_ID: '37393165126'
+  SCREEN_ARTIFACT: 'sts1-v35b-screen-37393165126'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-v35b-gate-sweep
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download frozen repaired Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: evidence/sts1/v35b-gate-sweep/source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Download frozen Phase-B seed ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SCREEN_ARTIFACT }}
+          path: evidence/sts1/v35b-gate-sweep/screen
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SCREEN_RUN_ID }}
+
+      - name: Validate source Candidate
+        run: |
+          set -euo pipefail
+          src=evidence/sts1/v35b-gate-sweep/source
+          test -s "$src/candidate.pt"
+          test -s "$src/candidate.pt.adapter.pt"
+          test -s "$src/train-report.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("evidence/sts1/v35b-gate-sweep/source/train-report.json").read_text())
+          assert r["selected_epoch"]==1, r
+          assert r["after"]["new_win"]["fully_learned_seeds"]>=12, r
+          assert r["after"]["preservation"]["top1"]==1.0, r
+          assert r["after"]["retention"]["parent_kl"]<=0.003, r
+          print("V35BS_SOURCE_PASS",{
+              "epoch":r["selected_epoch"],
+              "learned":r["after"]["new_win"]["fully_learned_seeds"],
+              "kl":r["after"]["retention"]["parent_kl"],
+          })
+          PY
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v35bs
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"; unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Prepare disjoint evaluation Seeds
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v35b-gate-sweep
+          head -30 "$out/screen/phaseb_gate50.txt" > "$out/gate30.txt"
+          cp "$out/screen/phaseb_gate50.txt" "$out/gate50.txt"
+          cp "$out/screen/phaseb_fresh100.txt" "$out/fresh100.txt"
+          cp "$out/screen/phaseb_fresh500.txt" "$out/fresh500.txt"
+          python - <<'PY'
+          from pathlib import Path
+          sets={}
+          for n in ["gate30","gate50","fresh100","fresh500"]:
+              sets[n]=[int(x) for x in Path(f"evidence/sts1/v35b-gate-sweep/{n}.txt").read_text().split()]
+          assert len(sets["gate30"])==30 and len(sets["gate50"])==50
+          assert len(sets["fresh100"])==100 and len(sets["fresh500"])==500
+          assert set(sets["gate30"]).issubset(set(sets["gate50"]))
+          assert not(set(sets["gate50"])&set(sets["fresh100"]))
+          assert not(set(sets["gate50"])&set(sets["fresh500"]))
+          assert not(set(sets["fresh100"])&set(sets["fresh500"]))
+          print("V35BS_SEED_CONTRACT_PASS")
+          PY
+
+      - name: Build 9 confidence-gate variants
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import shutil, torch, json
+          from pathlib import Path
+          root=Path("evidence/sts1/v35b-gate-sweep")
+          src=root/"source"
+          variants=root/"variants"; variants.mkdir(parents=True,exist_ok=True)
+          rows=[]
+          for ratio in (0.8,0.9,1.0):
+              for scale in (1.0,1.5,2.0):
+                  tag=f"r{int(ratio*100)}_s{int(scale*10)}"
+                  d=variants/tag; d.mkdir(parents=True,exist_ok=True)
+                  shutil.copy2(src/"candidate.pt",d/"candidate.pt")
+                  p=torch.load(src/"candidate.pt.adapter.pt",weights_only=True,map_location="cpu")
+                  assert p["schema_version"]=="sts1-armg-residual-adapter-v2"
+                  p["gate"]["positive_to_negative_ratio"]=float(ratio)
+                  p["gate"]["max_positive_distance"]={k:float(v)*float(scale) for k,v in p["gate"]["max_positive_distance"].items()}
+                  torch.save(p,d/"candidate.pt.adapter.pt")
+                  rows.append({"tag":tag,"ratio":ratio,"radius_scale":scale})
+          (root/"variants.json").write_text(json.dumps(rows,indent=2)+"\n")
+          print("V35BS_VARIANTS_PASS",rows)
+          PY
+
+      - name: Gate30 sweep
+        run: |
+          set -euo pipefail
+          root=evidence/sts1/v35b-gate-sweep
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python - <<'PY' > "$RUNNER_TEMP/tags.txt"
+          import json
+          for r in json.load(open("evidence/sts1/v35b-gate-sweep/variants.json")): print(r["tag"])
+          PY
+          while read -r tag; do
+            python scripts/sts1/sts1_build_rescue_gate_v21.py               --module-dir external/sts_lightspeed/source/build-probe               --armg-root .cache/sts1-v35bs --parent-weight "$parent"               --candidate-weight "$root/variants/$tag/candidate.pt" --seed-file "$root/gate30.txt"               --output "$root/variants/$tag/gate30.json" --mcts-sims 2000 --workers 4               --min-win-delta 1 --max-pvalue 1.0 --label "v35bs-$tag-gate30"
+          done < "$RUNNER_TEMP/tags.txt"
+
+      - name: Select best Gate30 variant
+        id: pick
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          root=Path("evidence/sts1/v35b-gate-sweep")
+          configs={r["tag"]:r for r in json.loads((root/"variants.json").read_text())}
+          rows=[]
+          for tag,cfg in configs.items():
+              x=json.loads((root/"variants"/tag/"gate30.json").read_text())
+              net=x["candidate_only_wins"]-x["parent_only_wins"]
+              rows.append({**cfg,"parent":x["parent_wins"],"candidate":x["candidate_wins"],"candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"],"net":net})
+          rows.sort(key=lambda r:(r["net"],r["candidate_only"],-r["parent_only"],-r["radius_scale"],-r["ratio"]),reverse=True)
+          best=rows[0]
+          (root/"gate30-sweep.json").write_text(json.dumps({"rows":rows,"best":best},indent=2,sort_keys=True)+"\n")
+          print("tag="+best["tag"])
+          print("net="+str(best["net"]))
+          print("passed="+str(best["net"]>0 and best["candidate"]>best["parent"]).lower())
+          print("V35BS_GATE30_SWEEP",json.dumps({"best":best,"rows":rows},sort_keys=True))
+          PY
+
+      - name: Gate50 selected variant
+        id: g50
+        if: steps.pick.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          root=evidence/sts1/v35b-gate-sweep; tag="${{ steps.pick.outputs.tag }}"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35bs --parent-weight "$parent"             --candidate-weight "$root/variants/$tag/candidate.pt" --seed-file "$root/gate50.txt"             --output "$root/gate50.json" --mcts-sims 2000 --workers 4             --min-win-delta 1 --max-pvalue 1.0 --label "v35bs-$tag-gate50"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v35b-gate-sweep/gate50.json")); net=x["candidate_only_wins"]-x["parent_only_wins"]
+          d={"passed":str(net>0 and x["candidate_wins"]>x["parent_wins"]).lower(),"net":net,"parent":x["parent_wins"],"candidate":x["candidate_wins"],"candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"]}
+          [print(f"{k}={v}") for k,v in d.items()]
+          PY
+
+      - name: Fresh100 selected variant
+        id: f100
+        if: steps.g50.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          root=evidence/sts1/v35b-gate-sweep; tag="${{ steps.pick.outputs.tag }}"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35bs --parent-weight "$parent"             --candidate-weight "$root/variants/$tag/candidate.pt" --seed-file "$root/fresh100.txt"             --output "$root/fresh100.json" --mcts-sims 2000 --workers 4             --min-win-delta 1 --max-pvalue 0.10 --label "v35bs-$tag-fresh100"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v35b-gate-sweep/fresh100.json")); net=x["candidate_only_wins"]-x["parent_only_wins"]; p=x["paired_sign_pvalue_one_sided"]
+          d={"passed":str(net>0 and x["candidate_wins"]>x["parent_wins"] and p<=0.10).lower(),"net":net,"parent":x["parent_wins"],"candidate":x["candidate_wins"],"candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"],"pvalue":p}
+          [print(f"{k}={v}") for k,v in d.items()]
+          PY
+
+      - name: Fresh500 selected variant
+        id: f500
+        if: steps.f100.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          root=evidence/sts1/v35b-gate-sweep; tag="${{ steps.pick.outputs.tag }}"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35bs --parent-weight "$parent"             --candidate-weight "$root/variants/$tag/candidate.pt" --seed-file "$root/fresh500.txt"             --output "$root/fresh500.json" --mcts-sims 2000 --workers 4             --min-win-delta 1 --max-pvalue 0.10 --label "v35bs-$tag-fresh500"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v35b-gate-sweep/fresh500.json")); net=x["candidate_only_wins"]-x["parent_only_wins"]; p=x["paired_sign_pvalue_one_sided"]
+          d={"passed":str(net>0 and x["candidate_wins"]>x["parent_wins"] and p<=0.10).lower(),"net":net,"parent":x["parent_wins"],"candidate":x["candidate_wins"],"candidate_only":x["candidate_only_wins"],"parent_only":x["parent_only_wins"],"pvalue":p}
+          [print(f"{k}={v}") for k,v in d.items()]
+          PY
+
+      - name: Write Gate Sweep summary
+        if: always()
+        env:
+          PICK_TAG: ${{ steps.pick.outputs.tag }}
+          PICK_NET: ${{ steps.pick.outputs.net }}
+          PICK_PASS: ${{ steps.pick.outputs.passed }}
+          G50: ${{ steps.g50.outputs.passed }}
+          G50_PARENT: ${{ steps.g50.outputs.parent }}
+          G50_CAND: ${{ steps.g50.outputs.candidate }}
+          G50_CONLY: ${{ steps.g50.outputs.candidate_only }}
+          G50_PONLY: ${{ steps.g50.outputs.parent_only }}
+          G50_NET: ${{ steps.g50.outputs.net }}
+          F100: ${{ steps.f100.outputs.passed }}
+          F100_PARENT: ${{ steps.f100.outputs.parent }}
+          F100_CAND: ${{ steps.f100.outputs.candidate }}
+          F100_CONLY: ${{ steps.f100.outputs.candidate_only }}
+          F100_PONLY: ${{ steps.f100.outputs.parent_only }}
+          F100_NET: ${{ steps.f100.outputs.net }}
+          F100_P: ${{ steps.f100.outputs.pvalue }}
+          F500: ${{ steps.f500.outputs.passed }}
+          F500_PARENT: ${{ steps.f500.outputs.parent }}
+          F500_CAND: ${{ steps.f500.outputs.candidate }}
+          F500_CONLY: ${{ steps.f500.outputs.candidate_only }}
+          F500_PONLY: ${{ steps.f500.outputs.parent_only }}
+          F500_NET: ${{ steps.f500.outputs.net }}
+          F500_P: ${{ steps.f500.outputs.pvalue }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path("evidence/sts1/v35b-gate-sweep")
+          sweep=json.loads((root/"gate30-sweep.json").read_text()) if (root/"gate30-sweep.json").exists() else {}
+          def row(p,stat=False):
+              d={"pass":os.getenv(p)=="true","parent":os.getenv(p+"_PARENT"),"candidate":os.getenv(p+"_CAND"),"candidate_only":os.getenv(p+"_CONLY"),"parent_only":os.getenv(p+"_PONLY"),"net_new_wins":os.getenv(p+"_NET")}
+              if stat:d["pvalue"]=os.getenv(p+"_P")
+              return d
+          s={"schema_version":"sts1-v35b-gate-sweep","parent":"G7","gate30_sweep":sweep,
+             "selected_tag":os.getenv("PICK_TAG"),"selected_gate30_net":os.getenv("PICK_NET"),
+             "gate50":row("G50"),"fresh100":row("F100",True),"fresh500":row("F500",True)}
+          s["readiness"]="READY_FOR_REAL_GAME_GATE" if s["fresh500"]["pass"] else "HOLD_PARENT"
+          (root/"summary.json").write_text(json.dumps(s,indent=2,sort_keys=True)+"\n")
+          print("V35BS_FINAL",json.dumps(s,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v35b-gate-sweep-${{ github.run_id }}
+          path: evidence/sts1/v35b-gate-sweep/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report Gate Sweep
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          print("@ericpeng0604-coder")
+          print()
+          print("## STS1 v3.5 Phase-B Gate Sweep")
+          p=Path("evidence/sts1/v35b-gate-sweep/summary.json")
+          if not p.exists():
+              print("- Gate sweep failed before summary. G7 unchanged.")
+          else:
+              x=json.loads(p.read_text())
+              print(f"- Best Gate30 variant: {x.get('selected_tag')} / Net={x.get('selected_gate30_net')}")
+              for name in ["gate50","fresh100","fresh500"]:
+                  r=x[name]
+                  print(f"- {name}: G7 {r.get('parent')} / Candidate {r.get('candidate')} / Candidate-only={r.get('candidate_only')} / Parent-only={r.get('parent_only')} / Net={r.get('net_new_wins')} / PASS={r.get('pass')}")
+              print(f"- Readiness: {x.get('readiness')}")
+          print("- G7 remains Champion unless Fresh500 and later real-game validation pass.")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"

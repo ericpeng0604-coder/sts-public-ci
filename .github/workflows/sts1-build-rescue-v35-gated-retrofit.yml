@@ -1,0 +1,365 @@
+name: STS1 Build Rescue v3.5 Gated Retrofit
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-build-rescue-v35-gated-retrofit.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  V34_RUN_ID: '37318408007'
+  V34_CANDIDATE_ARTIFACT: 'sts1-v34-candidate-37318408007'
+  V34_MINING_ARTIFACT: 'v34-mine-recovered-37318408007'
+  V34_TRACE_RUN_ID: '36962596407'
+  V34_TRACE_ARTIFACT: 'sts1-v34-regression-trace-36962596407'
+  V322_RUN_ID: '36823568672'
+  V322_ARTIFACT: 'sts1-v322-active-repair-36823568672'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-build-rescue-v35-gated-retrofit
+  cancel-in-progress: true
+
+jobs:
+  v35:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate v3.5 contracts and freeze new seed ledger
+        run: |
+          set -euo pipefail
+          python -m py_compile             scripts/sts1/sts1_build_rescue_v35_seed_ledger.py             scripts/sts1/sts1_build_rescue_new_win_miner_v35.py             scripts/sts1/sts1_build_rescue_v35_aggregate.py             scripts/sts1/sts1_build_rescue_v35_recover_negatives.py             scripts/sts1/sts1_build_rescue_adapter_v35.py             src/roguelike_ai/sts1_phase3/simulator.py
+          python scripts/sts1/sts1_build_rescue_v35_seed_ledger.py             --output-dir evidence/sts1/v35-ledger
+          test "$(wc -l < evidence/sts1/v35-ledger/train300.txt)" -eq 300
+          test "$(wc -l < evidence/sts1/v35-ledger/gate50.txt)" -eq 50
+          test "$(wc -l < evidence/sts1/v35-ledger/fresh100.txt)" -eq 100
+          test "$(wc -l < evidence/sts1/v35-ledger/fresh500.txt)" -eq 500
+          python - <<'PY'
+          from pathlib import Path
+          sim=Path("src/roguelike_ai/sts1_phase3/simulator.py").read_text()
+          tr=Path("scripts/sts1/sts1_build_rescue_adapter_v35.py").read_text()
+          required_sim=[
+              "sts1-armg-residual-adapter-v2",
+              "_adapter_gate_allows",
+              "positive_to_negative_ratio",
+          ]
+          required_tr=[
+              "V35_ADAPTER_TRAIN_PASS","_negative_loss","_build_gate",
+              "negative_rejected_top1_rate",
+          ]
+          missing=[x for x in required_sim if x not in sim]+[x for x in required_tr if x not in tr]
+          if missing: raise SystemExit(f"v3.5 contract missing: {missing}")
+          print("V35_CONTRACT_PASS")
+          PY
+
+      - name: Download frozen v3.4 Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V34_CANDIDATE_ARTIFACT }}
+          path: evidence/sts1/v34-source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V34_RUN_ID }}
+
+      - name: Download frozen v3.4 mining checkpoints
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V34_MINING_ARTIFACT }}
+          path: evidence/sts1/v34-mining
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V34_RUN_ID }}
+
+      - name: Download v3.2.2 preservation source
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V322_ARTIFACT }}
+          path: evidence/sts1/v322-source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V322_RUN_ID }}
+
+      - name: Download verified v3.4 regression trace
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V34_TRACE_ARTIFACT }}
+          path: evidence/sts1/v34-trace
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V34_TRACE_RUN_ID }}
+
+      - name: Validate frozen source artifacts
+        run: |
+          set -euo pipefail
+          for f in             evidence/sts1/v34-source/candidate.pt             evidence/sts1/v34-source/candidate.pt.adapter.pt             evidence/sts1/v34-source/combined-teachers.jsonl             evidence/sts1/v322-source/preservation-active.jsonl             evidence/sts1/v34-trace/regression2-anchors.jsonl; do
+            test -s "$f"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          old=[json.loads(x) for x in Path("evidence/sts1/v34-source/combined-teachers.jsonl").read_text().splitlines() if x.strip()]
+          if len(old)!=30: raise SystemExit(f"expected frozen v3.4 30 teachers, got {len(old)}")
+          print("V35_FROZEN_SOURCE_PASS",len(old),len({int(x["seed"]) for x in old}))
+          PY
+
+      - name: Recover verified failed alternatives as Negative evidence
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v35-data
+          python scripts/sts1/sts1_build_rescue_v35_recover_negatives.py             --results-dir evidence/sts1/v34-mining             --positive-teachers evidence/sts1/v34-source/combined-teachers.jsonl             --output evidence/sts1/v35-data/negative-examples.jsonl             --max-per-seed 8
+          test -s evidence/sts1/v35-data/negative-examples.jsonl
+
+      - name: Merge preservation anchors
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          sources=[
+              Path("evidence/sts1/v322-source/preservation-active.jsonl"),
+              Path("evidence/sts1/v34-trace/regression2-anchors.jsonl"),
+          ]
+          uniq={}
+          for p in sources:
+              for line in p.read_text().splitlines():
+                  if not line.strip(): continue
+                  row=json.loads(line)
+                  key=json.dumps({
+                      "seed":row.get("seed"),"kind":row.get("kind"),"obs":row.get("obs"),
+                      "descs":row.get("descs"),"parent_selected_index":row.get("parent_selected_index")
+                  },sort_keys=True,separators=(",",":"))
+                  uniq[key]=row
+          out=Path("evidence/sts1/v35-data/preservation.jsonl")
+          out.write_text("".join(json.dumps(x,sort_keys=True)+"\n" for x in uniq.values()))
+          if len(uniq)<2: raise SystemExit("too few preservation anchors")
+          print("V35_PRESERVATION_PASS",len(uniq))
+          PY
+
+      - name: Install, hydrate, and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v35
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -o "$RUNNER_TEMP/g7.zip"             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test -s "$parent"; test -s "$elite"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Train negative-aware confidence-gated adapter
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v35-candidate
+          mkdir -p "$out"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python -u scripts/sts1/sts1_build_rescue_adapter_v35.py             --armg-root .cache/sts1-v35             --base-weight "$parent"             --elite-replay "$elite"             --new-win-replay evidence/sts1/v34-source/combined-teachers.jsonl             --negative-replay evidence/sts1/v35-data/negative-examples.jsonl             --preservation-replay evidence/sts1/v35-data/preservation.jsonl             --init-adapter-sidecar evidence/sts1/v34-source/candidate.pt.adapter.pt             --output "$out/candidate.pt"             --report "$out/train-report.json"             --hidden-dim 48 --epochs 8 --lr 0.00005             --elite-train-max 8192 --retention-eval-max 2048             --teacher-margin 0.05 --teacher-coef 4.0             --negative-margin 0.02 --negative-coef 3.0             --distill-coef 14.0 --zero-residual-coef 0.85             --preservation-coef 20.0 --preservation-margin 0.03             --min-preservation-margin 0.01 --weight-decay 0.00001             --min-fully-learned-seeds 10             --min-parent-agreement 0.995 --max-parent-kl 0.002             --max-winner-drop 0.01 --gate-ratio 0.80 --threads 4
+          test -s "$out/candidate.pt"
+          test -s "$out/candidate.pt.adapter.pt"
+
+      - name: Freeze new independent evaluation seeds
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v35-candidate
+          head -30 evidence/sts1/v35-ledger/gate50.txt > "$out/gate30.txt"
+          cp evidence/sts1/v35-ledger/gate50.txt "$out/gate50.txt"
+          cp evidence/sts1/v35-ledger/fresh100.txt "$out/fresh100.txt"
+          cp evidence/sts1/v35-ledger/fresh500.txt "$out/fresh500.txt"
+          cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2.txt"
+
+      - name: Regression2 diagnostic
+        id: reg
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v35-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35 --parent-weight "$parent"             --candidate-weight "$out/candidate.pt" --seed-file "$out/regression2.txt"             --output "$out/regression2.json" --mcts-sims 2000 --workers 2             --min-win-delta 0 --max-pvalue 1.0 --label v35-regression2
+
+      - name: Gate30 unseen Net-Win precheck
+        id: g30
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v35-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35 --parent-weight "$parent"             --candidate-weight "$out/candidate.pt" --seed-file "$out/gate30.txt"             --output "$out/gate30.json" --mcts-sims 2000 --workers 4             --min-win-delta 1 --max-pvalue 1.0 --label v35-gate30
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v35-candidate/gate30.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=net>0 and x["candidate_wins"]>x["parent_wins"]
+          print("passed="+str(passed).lower()); print("net="+str(net))
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          PY
+
+      - name: Gate50 unseen Net-Win Gate
+        id: g50
+        if: steps.g30.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v35-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35 --parent-weight "$parent"             --candidate-weight "$out/candidate.pt" --seed-file "$out/gate50.txt"             --output "$out/gate50.json" --mcts-sims 2000 --workers 4             --min-win-delta 1 --max-pvalue 1.0 --label v35-gate50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v35-candidate/gate50.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=net>0 and x["candidate_wins"]>x["parent_wins"]
+          print("passed="+str(passed).lower()); print("net="+str(net))
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          PY
+
+      - name: Fresh100 formal Net-Win Gate
+        id: f100
+        if: steps.g50.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v35-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35 --parent-weight "$parent"             --candidate-weight "$out/candidate.pt" --seed-file "$out/fresh100.txt"             --output "$out/fresh100.json" --mcts-sims 2000 --workers 4             --min-win-delta 1 --max-pvalue 0.10 --label v35-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v35-candidate/fresh100.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=net>0 and x["candidate_wins"]>x["parent_wins"] and x["paired_sign_pvalue_one_sided"]<=0.10
+          print("passed="+str(passed).lower()); print("net="+str(net))
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Fresh500 formal Net-Win Gate
+        id: f500
+        if: steps.f100.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v35-candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v35 --parent-weight "$parent"             --candidate-weight "$out/candidate.pt" --seed-file "$out/fresh500.txt"             --output "$out/fresh500.json" --mcts-sims 2000 --workers 4             --min-win-delta 1 --max-pvalue 0.10 --label v35-fresh500
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open("evidence/sts1/v35-candidate/fresh500.json"))
+          net=x["candidate_only_wins"]-x["parent_only_wins"]
+          passed=net>0 and x["candidate_wins"]>x["parent_wins"] and x["paired_sign_pvalue_one_sided"]<=0.10
+          print("passed="+str(passed).lower()); print("net="+str(net))
+          print("parent="+str(x["parent_wins"])); print("candidate="+str(x["candidate_wins"]))
+          print("candidate_only="+str(x["candidate_only_wins"])); print("parent_only="+str(x["parent_only_wins"]))
+          print("pvalue="+str(x["paired_sign_pvalue_one_sided"]))
+          PY
+
+      - name: Write v3.5 summary
+        if: always()
+        env:
+          G30: ${{ steps.g30.outputs.passed }}
+          G30_NET: ${{ steps.g30.outputs.net }}
+          G30_PARENT: ${{ steps.g30.outputs.parent }}
+          G30_CAND: ${{ steps.g30.outputs.candidate }}
+          G30_CONLY: ${{ steps.g30.outputs.candidate_only }}
+          G30_PONLY: ${{ steps.g30.outputs.parent_only }}
+          G50: ${{ steps.g50.outputs.passed }}
+          G50_NET: ${{ steps.g50.outputs.net }}
+          G50_PARENT: ${{ steps.g50.outputs.parent }}
+          G50_CAND: ${{ steps.g50.outputs.candidate }}
+          G50_CONLY: ${{ steps.g50.outputs.candidate_only }}
+          G50_PONLY: ${{ steps.g50.outputs.parent_only }}
+          F100: ${{ steps.f100.outputs.passed }}
+          F100_NET: ${{ steps.f100.outputs.net }}
+          F100_PARENT: ${{ steps.f100.outputs.parent }}
+          F100_CAND: ${{ steps.f100.outputs.candidate }}
+          F100_CONLY: ${{ steps.f100.outputs.candidate_only }}
+          F100_PONLY: ${{ steps.f100.outputs.parent_only }}
+          F100_P: ${{ steps.f100.outputs.pvalue }}
+          F500: ${{ steps.f500.outputs.passed }}
+          F500_NET: ${{ steps.f500.outputs.net }}
+          F500_PARENT: ${{ steps.f500.outputs.parent }}
+          F500_CAND: ${{ steps.f500.outputs.candidate }}
+          F500_CONLY: ${{ steps.f500.outputs.candidate_only }}
+          F500_PONLY: ${{ steps.f500.outputs.parent_only }}
+          F500_P: ${{ steps.f500.outputs.pvalue }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path("evidence/sts1/v35-candidate"); out.mkdir(parents=True,exist_ok=True)
+          train=json.loads((out/"train-report.json").read_text()) if (out/"train-report.json").exists() else {}
+          def row(p):
+              return {
+                  "pass":os.environ.get(p)=="true",
+                  "parent":os.environ.get(p+"_PARENT"),"candidate":os.environ.get(p+"_CAND"),
+                  "candidate_only":os.environ.get(p+"_CONLY"),"parent_only":os.environ.get(p+"_PONLY"),
+                  "net_new_wins":os.environ.get(p+"_NET"),
+              }
+          s={
+              "schema_version":"sts1-v35-gated-retrofit-summary",
+              "parent":"G7","training":train,
+              "gate30":row("G30"),"gate50":row("G50"),
+              "fresh100":{**row("F100"),"pvalue":os.environ.get("F100_P")},
+              "fresh500":{**row("F500"),"pvalue":os.environ.get("F500_P")},
+          }
+          s["readiness"]="READY_FOR_REAL_GAME_GATE" if s["fresh500"]["pass"] else "HOLD_PARENT"
+          (out/"summary.json").write_text(json.dumps(s,indent=2,sort_keys=True)+"\n")
+          print("V35_FINAL",json.dumps(s,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v35-gated-retrofit-${{ github.run_id }}
+          path:
+            evidence/sts1/v35-candidate/
+            evidence/sts1/v35-data/
+            evidence/sts1/v35-ledger/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report v3.5 result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/v35.txt"
+          import json
+          from pathlib import Path
+          print("@ericpeng0604-coder")
+          print()
+          print("## STS1 v3.5 Gated Retrofit")
+          p=Path("evidence/sts1/v35-candidate/summary.json")
+          if not p.exists():
+              print("- Failed before summary; G7 unchanged.")
+          else:
+              x=json.loads(p.read_text())
+              for name in ["gate30","gate50","fresh100","fresh500"]:
+                  r=x[name]
+                  print(f"- {name}: G7 {r.get('parent')} / Candidate {r.get('candidate')} / Candidate-only={r.get('candidate_only')} / Parent-only={r.get('parent_only')} / Net={r.get('net_new_wins')} / PASS={r.get('pass')}")
+              print(f"- Readiness: {x.get('readiness')}")
+          print("- G7 remains Champion unless all unseen formal gates pass.")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -F "body=@$RUNNER_TEMP/v35.txt"

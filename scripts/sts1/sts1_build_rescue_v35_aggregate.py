@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-import sts1_build_rescue_v34_aggregate as v34
+import sts1_build_rescue_v35_positive_aggregate as v34
 
 
 NEG_SCHEMA = "sts1-armg-negative-branch-v1"

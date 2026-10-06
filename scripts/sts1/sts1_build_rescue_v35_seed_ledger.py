@@ -13,7 +13,15 @@ from pathlib import Path
 import random
 
 SCHEMA = "sts1-v35-disjoint-seed-ledger-v1"
-COUNTS = {"train300": 300, "gate50": 50, "fresh100": 100, "fresh500": 500}
+COUNTS = {
+    "train300": 300,
+    "gate50": 50,
+    "fresh100": 100,
+    "fresh500": 500,
+    "phaseb_gate50": 50,
+    "phaseb_fresh100": 100,
+    "phaseb_fresh500": 500,
+}
 V34_COUNTS = {"train160": 160, "gate50": 50, "fresh100": 100, "fresh500": 500}
 OLD_RANDOM_STREAMS = (
     2026100131, 2026100132, 20261001322,
@@ -96,7 +104,7 @@ def make(root: Path, out: Path) -> dict:
         "pairwise_overlap": 0,
         "overlap_with_protected": 0,
         "policy": (
-            "v3.5 train, gate50, fresh100, and fresh500 are mutually disjoint; "
+            "v3.5 train and both Phase-A/Phase-B gate sets are mutually disjoint; "
             "all v3.4 ledger seeds and historical control seeds are protected"
         ),
     }

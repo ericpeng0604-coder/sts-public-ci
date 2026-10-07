@@ -208,7 +208,7 @@ jobs:
             --new-win-replay evidence/sts1/v310/train/clustered-positive.jsonl --negative-replay evidence/sts1/v310/train/negative.jsonl \
             --preservation-replay evidence/sts1/v310/train/preservation.jsonl --init-adapter-sidecar evidence/sts1/v310/v34/candidate.pt.adapter.pt \
             --output "$out/candidate.pt" --report "$out/train-report.json" --hidden-dim 48 --epochs 6 --lr 0.00003 \
-            --elite-train-max 8192 --retention-eval-max 2048 --teacher-margin 0.05 --teacher-parent-margin 1.0 --residual-init-scale 3.0 --teacher-coef 4.0 \
+            --elite-train-max 8192 --retention-eval-max 2048 --teacher-margin 0.05 --teacher-parent-margin 0.75 --residual-init-scale 1.5 --teacher-coef 4.0 \
             --clustered-teacher-weighting --negative-margin 0.02 --negative-coef 4.0 --distill-coef 18.0 --zero-residual-coef 1.0 \
             --preservation-coef 24.0 --preservation-margin 0.03 --min-preservation-margin 0.01 --weight-decay 0.00001 \
             --min-fully-learned-seeds 12 --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-kl-increase 0.001 \

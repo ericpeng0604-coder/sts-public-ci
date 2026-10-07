@@ -200,6 +200,10 @@ def main() -> int:
     p.add_argument("--retention-eval-max",type=int,default=2048)
     p.add_argument("--teacher-margin",type=float,default=0.05)
     p.add_argument("--teacher-coef",type=float,default=4.0)
+    p.add_argument("--teacher-parent-margin",type=float,default=0.0,
+                   help="minimum target-over-parent-top1 logit margin; 0 disables this v3.9 objective")
+    p.add_argument("--clustered-teacher-weighting",action="store_true",
+                   help="weight repeated cross-seed rescue patterns and downweight singleton patterns")
     p.add_argument("--negative-margin",type=float,default=0.02)
     p.add_argument("--negative-coef",type=float,default=3.0)
     p.add_argument("--distill-coef",type=float,default=14.0)
@@ -222,6 +226,7 @@ def main() -> int:
     if not 1e-6<=a.lr<=1e-3: raise RuntimeError("lr outside safe bound")
     if not 0<a.negative_margin<=0.5: raise RuntimeError("negative-margin outside safe bound")
     if not 0<a.gate_ratio<=1: raise RuntimeError("gate-ratio outside safe bound")
+    if not 0<=a.teacher_parent_margin<=5: raise RuntimeError("teacher-parent-margin outside safe bound")
     if not 0<=a.max_kl_increase<=0.01: raise RuntimeError("max-kl-increase outside safe bound")
 
     os.environ["STS_BOT_DIR"]=str(a.armg_root)
@@ -337,7 +342,22 @@ def main() -> int:
                 clog=torch.log_softmax(logits,0)
                 distill.append((pp*(plog-clog)).sum())
                 zero.append((res**2).mean())
-            teacher=[v34._teacher_margin_loss(parent,adapter,torch,r,a.teacher_margin) for r in positives]
+            teacher=[]; teacher_weights=[]; parent_margin_losses=[]
+            for r in positives:
+                weight=float(r.get("cluster_weight",1.0)) if a.clustered_teacher_weighting else 1.0
+                if not np.isfinite(weight) or weight<=0:
+                    raise RuntimeError("teacher cluster weight must be finite and positive")
+                logits,_=v34._teacher_logits(parent,adapter,torch,r)
+                target=int(r["teacher_best_index"])
+                with torch.no_grad():
+                    parent_logits=parent.net(v34._x(torch,r)).squeeze(1)
+                parent_top=int(torch.argmax(parent_logits))
+                teacher.append(v34._teacher_margin_loss(parent,adapter,torch,r,a.teacher_margin))
+                teacher_weights.append(weight)
+                if a.teacher_parent_margin>0:
+                    parent_margin_losses.append(torch.relu(parent_logits[parent_top]+a.teacher_parent_margin-logits[target]))
+            weights=torch.tensor(teacher_weights,dtype=teacher[0].dtype)
+            teacher_loss=(torch.stack(teacher)*weights).sum()/weights.sum()
             neg=[_negative_loss(parent,adapter,torch,r,a.negative_margin) for r in negatives]
             pres=[]
             for r in preservation:
@@ -346,9 +366,13 @@ def main() -> int:
             parts=[
                 a.distill_coef*torch.stack(distill).mean(),
                 a.zero_residual_coef*torch.stack(zero).mean(),
-                a.teacher_coef*torch.stack(teacher).mean(),
+                a.teacher_coef*teacher_loss,
                 a.negative_coef*torch.stack(neg).mean(),
             ]
+            if parent_margin_losses:
+                margin_weights=weights[:len(parent_margin_losses)]
+                parent_margin_loss=(torch.stack(parent_margin_losses)*margin_weights).sum()/margin_weights.sum()
+                parts.append(a.teacher_coef*parent_margin_loss)
             if pres: parts.append(a.preservation_coef*torch.stack(pres).mean())
             loss=torch.stack(parts).sum()
             opt.zero_grad(); loss.backward()
@@ -414,6 +438,12 @@ def main() -> int:
         "teacher_seeds":sorted({int(r["seed"]) for r in positives}),
         "negative_examples":len(negatives),
         "negative_seeds":sorted({int(r["seed"]) for r in negatives}),
+        "clustered_teacher_weighting":bool(a.clustered_teacher_weighting),
+        "teacher_parent_margin":float(a.teacher_parent_margin),
+        "teacher_cluster_seed_count_min":min((int(r.get("cluster_seed_count",1)) for r in positives),default=0),
+        "teacher_cluster_seed_count_max":max((int(r.get("cluster_seed_count",1)) for r in positives),default=0),
+        "teacher_cluster_weight_min":min((float(r.get("cluster_weight",1.0)) for r in positives),default=0.0),
+        "teacher_cluster_weight_max":max((float(r.get("cluster_weight",1.0)) for r in positives),default=0.0),
         "enabled_kinds":kinds,
         "selected_epoch":int(best[2]["epoch"]),
         "retention_policy":{"base_max_parent_kl":float(a.max_parent_kl),"max_kl_increase":float(a.max_kl_increase),"allowed_parent_kl":float(allowed_parent_kl)},
@@ -442,3 +472,4 @@ def main() -> int:
 
 if __name__=="__main__":
     raise SystemExit(main())
+

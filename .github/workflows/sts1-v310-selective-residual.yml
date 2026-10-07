@@ -47,9 +47,9 @@ jobs:
       - name: Validate code and cluster tests
         run: |
           set -euo pipefail
-          python -m py_compile scripts/sts1/sts1_build_rescue_clusters_v310.py scripts/sts1/sts1_build_rescue_adapter_v35.py
+          python -m py_compile scripts/sts1/sts1_build_rescue_clusters_v39.py scripts/sts1/sts1_build_rescue_adapter_v35.py
           python -m pip install pytest
-          pytest -q tests/test_sts1_rescue_clusters_v310.py
+          pytest -q tests/test_sts1_rescue_clusters_v39.py
           grep -Fq 'int(neg.numel()) == 0' src/roguelike_ai/sts1_phase3/simulator.py
 
       - uses: actions/download-artifact@v4
@@ -172,7 +172,7 @@ jobs:
           assert len(nrow)>=325
           print('V310_POOL_MERGE_PASS',{'positive':len(prow),'positive_seeds':len({int(r['seed']) for r in prow}),'negative':len(nrow),'preservation':len(anchors)})
           PY
-          python scripts/sts1/sts1_build_rescue_clusters_v310.py --input evidence/sts1/v310/train/positive.jsonl --output evidence/sts1/v310/train/clustered-positive.jsonl --report evidence/sts1/v310/train/cluster-report.json
+          python scripts/sts1/sts1_build_rescue_clusters_v39.py --input evidence/sts1/v310/train/positive.jsonl --output evidence/sts1/v310/train/clustered-positive.jsonl --report evidence/sts1/v310/train/cluster-report.json
 
       - name: Install and build pinned simulator
         run: |

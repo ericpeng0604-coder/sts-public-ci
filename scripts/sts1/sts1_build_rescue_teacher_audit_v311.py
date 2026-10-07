@@ -66,6 +66,10 @@ def run_audit(*,armg_root:Path,base_weight:Path,adapter_sidecar:Path,elite_repla
               teacher_replay:Path,preservation_replay:Path,margin:float,
               candidate_run_id:int,output_dir:Path)->dict[str,Any]:
     sys.path.insert(0,str(armg_root))
+    sim_dir=armg_root/"sim"/"sts_lightspeed"/"build312"
+    if not sim_dir.exists():
+        raise RuntimeError(f"pinned slaythespire binding is missing: {sim_dir}")
+    sys.path.insert(0,str(sim_dir))
     import sts1_build_rescue_adapter_v34 as v34
     import sts1_build_rescue_bc_v28 as base
     m=importlib.import_module("armG_train")

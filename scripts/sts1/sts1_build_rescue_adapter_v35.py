@@ -238,6 +238,10 @@ def main() -> int:
 
     os.environ["STS_BOT_DIR"]=str(a.armg_root)
     sys.path.insert(0,str(a.armg_root))
+    sim_dir=a.armg_root/"sim"/"sts_lightspeed"/"build312"
+    if not sim_dir.exists():
+        raise RuntimeError(f"pinned slaythespire binding is missing: {sim_dir}")
+    sys.path.insert(0,str(sim_dir))
     torch=importlib.import_module("torch")
     torch.set_num_threads(a.threads)
     torch.manual_seed(20261006)

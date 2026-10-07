@@ -1,1 +1,1 @@
-v3.11 audit-first choice-relative residual; per-Teacher guards, Probe10, conditional Dev30
+v3.11 retry: add pinned slaythespire build312 import path to Teacher audit and trainer

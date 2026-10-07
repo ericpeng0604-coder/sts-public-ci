@@ -1,0 +1,90 @@
+name: STS1 v3.10 Activation Delta Analysis
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v310-activation-delta.trigger
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  issues: write
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sts1-v310-activation-audit-37633551123
+          path: evidence/sts1/v310-activation-source
+          github-token: ${{ github.token }}
+          run-id: '37633551123'
+      - name: Compute required versus actual score delta
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math
+          from collections import defaultdict
+          from pathlib import Path
+          source=Path('evidence/sts1/v310-activation-source/decisions.jsonl')
+          rows=[json.loads(x) for x in source.read_text().splitlines() if x.strip()]
+          def q(values,p):
+              if not values:return None
+              a=sorted(values); i=(len(a)-1)*p; lo=math.floor(i); hi=math.ceil(i)
+              return a[lo]+(a[hi]-a[lo])*(i-lo)
+          groups=defaultdict(list)
+          for r in rows:
+              if not r['gate_checked'] or not r['gate_allowed']: continue
+              raw=r['g7_raw_scores']; residual=r['adapter_residual_scores']; top=int(r['g7_top1_index'])
+              alternatives=[i for i in range(len(raw)) if i!=top]
+              best_raw=max(alternatives,key=lambda i:raw[i])
+              required=float(raw[top]-raw[best_raw])
+              actual=max(float(residual[i]-residual[top]) for i in alternatives)
+              candidate_delta=max(float((raw[i]+residual[i])-(raw[top]+residual[top])) for i in alternatives)
+              rec={'required_delta':required,'actual_residual_delta':actual,'shortfall':required-actual,
+                   'closure_ratio':actual/required if required>0 else None,'candidate_top1_index':r['candidate_top1_index'],
+                   'top1_changed':r['top1_changed']}
+              groups[r['decision_kind']].append(rec)
+          def stats(rs):
+              return {'count':len(rs),'changed':sum(x['top1_changed'] for x in rs),
+                  'required_delta':{k:q([x['required_delta'] for x in rs],p) for k,p in [('p50',.5),('p75',.75),('p90',.9)]},
+                  'actual_residual_delta':{k:q([x['actual_residual_delta'] for x in rs],p) for k,p in [('p50',.5),('p75',.75),('p90',.9)]},
+                  'shortfall':{k:q([x['shortfall'] for x in rs],p) for k,p in [('p50',.5),('p75',.75),('p90',.9)]},
+                  'decisions_with_sufficient_delta':sum(x['actual_residual_delta']>=x['required_delta'] for x in rs)}
+          result={'schema_version':'sts1-v310-activation-delta-analysis','artifact_run':37633551123,
+              'allowed_decisions':sum(map(len,groups.values())),'by_kind':{k:stats(v) for k,v in sorted(groups.items())}}
+          out=Path('evidence/sts1/v310-activation-delta');out.mkdir(parents=True,exist_ok=True)
+          (out/'summary.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print('V310_ACTIVATION_DELTA',json.dumps(result,sort_keys=True))
+          PY
+      - name: Report activation delta evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          p=Path('evidence/sts1/v310-activation-delta/summary.json')
+          print('@ericpeng0604-coder\n')
+          print('## STS1 v3.10 Activation Delta Analysis\n')
+          if not p.exists():
+              print('Delta analysis failed before producing a summary. Candidate remains HOLD_PARENT.')
+          else:
+              x=json.loads(p.read_text())
+              print(f"Allowed multi-choice decisions: {x['allowed_decisions']}\n")
+              for kind,d in x['by_kind'].items():
+                  print(f"- {kind}: required delta p50/p90 {d['required_delta']['p50']:.3f}/{d['required_delta']['p90']:.3f}; actual residual delta p50/p90 {d['actual_residual_delta']['p50']:.3f}/{d['actual_residual_delta']['p90']:.3f}; sufficient {d['decisions_with_sufficient_delta']}/{d['count']}; top1 changed {d['changed']}")
+              print('\nFinal:\n- HOLD_PARENT')
+          PY
+          gh api repos/$GITHUB_REPOSITORY/issues/15/comments -f body="$(cat "$RUNNER_TEMP/body.txt")"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v310-activation-delta-${{ github.run_id }}
+          path: evidence/sts1/v310-activation-delta/
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,175 @@
+name: STS1 v3.8 Activation Probe
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v38-activation-probe.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  CANDIDATE_RUN_ID: '37431578974'
+  CANDIDATE_ARTIFACT: 'sts1-v35br-candidate-37431578974'
+  SCREEN_RUN_ID: '37393165126'
+  SCREEN_ARTIFACT: 'sts1-v35b-screen-37393165126'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-v38-activation-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CANDIDATE_ARTIFACT }}
+          path: evidence/sts1/v38/source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.CANDIDATE_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SCREEN_ARTIFACT }}
+          path: evidence/sts1/v38/screen
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SCREEN_RUN_ID }}
+
+      - name: Test probe summary and decision-kind aggregation
+        run: |
+          set -euo pipefail
+          python -m pip install pytest
+          pytest -q tests/test_sts1_activation_probe_v38.py
+
+      - name: Create disjoint Probe30 seed ledger
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("evidence/sts1/v38")
+          train=[int(x) for x in (root/"screen/train300.txt").read_text().split()]
+          mined=[int(x) for x in (root/"screen/priority80.txt").read_text().split()]
+          assert len(train)==300 and len(set(train))==300
+          assert len(mined)==80 and len(set(mined))==80 and set(mined)<=set(train)
+          untouched=[x for x in train if x not in set(mined)]
+          dev30=untouched[:30]
+          dev50=untouched[30:80]
+          probe30=untouched[80:110]
+          assert len(untouched)==220 and len(dev30)==30 and len(dev50)==50 and len(probe30)==30
+          assert not (set(dev30)&set(dev50) or set(dev30)&set(probe30) or set(dev50)&set(probe30))
+          assert not (set(probe30)&set(mined)) and set(probe30)<=set(train)
+          for name,values in (("v36-dev30",dev30),("v37-dev50",dev50),("probe30",probe30)):
+              (root/f"{name}.txt").write_text("\n".join(map(str,values))+"\n")
+          ledger={"schema_version":"sts1-v38-probe-seed-ledger","source":"train300 minus priority80",
+                  "train300_count":len(train),"priority80_count":len(mined),"untouched_count":len(untouched),
+                  "v36_dev30":dev30,"v37_dev50":dev50,"probe30":probe30,
+                  "formal_seed_sources_read":False}
+          (root/"seed-ledger.json").write_text(json.dumps(ledger,indent=2,sort_keys=True)+"\n")
+          print("V38_SEED_LEDGER_PASS",json.dumps({k:v for k,v in ledger.items() if not isinstance(v,list)},sort_keys=True))
+          PY
+
+      - name: Install and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v38
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/g7.zip" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"
+          unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent"
+          test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+          echo "$parent" > evidence/sts1/v38/g7-weight-path.txt
+
+      - name: Run paired activation probe
+        run: |
+          set -euo pipefail
+          parent="$(cat evidence/sts1/v38/g7-weight-path.txt)"
+          test -f evidence/sts1/v38/source/candidate.pt
+          test -f evidence/sts1/v38/source/candidate.pt.adapter.pt
+          python scripts/sts1/sts1_build_rescue_activation_probe_v38.py \
+            --module-dir external/sts_lightspeed/source/build-probe \
+            --armg-root .cache/sts1-v38 \
+            --parent-weight "$parent" \
+            --candidate-weight evidence/sts1/v38/source/candidate.pt \
+            --seed-file evidence/sts1/v38/probe30.txt \
+            --output-dir evidence/sts1/v38/probe \
+            --mcts-sims 2000 --workers 4
+
+      - name: Write v3.8 summary and Issue report
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("evidence/sts1/v38")
+          source=root/"probe/summary.json"
+          if source.exists():
+              x=json.loads(source.read_text())
+              x["readiness"]="HOLD_PARENT"
+              x["promotion_evidence"]="diagnostic-only; Probe30 is excluded from Formal gates"
+              (root/"summary.json").write_text(json.dumps(x,indent=2,sort_keys=True)+"\n")
+              print("V38_FINAL",json.dumps(x,sort_keys=True))
+          else:
+              (root/"summary.json").write_text(json.dumps({"schema_version":"sts1-v38-activation-probe","readiness":"HOLD_PARENT","probe_complete":False},indent=2)+"\n")
+          PY
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          p=Path("evidence/sts1/v38/summary.json")
+          x=json.loads(p.read_text())
+          print("@ericpeng0604-coder\n")
+          print("## STS1 v3.8 Activation Probe\n")
+          print("Data:\n- Positive Teacher: 62 decisions / 56 seeds (reused v3.5 source)\n- Positive Seeds: 56\n- Negative: 317+ (reused v3.5 source)\n- Preservation: reused v3.5 preservation anchors\n")
+          print("Training:\n- selected epoch: 1 (source run 37431578974)\n- fully learned: not retrained in this diagnostic run\n- KL / allowed KL: not recomputed / source contract approximately 0.00296\n- preservation / negative rejection: reused source candidate; not retrained\n")
+          print("Activation:")
+          for k in ["gate_checks","gate_allowed","gate_blocked","adapter_applied","top1_changed"]: print(f"- {k}: {x.get(k,'NOT_VERIFIED')}")
+          print(f"- gate_allow_rate: {x.get('gate_allow_rate','NOT_VERIFIED')}\n- top1_change_rate_given_allow: {x.get('top1_change_rate_given_allow','NOT_VERIFIED')}\n- top1_change_rate_total: {x.get('top1_change_rate_total','NOT_VERIFIED')}\n- bottleneck: {x.get('diagnostic_case','NOT_VERIFIED')}\n")
+          dev=f"Probe30: Candidate {x.get('candidate_wins','NOT_VERIFIED')} / G7 {x.get('parent_wins','NOT_VERIFIED')} (diagnostic only)"
+          print("Evaluation:\n- Dev: "+dev+"\n- Gate30: not run\n- Gate50: not run\n- Fresh100: not run\n- Fresh500: not run\n")
+          print("Final:\n- HOLD_PARENT")
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" -f body="$(cat "$RUNNER_TEMP/body.txt")"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v38-activation-probe-${{ github.run_id }}
+          path: evidence/sts1/v38/
+          if-no-files-found: warn
+          retention-days: 90

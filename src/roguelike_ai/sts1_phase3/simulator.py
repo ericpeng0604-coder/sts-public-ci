@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 import argparse
 import importlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -390,6 +391,7 @@ class ArmGNoncombatPolicy:
         root: Path,
         weight_path: Path,
         map_weight_path: Path | None = None,
+        activation_probe: bool = False,
     ) -> None:
         if not root.is_dir():
             raise SimulatorRunError(f"ArmG compatibility root missing: {root}")
@@ -520,26 +522,40 @@ class ArmGNoncombatPolicy:
         self.weight_path = weight_path
         self.map_weight_path = map_weight_path or weight_path
         self.contextual_card_rerank = os.environ.get("STS1_TEACHER_V2_CONTEXTUAL_RERANK", "0") == "1"
+        self.activation_probe = bool(activation_probe)
+        self.activation_total_noncombat_decisions = 0
+        self.activation_multi_choice_decisions = 0
+        self.activation_decision_kinds: dict[str, int] = {}
+        self.activation_records: list[dict[str, Any]] = []
 
-    def _adapter_gate_allows(self, kind: str, obs: Any) -> bool:
+    def _adapter_gate_metrics(self, kind: str, obs: Any) -> dict[str, Any]:
+        """Return auditable confidence-gate distances without changing gate semantics."""
         if self.adapter_gate is None:
-            return True
+            return {"allowed": True, "d_positive": None, "d_negative": None,
+                    "max_positive_distance": None, "positive_to_negative_ratio": None}
         gate = self.adapter_gate
         positive = gate["positive_centers"].get(str(kind))
-        if positive is None or int(positive.shape[0]) == 0:
-            return False
-        z = (obs - gate["obs_mean"]) / gate["obs_std"]
-        d_pos = self.torch.mean((positive - z.unsqueeze(0)) ** 2, dim=1).min()
+        ratio = float(gate["positive_to_negative_ratio"])
         max_distance = gate["max_positive_distance"].get(str(kind))
-        if max_distance is not None and float(d_pos) > float(max_distance):
-            return False
+        if positive is None or int(positive.shape[0]) == 0:
+            return {"allowed": False, "d_positive": None, "d_negative": None,
+                    "max_positive_distance": max_distance,
+                    "positive_to_negative_ratio": ratio}
+        z = (obs - gate["obs_mean"]) / gate["obs_std"]
+        d_pos = float(self.torch.mean((positive - z.unsqueeze(0)) ** 2, dim=1).min())
         negative = gate["negative_centers"].get(str(kind))
+        d_neg = None
         if negative is not None and int(negative.shape[0]) > 0:
-            d_neg = self.torch.mean((negative - z.unsqueeze(0)) ** 2, dim=1).min()
-            ratio = float(gate["positive_to_negative_ratio"])
-            if float(d_pos) > float(d_neg) * ratio:
-                return False
-        return True
+            d_neg = float(self.torch.mean((negative - z.unsqueeze(0)) ** 2, dim=1).min())
+        allowed = max_distance is None or d_pos <= float(max_distance)
+        if allowed and d_neg is not None:
+            allowed = d_pos <= d_neg * ratio
+        return {"allowed": bool(allowed), "d_positive": d_pos, "d_negative": d_neg,
+                "max_positive_distance": max_distance,
+                "positive_to_negative_ratio": ratio}
+
+    def _adapter_gate_allows(self, kind: str, obs: Any) -> bool:
+        return bool(self._adapter_gate_metrics(kind, obs)["allowed"])
 
     def choices(self, gc: Any) -> tuple[str, list[Any], list[Any]]:
         kind, descs, execs = self.module.build_choices(gc)
@@ -553,11 +569,16 @@ class ArmGNoncombatPolicy:
         net = self.map_net if kind == "map" else self.net
         with self.torch.no_grad():
             scores = net.score(obs, descs)
-            if (
-                self.adapter is not None
-                and kind in self.adapter_kinds
-                and self._adapter_gate_allows(kind, obs)
-            ):
+            raw_scores = scores
+            adapter_enabled = self.adapter is not None and kind in self.adapter_kinds
+            gate_checked = bool(adapter_enabled and self.adapter_gate is not None)
+            gate_metrics = self._adapter_gate_metrics(kind, obs) if adapter_enabled else {
+                "allowed": False, "d_positive": None, "d_negative": None,
+                "max_positive_distance": None, "positive_to_negative_ratio": None,
+            }
+            gate_allowed = bool(adapter_enabled and gate_metrics["allowed"])
+            residual_scores = self.torch.zeros_like(scores)
+            if adapter_enabled:
                 desc_tensor = self.torch.tensor(descs, dtype=self.torch.float32)
                 x = self.torch.cat([obs.repeat(len(descs), 1), desc_tensor], 1)
                 if int(x.shape[1]) != int(self.adapter[0].in_features):
@@ -565,7 +586,46 @@ class ArmGNoncombatPolicy:
                         f"ArmG residual adapter input mismatch: {int(x.shape[1])} != "
                         f"{int(self.adapter[0].in_features)}"
                     )
-                scores = scores + self.adapter(x).squeeze(1)
+                residual_scores = self.adapter(x).squeeze(1)
+                if gate_allowed:
+                    scores = scores + residual_scores
+            if self.activation_probe:
+                raw_values = [float(x) for x in raw_scores.tolist()]
+                residual_values = [float(x) for x in residual_scores.tolist()]
+                candidate_values = [float(x) for x in scores.tolist()]
+                audit_values = raw_values + residual_values + candidate_values
+                audit_values.extend(
+                    float(gate_metrics[key])
+                    for key in ("d_positive", "d_negative", "max_positive_distance")
+                    if gate_metrics[key] is not None
+                )
+                if not all(math.isfinite(value) for value in audit_values):
+                    raise SimulatorRunError("non-finite score or confidence distance in activation probe")
+                raw_order = sorted(raw_values, reverse=True)
+                candidate_order = sorted(candidate_values, reverse=True)
+                self.activation_records.append({
+                    "decision_kind": kind,
+                    "choice_semantics": [self.describe_choice(kind, d) for d in descs],
+                    "g7_raw_scores": raw_values,
+                    "g7_top1_index": int(self.torch.argmax(raw_scores).item()),
+                    "gate_checked": gate_checked,
+                    "gate_allowed": gate_allowed,
+                    "d_positive": gate_metrics["d_positive"],
+                    "d_negative": gate_metrics["d_negative"],
+                    "max_positive_distance": gate_metrics["max_positive_distance"],
+                    "positive_to_negative_ratio": gate_metrics["positive_to_negative_ratio"],
+                    "adapter_applied": gate_allowed,
+                    "adapter_residual_scores": residual_values,
+                    "candidate_scores": candidate_values,
+                    "candidate_top1_index": int(self.torch.argmax(scores).item()),
+                    "top1_changed": int(self.torch.argmax(raw_scores).item()) != int(self.torch.argmax(scores).item()),
+                    "margin_before": raw_order[0] - raw_order[1],
+                    "margin_after": candidate_order[0] - candidate_order[1],
+                    "floor": _value(gc, "floor_num"),
+                    "act": _value(gc, "act"),
+                    "hp": _value(gc, "cur_hp"),
+                    "gold": _value(gc, "gold"),
+                })
         return kind, descs, scores
 
     def choose_index(self, gc: Any, sts: Any) -> tuple[str, int, int]:
@@ -608,6 +668,11 @@ class ArmGNoncombatPolicy:
 
     def decide(self, gc: Any, sts: Any) -> tuple[str, int, list[Any], list[Any], list[float]]:
         kind, descs, execs = self.choices(gc)
+        if self.activation_probe:
+            self.activation_total_noncombat_decisions += 1
+            self.activation_decision_kinds[kind] = self.activation_decision_kinds.get(kind, 0) + 1
+            if len(descs) >= 2:
+                self.activation_multi_choice_decisions += 1
         if not descs:
             if gc.screen_state == sts.ScreenState.REWARDS:
                 return "reward_empty", -1, [], [], []

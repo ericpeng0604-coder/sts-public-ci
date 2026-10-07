@@ -1,0 +1,360 @@
+name: STS1 v3.10 Clustered Rescue Candidate
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v310-clustered-rescue.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '37393165126'
+  SCREEN_ARTIFACT: 'sts1-v35b-screen-37393165126'
+  DATASET_ARTIFACT: 'sts1-v35b-dataset-37393165126'
+  V34_RUN_ID: '37318408007'
+  V34_CANDIDATE_ARTIFACT: 'sts1-v34-candidate-37318408007'
+  V34_MINING_ARTIFACT: 'v34-mine-recovered-37318408007'
+  V34_TRACE_RUN_ID: '36962596407'
+  V34_TRACE_ARTIFACT: 'sts1-v34-regression-trace-36962596407'
+  V322_RUN_ID: '36823568672'
+  V322_ARTIFACT: 'sts1-v322-active-repair-36823568672'
+  V38_RUN_ID: '37621983723'
+  V38_ARTIFACT: 'sts1-v38-activation-probe-37621983723'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+concurrency:
+  group: sts1-v310-clustered-rescue
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate code and cluster tests
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/sts1/sts1_build_rescue_clusters_v310.py scripts/sts1/sts1_build_rescue_adapter_v35.py
+          python -m pip install pytest
+          pytest -q tests/test_sts1_rescue_clusters_v310.py
+          grep -Fq 'int(neg.numel()) == 0' src/roguelike_ai/sts1_phase3/simulator.py
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SCREEN_ARTIFACT }}
+          path: evidence/sts1/v310/screen
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.DATASET_ARTIFACT }}
+          path: evidence/sts1/v310/data
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V34_CANDIDATE_ARTIFACT }}
+          path: evidence/sts1/v310/v34
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V34_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V34_MINING_ARTIFACT }}
+          path: evidence/sts1/v310/mining
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V34_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V322_ARTIFACT }}
+          path: evidence/sts1/v310/v322
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V322_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V34_TRACE_ARTIFACT }}
+          path: evidence/sts1/v310/v34-trace
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V34_TRACE_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V38_ARTIFACT }}
+          path: evidence/sts1/v310/v38
+          github-token: ${{ github.token }}
+          run-id: ${{ env.V38_RUN_ID }}
+
+      - name: Validate frozen training pools and create v310 Dev30 ledger
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('evidence/sts1/v310')
+          screen=root/'screen'
+          for p in ['train300.txt','priority80.txt']:
+              candidates=list(screen.rglob(p))
+              if not candidates: raise SystemExit(f'missing frozen seed file: {p}')
+          for p in ['v36-dev30.txt','v37-dev50.txt','probe30.txt']:
+              candidates=list((root/'v38').rglob(p))
+              if not candidates: raise SystemExit(f'missing prior dev/probe seed file: {p}')
+          def read(name):
+              return [int(x) for x in next(screen.rglob(name)).read_text().split()]
+          def read_v38(name):
+              return [int(x) for x in next((root/'v38').rglob(name)).read_text().split()]
+          train=read('train300.txt'); mined=read('priority80.txt')
+          old36=read_v38('v36-dev30.txt'); old37=read_v38('v37-dev50.txt'); old38=read_v38('probe30.txt')
+          assert len(train)==300 and len(set(train))==300
+          assert len(mined)==80 and len(set(mined))==80 and set(mined)<=set(train)
+          untouched=[s for s in train if s not in set(mined)]
+          assert len(untouched)==220
+          prior=set(old36)|set(old37)|set(old38)
+          assert len(old36)==30 and len(old37)==50 and len(old38)==30
+          assert not (set(old36)&set(old37) or set(old36)&set(old38) or set(old37)&set(old38))
+          assert prior<=set(untouched)
+          remaining=[s for s in untouched if s not in prior]
+          assert len(remaining)==110, len(remaining)
+          v39_dev=remaining[:30]
+          dev=remaining[30:60]
+          assert len(set(dev))==30 and len(set(v39_dev))==30 and not (set(dev)&(set(mined)|prior|set(v39_dev)))
+          out=root/'candidate'; out.mkdir(parents=True,exist_ok=True)
+          (out/'dev30-seeds.txt').write_text('\n'.join(map(str,dev))+'\n')
+          ledger={'schema_version':'sts1-v310-dev-seed-ledger','source':'train300 minus priority80, v36 dev30, v37 dev50, v38 probe30, v39 dev30',
+                  'train300_count':len(train),'priority80_count':len(mined),'prior_dev_probe_count':len(prior),
+                  'remaining_untouched_count':len(remaining),'v39_dev30':v39_dev,'dev30':dev,'formal_seed_sources_read':False}
+          (out/'seed-ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          print('V310_DEV_LEDGER_PASS',json.dumps({k:v for k,v in ledger.items() if not isinstance(v,list)},sort_keys=True))
+          PY
+          for f in evidence/sts1/v310/data/summary.json evidence/sts1/v310/data/new-win-teachers.jsonl evidence/sts1/v310/data/negative-examples.jsonl evidence/sts1/v310/v34/candidate.pt.adapter.pt evidence/sts1/v310/v34/combined-teachers.jsonl evidence/sts1/v310/v34-trace/regression2-anchors.jsonl; do if ! test -s "$f"; then echo "MISSING_RECOVERY_FILE=$f"; find evidence/sts1/v310 -maxdepth 4 -type f -print | sort; exit 1; fi; done
+          test -f evidence/sts1/v310/v322/preservation-active.jsonl || { echo MISSING_RECOVERY_FILE=evidence/sts1/v310/v322/preservation-active.jsonl; exit 1; }
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('evidence/sts1/v310/data/summary.json').read_text())
+          assert s['teacher_seeds']==29 and s['teacher_examples']==32
+          assert s['negative_examples']>=317 and s['negative_validation_errors']==0 and s['training_eval_overlap']==0
+          print('V310_SOURCE_DATA_PASS',{'teachers':s['teacher_examples'],'seeds':s['teacher_seeds'],'negatives':s['negative_examples']})
+          PY
+
+      - name: Merge verified Positive, Negative, and Preservation pools
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/sts1/v310/train
+          python scripts/sts1/sts1_build_rescue_v35_recover_negatives.py --results-dir evidence/sts1/v310/mining --positive-teachers evidence/sts1/v310/v34/combined-teachers.jsonl --output evidence/sts1/v310/train/old-negatives.jsonl --max-per-seed 8
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          def load(p): return [json.loads(x) for x in Path(p).read_text().splitlines() if x.strip()]
+          def state(r): return json.dumps({'kind':r['kind'],'obs':r['obs'],'descs':r['descs']},sort_keys=True,separators=(',',':'))
+          oldp=load('evidence/sts1/v310/v34/combined-teachers.jsonl'); newp=load('evidence/sts1/v310/data/new-win-teachers.jsonl')
+          pos={(state(r),int(r['teacher_best_index'])):r for r in oldp+newp}; prow=list(pos.values()); pst={state(r) for r in prow}
+          oldn=load('evidence/sts1/v310/train/old-negatives.jsonl'); newn=load('evidence/sts1/v310/data/negative-examples.jsonl')
+          neg={(state(r),int(r['current_armg_index']),int(r['rejected_index'])):r for r in oldn+newn if state(r) not in pst}; nrow=list(neg.values())
+          pres=[]
+          for p in ['evidence/sts1/v310/v322/preservation-active.jsonl','evidence/sts1/v310/v34-trace/regression2-anchors.jsonl']: pres.extend(load(p))
+          anchors={(state(r),int(r['parent_selected_index'])):r for r in pres}
+          assert anchors, 'no verified preservation anchors in merged input'
+          out=Path('evidence/sts1/v310/train')
+          for name,rows in [('positive.jsonl',prow),('negative.jsonl',nrow),('preservation.jsonl',list(anchors.values()))]:
+              (out/name).write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in rows))
+          assert len(prow)==62 and len({int(r['seed']) for r in prow})==56
+          assert len(nrow)>=325
+          print('V310_POOL_MERGE_PASS',{'positive':len(prow),'positive_seeds':len({int(r['seed']) for r in prow}),'negative':len(nrow),'preservation':len(anchors)})
+          PY
+          python scripts/sts1/sts1_build_rescue_clusters_v310.py --input evidence/sts1/v310/train/positive.jsonl --output evidence/sts1/v310/train/clustered-positive.jsonl --report evidence/sts1/v310/train/cluster-report.json
+
+      - name: Install and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v310
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7 and replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"; unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"; elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          test -n "$parent" && test -n "$elite" && test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Train selective clustered Candidate with retention gates
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v310/candidate; mkdir -p "$out"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"; elite="$(find "$RUNNER_TEMP/g7" -name elite-replay.npz -print -quit)"
+          python -u scripts/sts1/sts1_build_rescue_adapter_v35.py --armg-root .cache/sts1-v310 --base-weight "$parent" --elite-replay "$elite" \
+            --new-win-replay evidence/sts1/v310/train/clustered-positive.jsonl --negative-replay evidence/sts1/v310/train/negative.jsonl \
+            --preservation-replay evidence/sts1/v310/train/preservation.jsonl --init-adapter-sidecar evidence/sts1/v310/v34/candidate.pt.adapter.pt \
+            --output "$out/candidate.pt" --report "$out/train-report.json" --hidden-dim 48 --epochs 6 --lr 0.00003 \
+            --elite-train-max 8192 --retention-eval-max 2048 --teacher-margin 0.05 --teacher-parent-margin 1.0 --residual-init-scale 3.0 --teacher-coef 4.0 \
+            --clustered-teacher-weighting --negative-margin 0.02 --negative-coef 4.0 --distill-coef 18.0 --zero-residual-coef 1.0 \
+            --preservation-coef 24.0 --preservation-margin 0.03 --min-preservation-margin 0.01 --weight-decay 0.00001 \
+            --min-fully-learned-seeds 12 --min-parent-agreement 0.995 --max-parent-kl 0.002 --max-kl-increase 0.001 \
+            --max-winner-drop 0.01 --gate-ratio 0.80 --threads 4
+          test -s "$out/candidate.pt" && test -s "$out/candidate.pt.adapter.pt"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('evidence/sts1/v310/candidate/train-report.json'); r=json.loads(p.read_text())
+          print('V310_TRAIN_PASS',json.dumps({'selected_epoch':r['selected_epoch'],'fully_learned':r['after']['new_win']['fully_learned_seeds'],'parent_kl':r['after']['retention']['parent_kl'],'allowed_kl':r['retention_policy']['allowed_parent_kl'],'preservation':r['after']['preservation']['top1'],'negative_rejection':r['after']['negative']['rejected_top1_rate'],'cluster_weighting':r['clustered_teacher_weighting'],'teacher_parent_margin':r['teacher_parent_margin']},sort_keys=True))
+          PY
+
+      - name: Run untouched dev-only paired evaluation
+        id: dev
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v310/candidate; parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v310 --parent-weight "$parent" --candidate-weight "$out/candidate.pt" --seed-file "$out/dev30-seeds.txt" --output "$out/dev30.json" --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v310-dev30
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open('evidence/sts1/v310/candidate/dev30.json')); net=x['candidate_only_wins']-x['parent_only_wins']
+          for k,v in {'nonnegative':str(net>=0).lower(),'net':net,'parent':x['parent_wins'],'candidate':x['candidate_wins'],'candidate_only':x['candidate_only_wins'],'parent_only':x['parent_only_wins']}.items(): print(f'{k}={v}')
+          PY
+
+      - name: Freeze formal evaluation seeds after Dev30
+        if: steps.dev.outputs.nonnegative == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v310/candidate
+          cp "$(find evidence/sts1/v310/screen -name phaseb_gate50.txt -print -quit)" "$out/gate50.txt"
+          head -30 "$out/gate50.txt" > "$out/gate30.txt"
+          cp "$(find evidence/sts1/v310/screen -name phaseb_fresh100.txt -print -quit)" "$out/fresh100.txt"
+          cp "$(find evidence/sts1/v310/screen -name phaseb_fresh500.txt -print -quit)" "$out/fresh500.txt"
+          cp control/sts1-v22-parent-only-seeds-2.txt "$out/regression2.txt"
+
+      - name: Gate30 unseen precheck
+        id: g30
+        if: steps.dev.outputs.nonnegative == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v310/candidate; parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v310 --parent-weight "$parent" --candidate-weight "$out/candidate.pt" --seed-file "$out/gate30.txt" --output "$out/gate30.json" --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v310-gate30
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open('evidence/sts1/v310/candidate/gate30.json')); n=x['candidate_only_wins']-x['parent_only_wins']; ok=n>=0
+          for k,v in {'nonnegative':str(ok).lower(),'net':n,'parent':x['parent_wins'],'candidate':x['candidate_wins'],'candidate_only':x['candidate_only_wins'],'parent_only':x['parent_only_wins']}.items(): print(f'{k}={v}')
+          PY
+
+      - name: Gate50 unseen promotion screen
+        id: g50
+        if: steps.g30.outputs.nonnegative == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v310/candidate; parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v310 --parent-weight "$parent" --candidate-weight "$out/candidate.pt" --seed-file "$out/gate50.txt" --output "$out/gate50.json" --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 1.0 --label v310-gate50
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open('evidence/sts1/v310/candidate/gate50.json')); n=x['candidate_only_wins']-x['parent_only_wins']; ok=n>0 and x['candidate_wins']>x['parent_wins']
+          for k,v in {'passed':str(ok).lower(),'net':n,'parent':x['parent_wins'],'candidate':x['candidate_wins'],'candidate_only':x['candidate_only_wins'],'parent_only':x['parent_only_wins']}.items(): print(f'{k}={v}')
+          PY
+
+      - name: Fresh100 formal paired exact-sign gate
+        id: f100
+        if: steps.g50.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v310/candidate; parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v310 --parent-weight "$parent" --candidate-weight "$out/candidate.pt" --seed-file "$out/fresh100.txt" --output "$out/fresh100.json" --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v310-fresh100
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open('evidence/sts1/v310/candidate/fresh100.json')); n=x['candidate_only_wins']-x['parent_only_wins']; ok=n>0 and x['candidate_wins']>x['parent_wins'] and x['paired_sign_pvalue_one_sided']<=.10
+          for k,v in {'passed':str(ok).lower(),'net':n,'parent':x['parent_wins'],'candidate':x['candidate_wins'],'candidate_only':x['candidate_only_wins'],'parent_only':x['parent_only_wins'],'pvalue':x['paired_sign_pvalue_one_sided']}.items(): print(f'{k}={v}')
+          PY
+
+      - name: Fresh500 formal paired exact-sign gate
+        id: f500
+        if: steps.f100.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v310/candidate; parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v310 --parent-weight "$parent" --candidate-weight "$out/candidate.pt" --seed-file "$out/fresh500.txt" --output "$out/fresh500.json" --mcts-sims 2000 --workers 4 --min-win-delta 1 --max-pvalue 0.10 --label v310-fresh500
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          x=json.load(open('evidence/sts1/v310/candidate/fresh500.json')); n=x['candidate_only_wins']-x['parent_only_wins']; ok=n>0 and x['candidate_wins']>x['parent_wins'] and x['paired_sign_pvalue_one_sided']<=.10
+          for k,v in {'passed':str(ok).lower(),'net':n,'parent':x['parent_wins'],'candidate':x['candidate_wins'],'candidate_only':x['candidate_only_wins'],'parent_only':x['parent_only_wins'],'pvalue':x['paired_sign_pvalue_one_sided']}.items(): print(f'{k}={v}')
+          PY
+
+      - name: Write summary and Issue #15 report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV_NET: ${{ steps.dev.outputs.net }}
+          DEV_PARENT: ${{ steps.dev.outputs.parent }}
+          DEV_CAND: ${{ steps.dev.outputs.candidate }}
+          G30_NET: ${{ steps.g30.outputs.net }}
+          G30_PARENT: ${{ steps.g30.outputs.parent }}
+          G30_CAND: ${{ steps.g30.outputs.candidate }}
+          G50_PASS: ${{ steps.g50.outputs.passed }}
+          F100_PASS: ${{ steps.f100.outputs.passed }}
+          F500_PASS: ${{ steps.f500.outputs.passed }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path('evidence/sts1/v310/candidate'); out.mkdir(parents=True,exist_ok=True)
+          def read(n):
+              p=out/f'{n}.json'
+              return json.loads(p.read_text()) if p.exists() else None
+          tr=json.loads((out/'train-report.json').read_text()) if (out/'train-report.json').exists() else None
+          def read_from(p):
+              q=Path(p)
+              return json.loads(q.read_text()) if q.exists() else None
+          s={'schema_version':'sts1-v310-clustered-rescue','training':tr,'clusters':read_from('evidence/sts1/v310/train/cluster-report.json'), 'dev30':read('dev30'),'gate30':read('gate30'),'gate50':read('gate50'),'fresh100':read('fresh100'),'fresh500':read('fresh500')}
+          safety=('illegal_action_count','crash_count')
+          f500=s['fresh500'] or {}
+          safe=bool(f500.get('rows')) and all(
+              r.get(side,{}).get('result') == 'PASS_SIMULATOR_COMPLETE_RUN' and
+              all(int(r.get(side,{}).get(k,0) or 0)==0 for k in ('illegal_action_count','crash_count','timeout_count','remote_error_count'))
+              for r in f500.get('rows',[]) for side in ('parent','candidate'))
+          f500['safety_verified_zero'] = safe
+          s['readiness']='READY_FOR_REAL_GAME_GATE' if f500.get('pass') is True and f500.get('candidate_wins',0)>f500.get('parent_wins',0) and f500.get('candidate_only_wins',0)>f500.get('parent_only_wins',0) and f500.get('paired_sign_pvalue_one_sided',1)<=.10 and safe else 'HOLD_PARENT'
+          (out/'summary.json').write_text(json.dumps(s,indent=2,sort_keys=True)+'\n')
+          print('V310_FINAL',json.dumps({'readiness':s['readiness'],'dev30':s['dev30'],'gate30':s['gate30'],'gate50':s['gate50'],'fresh100':s['fresh100'],'fresh500':s['fresh500']},sort_keys=True))
+          PY
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          p=Path('evidence/sts1/v310/candidate/summary.json'); x=json.loads(p.read_text())
+          tr=x.get('training') or {}; aft=tr.get('after') or {}; ret=aft.get('retention') or {}; cl=x.get('clusters') or {}
+          print('@ericpeng0604-coder\n')
+          print('## STS1 v3.10 Clustered Rescue\n')
+          print('Data:\n- Positive Teacher: 62 decisions\n- Positive Seeds: 56\n- Negative: 325+\n- Preservation: verified v3.2.2 anchors and v3.4 regression anchors\n')
+          print(f"Training:\n- selected epoch: {tr.get('selected_epoch')}\n- fully learned: {(aft.get('new_win') or {}).get('fully_learned_seeds')}\n- KL: {ret.get('parent_kl')}\n- allowed KL: {(tr.get('retention_policy') or {}).get('allowed_parent_kl')}\n- preservation: {(aft.get('preservation') or {}).get('top1')}\n- negative rejection: {(aft.get('negative') or {}).get('rejected_top1_rate')}\n- clustered patterns: {cl.get('repeated_multi_seed_clusters')} repeated / {cl.get('clusters')} total\n- teacher parent margin: {tr.get('teacher_parent_margin')}\n")
+          print('Activation:\n- source: v3.9 Activation Audit on its Dev30 (baseline diagnostic)\n- gate checks: 1490\n- gate allowed: 139\n- adapter applied: 139\n- top1 changed: 0\n')
+          for n in ['dev30','gate30','gate50','fresh100','fresh500']:
+              d=x.get(n); print(f"{n}: NOT_RUN" if not d else f"{n}: G7 {d.get('parent_wins')} / Candidate {d.get('candidate_wins')}; C-only {d.get('candidate_only_wins')}; P-only {d.get('parent_only_wins')}; Net {d.get('candidate_only_wins',0)-d.get('parent_only_wins',0)}; p {d.get('paired_sign_pvalue_one_sided','n/a')}")
+          print(f"\nFinal:\n- {x['readiness']}")
+          PY
+          gh api repos/$GITHUB_REPOSITORY/issues/15/comments -f body="$(cat "$RUNNER_TEMP/body.txt")"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v310-clustered-rescue-${{ github.run_id }}
+          path: evidence/sts1/v310/
+          if-no-files-found: warn
+          retention-days: 90
+

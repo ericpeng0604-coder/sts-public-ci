@@ -135,7 +135,7 @@ jobs:
           (out/'seed-ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
           print('V39_DEV_LEDGER_PASS',json.dumps({k:v for k,v in ledger.items() if not isinstance(v,list)},sort_keys=True))
           PY
-          for f in evidence/sts1/v39/data/new-win-teachers.jsonl evidence/sts1/v39/data/negative-examples.jsonl evidence/sts1/v39/v34/candidate.pt.adapter.pt evidence/sts1/v39/v34/combined-teachers.jsonl evidence/sts1/v322/preservation-active.jsonl evidence/sts1/v39/v34-trace/regression2-anchors.jsonl; do test -s "$f"; done
+          for f in evidence/sts1/v39/data/summary.json evidence/sts1/v39/data/new-win-teachers.jsonl evidence/sts1/v39/data/negative-examples.jsonl evidence/sts1/v39/v34/candidate.pt.adapter.pt evidence/sts1/v39/v34/combined-teachers.jsonl evidence/sts1/v322/preservation-active.jsonl evidence/sts1/v39/v34-trace/regression2-anchors.jsonl; do if ! test -s "$f"; then echo "MISSING_RECOVERY_FILE=$f"; find evidence/sts1/v39 -maxdepth 4 -type f -print | sort; exit 1; fi; done
           python - <<'PY'
           import json
           from pathlib import Path

@@ -202,6 +202,8 @@ def main() -> int:
     p.add_argument("--teacher-coef",type=float,default=4.0)
     p.add_argument("--teacher-parent-margin",type=float,default=0.0,
                    help="minimum target-over-parent-top1 logit margin; 0 disables this v3.9 objective")
+    p.add_argument("--teacher-contrastive-margin",type=float,default=0.0,
+                   help="require the target residual to overcome the frozen parent top1 gap plus this margin")
     p.add_argument("--residual-init-scale",type=float,default=1.0,
                    help="multiply the warm-start final residual head before guarded training")
     p.add_argument("--clustered-teacher-weighting",action="store_true",
@@ -229,6 +231,7 @@ def main() -> int:
     if not 0<a.negative_margin<=0.5: raise RuntimeError("negative-margin outside safe bound")
     if not 0<a.gate_ratio<=1: raise RuntimeError("gate-ratio outside safe bound")
     if not 0<=a.teacher_parent_margin<=5: raise RuntimeError("teacher-parent-margin outside safe bound")
+    if not 0<=a.teacher_contrastive_margin<=5: raise RuntimeError("teacher-contrastive-margin outside safe bound")
     if not 0.5<=a.residual_init_scale<=8: raise RuntimeError("residual-init-scale outside safe bound")
     if not 0<=a.max_kl_increase<=0.01: raise RuntimeError("max-kl-increase outside safe bound")
 
@@ -349,7 +352,7 @@ def main() -> int:
                 clog=torch.log_softmax(logits,0)
                 distill.append((pp*(plog-clog)).sum())
                 zero.append((res**2).mean())
-            teacher=[]; teacher_weights=[]; parent_margin_losses=[]
+            teacher=[]; teacher_weights=[]; parent_margin_losses=[]; contrastive_margin_losses=[]
             for r in positives:
                 weight=float(r.get("cluster_weight",1.0)) if a.clustered_teacher_weighting else 1.0
                 if not np.isfinite(weight) or weight<=0:
@@ -363,6 +366,10 @@ def main() -> int:
                 teacher_weights.append(weight)
                 if a.teacher_parent_margin>0:
                     parent_margin_losses.append(torch.relu(parent_logits[parent_top]+a.teacher_parent_margin-logits[target]))
+                if a.teacher_contrastive_margin>0:
+                    residual=adapter(v34._x(torch,r)).squeeze(1)
+                    parent_gap=parent_logits[parent_top]-parent_logits[target]
+                    contrastive_margin_losses.append(torch.relu(parent_gap+a.teacher_contrastive_margin-(residual[target]-residual[parent_top])))
             weights=torch.tensor(teacher_weights,dtype=teacher[0].dtype)
             teacher_loss=(torch.stack(teacher)*weights).sum()/weights.sum()
             neg=[_negative_loss(parent,adapter,torch,r,a.negative_margin) for r in negatives]
@@ -380,6 +387,9 @@ def main() -> int:
                 margin_weights=weights[:len(parent_margin_losses)]
                 parent_margin_loss=(torch.stack(parent_margin_losses)*margin_weights).sum()/margin_weights.sum()
                 parts.append(a.teacher_coef*parent_margin_loss)
+            if contrastive_margin_losses:
+                contrastive_margin_loss=(torch.stack(contrastive_margin_losses)*weights).sum()/weights.sum()
+                parts.append(a.teacher_coef*contrastive_margin_loss)
             if pres: parts.append(a.preservation_coef*torch.stack(pres).mean())
             loss=torch.stack(parts).sum()
             opt.zero_grad(); loss.backward()
@@ -447,6 +457,7 @@ def main() -> int:
         "negative_seeds":sorted({int(r["seed"]) for r in negatives}),
         "clustered_teacher_weighting":bool(a.clustered_teacher_weighting),
         "teacher_parent_margin":float(a.teacher_parent_margin),
+        "teacher_contrastive_margin":float(a.teacher_contrastive_margin),
         "residual_init_scale":float(a.residual_init_scale),
         "teacher_cluster_seed_count_min":min((int(r.get("cluster_seed_count",1)) for r in positives),default=0),
         "teacher_cluster_seed_count_max":max((int(r.get("cluster_seed_count",1)) for r in positives),default=0),

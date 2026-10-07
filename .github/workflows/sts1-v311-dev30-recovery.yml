@@ -1,0 +1,177 @@
+name: STS1 v3.11 Candidate Reuse Dev30 Recovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v311-eval-recovery.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: sts1-v311-dev30-recovery
+  cancel-in-progress: false
+
+env:
+  SOURCE_RUN_ID: '37639357507'
+  SOURCE_ARTIFACT: 'sts1-v311-audit-first-37639357507'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+
+jobs:
+  dev30:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reuse guarded Candidate and completed Probe10 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: evidence/sts1/v311
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Verify Candidate guards and Probe10 activation before Dev30
+        id: candidate
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          root=Path('evidence/sts1/v311')
+          out=root/'candidate'
+          report=json.loads((out/'train-report.json').read_text())
+          history={int(x['epoch']):x for x in report['history']}
+          selected=int(report['selected_epoch'])
+          row=history.get(selected)
+          if not row or not row.get('pass'):
+              raise SystemExit('reused Candidate selected epoch did not pass its saved guards')
+          if not (out/'candidate.pt').is_file() or not (out/'candidate.pt.adapter.pt').is_file():
+              raise SystemExit('reused Candidate weights or sidecar are missing')
+          probe=json.loads((root/'activation-probe'/'summary.json').read_text())
+          if not probe.get('all_games_complete_and_safe') or int(probe.get('top1_changed',0))<1:
+              raise SystemExit('saved Probe10 does not authorize conditional Dev30')
+          ledger=json.loads((out/'seed-ledger.json').read_text())
+          probe_seeds=set(ledger['probe10']); dev_seeds=set(ledger['dev30'])
+          if len(probe_seeds)!=10 or len(dev_seeds)!=30 or probe_seeds & dev_seeds:
+              raise SystemExit('reused Probe10/Dev30 ledger is invalid or overlapping')
+          if ledger.get('formal_seed_sources_read') is not False:
+              raise SystemExit('formal seed isolation ledger is not clean')
+          print('run_dev30=true')
+          PY
+
+      - name: Install dependencies and build pinned simulator
+        if: steps.candidate.outputs.run_dev30 == 'true'
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v311-recovery
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+
+      - name: Download and verify frozen G7
+        if: steps.candidate.outputs.run_dev30 == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"; unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent" && test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+
+      - name: Run paired MCTS-2000 Dev30 using reused Candidate
+        if: steps.candidate.outputs.run_dev30 == 'true'
+        run: |
+          set -euo pipefail
+          out=evidence/sts1/v311/candidate
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_gate_v21.py \
+            --module-dir external/sts_lightspeed/source/build-probe --armg-root .cache/sts1-v311-recovery \
+            --parent-weight "$parent" --candidate-weight "$out/candidate.pt" \
+            --seed-file "$out/dev30-seeds.txt" --output "$out/dev30.json" \
+            --mcts-sims 2000 --workers 4 --min-win-delta 0 --max-pvalue 1.0 --label v311-dev30-diagnostic-recovery
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('evidence/sts1/v311/candidate/dev30.json').read_text())
+          n=int(x['candidate_only_wins'])-int(x['parent_only_wins'])
+          safety=('illegal_action_count','crash_count','timeout_count','remote_error_count')
+          def safe(row):
+              return row.get('result')=='PASS_SIMULATOR_COMPLETE_RUN' and all(int(row.get(k,0) or 0)==0 for k in safety)
+          if len(x.get('rows',[]))!=30 or not all(safe(y['parent']) and safe(y['candidate']) for y in x['rows']):
+              raise SystemExit('Dev30 contains incomplete or unsafe games')
+          print('V311_DEV30_REUSE_RESULT',json.dumps({'parent_wins':x['parent_wins'],
+              'candidate_wins':x['candidate_wins'],'candidate_only_wins':x['candidate_only_wins'],
+              'parent_only_wins':x['parent_only_wins'],'net_new_wins':n,
+              'paired_sign_pvalue_one_sided':x.get('paired_sign_pvalue_one_sided'),
+              'games':len(x['rows']),'illegal':sum(int(y[z].get('illegal_action_count',0) or 0) for y in x['rows'] for z in ('parent','candidate')),
+              'crash':sum(int(y[z].get('crash_count',0) or 0) for y in x['rows'] for z in ('parent','candidate')),
+              'timeout':sum(int(y[z].get('timeout_count',0) or 0) for y in x['rows'] for z in ('parent','candidate'))},sort_keys=True))
+          PY
+
+      - name: Write HOLD_PARENT summary and Issue #15 report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('evidence/sts1/v311'); out=root/'candidate'
+          def read(p):
+              p=Path(p)
+              return json.loads(p.read_text()) if p.exists() else None
+          x={'schema_version':'sts1-v311-dev30-recovery','training':read(out/'train-report.json'),
+             'teacher_audit':read(root/'teacher-audit'/'summary.json'),
+             'activation_probe10':read(root/'activation-probe'/'summary.json'),
+             'dev30':read(out/'dev30.json'),'formal_evaluations':'NOT_RUN','readiness':'HOLD_PARENT',
+             'candidate_source_run_id':37639357507}
+          (out/'dev30-recovery-summary.json').write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
+          t=x['training'] or {}; a=t.get('after') or {}; r=a.get('retention') or {}; p=x['activation_probe10'] or {}; d=x['dev30'] or {}
+          body=['@ericpeng0604-coder','', '## STS1 v3.11 choice-relative residual (Candidate reuse / Dev30 recovery)','',
+            'Data:','- Positive Teacher: 62 decisions','- Positive Seeds: 56','- Negative: 325+','- Preservation: verified anchors','',
+            'Training:',f"- selected epoch: {t.get('selected_epoch','NOT_VERIFIED')}",
+            f"- fully learned: {(a.get('new_win') or {}).get('fully_learned_seeds','NOT_VERIFIED')}",
+            f"- KL: {r.get('parent_kl','NOT_VERIFIED')}",
+            f"- allowed KL: {(t.get('retention_policy') or {}).get('allowed_parent_kl','NOT_VERIFIED')}",
+            f"- preservation: {(a.get('preservation') or {}).get('top1','NOT_VERIFIED')}",
+            f"- negative rejection: {(a.get('negative') or {}).get('rejected_top1_rate','NOT_VERIFIED')}",'',
+            'Activation:',f"- gate checks: {p.get('gate_checks','NOT_VERIFIED')}",
+            f"- gate allowed: {p.get('gate_allowed','NOT_VERIFIED')}",
+            f"- adapter applied: {p.get('adapter_applied','NOT_VERIFIED')}",
+            f"- top1 changed: {p.get('top1_changed','NOT_VERIFIED')}",'',
+            'Evaluation:',f"- Dev30: G7 {d.get('parent_wins','NOT_RUN')} / Candidate {d.get('candidate_wins','NOT_RUN')}; C-only {d.get('candidate_only_wins','NOT_RUN')}; P-only {d.get('parent_only_wins','NOT_RUN')}; Net {d.get('candidate_only_wins',0)-d.get('parent_only_wins',0) if d else 'NOT_RUN'}; p {d.get('paired_sign_pvalue_one_sided','NOT_RUN')}",
+            '- Gate30: NOT_RUN','- Gate50: NOT_RUN','- Fresh100: NOT_RUN','- Fresh500: NOT_RUN','', 'Final:', '- HOLD_PARENT']
+          Path('issue-body.md').write_text('\n'.join(body)+'\n')
+          print('V311_RECOVERY_SUMMARY',json.dumps({'source_run_id':37639357507,'readiness':'HOLD_PARENT','dev30':d},sort_keys=True))
+          PY
+          gh api repos/$GITHUB_REPOSITORY/issues/15/comments -f body="$(cat issue-body.md)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v311-dev30-recovery-${{ github.run_id }}
+          path: evidence/sts1/v311/
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,69 @@
+name: STS1 v3.8 Report Recovery
+
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v38-report-recovery.trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+env:
+  SOURCE_RUN_ID: '37621983723'
+  SOURCE_ARTIFACT: 'sts1-v38-activation-probe-37621983723'
+
+concurrency:
+  group: sts1-v38-report-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover-report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: evidence/sts1/v38/recovery/input
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Test paired recovery and p-value
+        run: |
+          set -euo pipefail
+          python -m pip install pytest
+          pytest -q tests/test_sts1_activation_probe_v38.py
+
+      - name: Recover report from completed probe artifact
+        run: |
+          set -euo pipefail
+          python scripts/sts1/sts1_build_rescue_activation_report_v38.py \
+            --input-dir evidence/sts1/v38/recovery/input \
+            --output-dir evidence/sts1/v38/recovery/output \
+            --source-run-id "$SOURCE_RUN_ID"
+
+      - name: Report v3.8 result to Issue #15
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/15/comments" \
+            -f body="$(cat evidence/sts1/v38/recovery/output/report.md)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v38-report-recovery-${{ github.run_id }}
+          path: evidence/sts1/v38/recovery/
+          if-no-files-found: warn
+          retention-days: 90

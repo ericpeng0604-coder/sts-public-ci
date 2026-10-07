@@ -29,6 +29,28 @@ def _safe(row: dict[str, Any]) -> bool:
     )
 
 
+def _is_win(row: dict[str, Any]) -> bool:
+    return str(row.get("outcome", "")).lower() == "victory"
+
+
+def paired_win_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    parent_wins = sum(_is_win(row["parent"]) for row in rows)
+    candidate_wins = sum(_is_win(row["candidate"]) for row in rows)
+    candidate_only = sum(not _is_win(row["parent"]) and _is_win(row["candidate"]) for row in rows)
+    parent_only = sum(_is_win(row["parent"]) and not _is_win(row["candidate"]) for row in rows)
+    discordant = candidate_only + parent_only
+    pvalue = (sum(math.comb(discordant, k) for k in range(candidate_only, discordant + 1))
+              / (2.0 ** discordant)) if discordant else 1.0
+    return {
+        "parent_wins": parent_wins,
+        "candidate_wins": candidate_wins,
+        "candidate_only_wins": candidate_only,
+        "parent_only_wins": parent_only,
+        "net_new_wins": candidate_only - parent_only,
+        "paired_sign_pvalue_one_sided": pvalue,
+    }
+
+
 def _pair_task(task: tuple[int, str, str, str, str, int, tuple[int, ...]]) -> dict[str, Any]:
     from roguelike_ai.sts1_phase3.simulator import ArmGNoncombatPolicy, _load_sts, run_simulator_game
 
@@ -119,6 +141,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         case = "B_ALLOWED_BUT_TOP1_UNCHANGED"
     else:
         case = "C_TOP1_CHANGES"
+    paired = paired_win_summary(rows)
     return {
         "schema_version": "sts1-v38-activation-probe",
         "probe_seeds": [int(row["seed"]) for row in rows],
@@ -140,8 +163,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "by_kind": per_kind,
         "diagnostic_case": case,
         "games": len(rows),
-        "parent_wins": sum(str(r["parent"].get("outcome", "")).lower() == "victory" for r in rows),
-        "candidate_wins": sum(str(r["candidate"].get("outcome", "")).lower() == "victory" for r in rows),
+        **paired,
         "all_games_complete_and_safe": all(_safe(r["parent"]) and _safe(r["candidate"]) for r in rows),
     }
 

@@ -5,7 +5,7 @@ on:
     branches:
       - gpt/sts1-build-rescue-v22-antiforget-20260930
     paths:
-      - control/sts1-v310-clustered-rescue.trigger
+      - control/sts1-v310-selective-residual.trigger
   workflow_dispatch:
 
 permissions:

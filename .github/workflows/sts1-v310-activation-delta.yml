@@ -39,20 +39,23 @@ jobs:
               if not r['gate_checked'] or not r['gate_allowed']: continue
               raw=r['g7_raw_scores']; residual=r['adapter_residual_scores']; top=int(r['g7_top1_index'])
               alternatives=[i for i in range(len(raw)) if i!=top]
-              best_raw=max(alternatives,key=lambda i:raw[i])
-              required=float(raw[top]-raw[best_raw])
-              actual=max(float(residual[i]-residual[top]) for i in alternatives)
-              candidate_delta=max(float((raw[i]+residual[i])-(raw[top]+residual[top])) for i in alternatives)
-              rec={'required_delta':required,'actual_residual_delta':actual,'shortfall':required-actual,
-                   'closure_ratio':actual/required if required>0 else None,'candidate_top1_index':r['candidate_top1_index'],
-                   'top1_changed':r['top1_changed']}
+              best_after=max(alternatives,key=lambda i:raw[i]+residual[i])
+              required=float(raw[top]-raw[best_after])
+              actual=float(residual[best_after]-residual[top])
+              shortfall=required-actual
+              all_shortfalls=[float(raw[top]-raw[i]-residual[i]+residual[top]) for i in alternatives]
+              rec={'required_delta':required,'actual_residual_delta':actual,'shortfall':shortfall,
+                   'closure_ratio':actual/required if required>0 else None,
+                   'minimum_alternative_shortfall':min(all_shortfalls),
+                   'decisions_with_sufficient_delta':min(all_shortfalls)<=0.0,
+                   'candidate_top1_index':r['candidate_top1_index'],'top1_changed':r['top1_changed']}
               groups[r['decision_kind']].append(rec)
           def stats(rs):
               return {'count':len(rs),'changed':sum(x['top1_changed'] for x in rs),
                   'required_delta':{k:q([x['required_delta'] for x in rs],p) for k,p in [('p50',.5),('p75',.75),('p90',.9)]},
                   'actual_residual_delta':{k:q([x['actual_residual_delta'] for x in rs],p) for k,p in [('p50',.5),('p75',.75),('p90',.9)]},
                   'shortfall':{k:q([x['shortfall'] for x in rs],p) for k,p in [('p50',.5),('p75',.75),('p90',.9)]},
-                  'decisions_with_sufficient_delta':sum(x['actual_residual_delta']>=x['required_delta'] for x in rs)}
+                  'decisions_with_sufficient_delta':sum(x['decisions_with_sufficient_delta'] for x in rs),'min_alternative_shortfall_p50':q([x['minimum_alternative_shortfall'] for x in rs],.5)}
           result={'schema_version':'sts1-v310-activation-delta-analysis','artifact_run':37633551123,
               'allowed_decisions':sum(map(len,groups.values())),'by_kind':{k:stats(v) for k,v in sorted(groups.items())}}
           out=Path('evidence/sts1/v310-activation-delta');out.mkdir(parents=True,exist_ok=True)

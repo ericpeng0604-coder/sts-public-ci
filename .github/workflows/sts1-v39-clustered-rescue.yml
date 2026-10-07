@@ -135,7 +135,8 @@ jobs:
           (out/'seed-ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
           print('V39_DEV_LEDGER_PASS',json.dumps({k:v for k,v in ledger.items() if not isinstance(v,list)},sort_keys=True))
           PY
-          for f in evidence/sts1/v39/data/summary.json evidence/sts1/v39/data/new-win-teachers.jsonl evidence/sts1/v39/data/negative-examples.jsonl evidence/sts1/v39/v34/candidate.pt.adapter.pt evidence/sts1/v39/v34/combined-teachers.jsonl evidence/sts1/v322/preservation-active.jsonl evidence/sts1/v39/v34-trace/regression2-anchors.jsonl; do if ! test -s "$f"; then echo "MISSING_RECOVERY_FILE=$f"; find evidence/sts1/v39 -maxdepth 4 -type f -print | sort; exit 1; fi; done
+          for f in evidence/sts1/v39/data/summary.json evidence/sts1/v39/data/new-win-teachers.jsonl evidence/sts1/v39/data/negative-examples.jsonl evidence/sts1/v39/v34/candidate.pt.adapter.pt evidence/sts1/v39/v34/combined-teachers.jsonl evidence/sts1/v39/v34-trace/regression2-anchors.jsonl; do if ! test -s "$f"; then echo "MISSING_RECOVERY_FILE=$f"; find evidence/sts1/v39 -maxdepth 4 -type f -print | sort; exit 1; fi; done
+          test -f evidence/sts1/v39/v322/preservation-active.jsonl || { echo MISSING_RECOVERY_FILE=evidence/sts1/v39/v322/preservation-active.jsonl; exit 1; }
           python - <<'PY'
           import json
           from pathlib import Path
@@ -162,6 +163,7 @@ jobs:
           pres=[]
           for p in ['evidence/sts1/v39/v322/preservation-active.jsonl','evidence/sts1/v39/v34-trace/regression2-anchors.jsonl']: pres.extend(load(p))
           anchors={(state(r),int(r['parent_selected_index'])):r for r in pres}
+          assert anchors, 'no verified preservation anchors in merged input'
           out=Path('evidence/sts1/v39/train')
           for name,rows in [('positive.jsonl',prow),('negative.jsonl',nrow),('preservation.jsonl',list(anchors.values()))]:
               (out/name).write_text(''.join(json.dumps(r,sort_keys=True)+'\n' for r in rows))

@@ -291,7 +291,6 @@ jobs:
           print(f"safe={str(safe).lower()}")
           print(f"changed={str(changed>0).lower()}")
           print(f"changed_count={changed}")
-          print('V311_PROBE_DECISION',json.dumps({'safe':safe,'top1_changed':changed,'conditional_dev30':safe and changed>0},sort_keys=True))
           PY
 
       - name: Conditional paired MCTS-2000 Dev30

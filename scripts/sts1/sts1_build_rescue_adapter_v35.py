@@ -202,6 +202,8 @@ def main() -> int:
     p.add_argument("--teacher-coef",type=float,default=4.0)
     p.add_argument("--teacher-parent-margin",type=float,default=0.0,
                    help="minimum target-over-parent-top1 logit margin; 0 disables this v3.9 objective")
+    p.add_argument("--residual-init-scale",type=float,default=1.0,
+                   help="multiply the warm-start final residual head before guarded training")
     p.add_argument("--clustered-teacher-weighting",action="store_true",
                    help="weight repeated cross-seed rescue patterns and downweight singleton patterns")
     p.add_argument("--negative-margin",type=float,default=0.02)
@@ -227,6 +229,7 @@ def main() -> int:
     if not 0<a.negative_margin<=0.5: raise RuntimeError("negative-margin outside safe bound")
     if not 0<a.gate_ratio<=1: raise RuntimeError("gate-ratio outside safe bound")
     if not 0<=a.teacher_parent_margin<=5: raise RuntimeError("teacher-parent-margin outside safe bound")
+    if not 0.5<=a.residual_init_scale<=8: raise RuntimeError("residual-init-scale outside safe bound")
     if not 0<=a.max_kl_increase<=0.01: raise RuntimeError("max-kl-increase outside safe bound")
 
     os.environ["STS_BOT_DIR"]=str(a.armg_root)
@@ -268,6 +271,10 @@ def main() -> int:
     if int(payload.get("input_dim",-1))!=input_dim or int(payload.get("hidden_dim",-1))!=a.hidden_dim:
         raise RuntimeError("warm-start adapter dimension mismatch")
     adapter.load_state_dict(payload["state_dict"])
+    if a.residual_init_scale != 1.0:
+        with torch.no_grad():
+            adapter[-1].weight.mul_(a.residual_init_scale)
+            adapter[-1].bias.mul_(a.residual_init_scale)
 
     rng=np.random.default_rng(20261006)
     perm=rng.permutation(len(elite["action"]))
@@ -440,6 +447,7 @@ def main() -> int:
         "negative_seeds":sorted({int(r["seed"]) for r in negatives}),
         "clustered_teacher_weighting":bool(a.clustered_teacher_weighting),
         "teacher_parent_margin":float(a.teacher_parent_margin),
+        "residual_init_scale":float(a.residual_init_scale),
         "teacher_cluster_seed_count_min":min((int(r.get("cluster_seed_count",1)) for r in positives),default=0),
         "teacher_cluster_seed_count_max":max((int(r.get("cluster_seed_count",1)) for r in positives),default=0),
         "teacher_cluster_weight_min":min((float(r.get("cluster_weight",1.0)) for r in positives),default=0.0),

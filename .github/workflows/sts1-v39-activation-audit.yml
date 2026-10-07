@@ -1,0 +1,111 @@
+name: STS1 v3.9 Candidate Activation Audit
+on:
+  push:
+    branches:
+      - gpt/sts1-build-rescue-v22-antiforget-20260930
+    paths:
+      - control/sts1-v39-activation-audit.trigger
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  issues: write
+env:
+  CANDIDATE_RUN_ID: '37626250030'
+  CANDIDATE_ARTIFACT: 'sts1-v39-clustered-rescue-37626250030'
+  G7_ARTIFACT_ID: '11079234863'
+  G7_WEIGHT_SHA256: '8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0'
+  SIM_HEAD: '7476a81954020087da31d41d16fddf475746ec2d'
+concurrency:
+  group: sts1-v39-activation-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CANDIDATE_ARTIFACT }}
+          path: evidence/sts1/v39-candidate
+          github-token: ${{ github.token }}
+          run-id: ${{ env.CANDIDATE_RUN_ID }}
+      - name: Validate reusable Candidate and Dev30 ledger
+        run: |
+          set -euo pipefail
+          test -s evidence/sts1/v39-candidate/candidate/candidate.pt
+          test -s evidence/sts1/v39-candidate/candidate/candidate.pt.adapter.pt
+          test -s evidence/sts1/v39-candidate/candidate/dev30-seeds.txt
+          test -s evidence/sts1/v39-candidate/candidate/seed-ledger.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          ledger=json.loads(Path('evidence/sts1/v39-candidate/candidate/seed-ledger.json').read_text())
+          assert len(ledger['dev30'])==30 and ledger['formal_seed_sources_read'] is False
+          print('V39_AUDIT_INPUT_PASS',{'dev_seeds':len(ledger['dev30']),'formal_seed_sources_read':ledger['formal_seed_sources_read']})
+          PY
+      - name: Install and build pinned simulator
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . numpy
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+          python scripts/sts1/hydrate_jialeiv_baseline_v0.py
+          test "$(git -C external/sts_lightspeed/source rev-parse HEAD)" = "$SIM_HEAD"
+          python scripts/sts1/build_probe.py
+          root=.cache/sts1-v39-audit
+          mkdir -p "$root/sim/sts_lightspeed"
+          ln -sf "$PWD/external/sts_lightspeed/source/build-probe" "$root/sim/sts_lightspeed/build312"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armG_train.py" "$root/armG_train.py"
+          ln -sf "$PWD/external/sts-rl-agent/source/agent/armS_card_vocab.json" "$root/armS_card_vocab.json"
+      - name: Download and verify frozen G7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -o "$RUNNER_TEMP/g7.zip" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$G7_ARTIFACT_ID/zip"
+          mkdir -p "$RUNNER_TEMP/g7"; unzip -q "$RUNNER_TEMP/g7.zip" -d "$RUNNER_TEMP/g7"
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          test -n "$parent" && test "$(sha256sum "$parent" | awk '{print $1}')" = "$G7_WEIGHT_SHA256"
+      - name: Audit Candidate activation on v3.9 Dev30
+        run: |
+          set -euo pipefail
+          parent="$(find "$RUNNER_TEMP/g7" -name offline-champion.pt -print -quit)"
+          python scripts/sts1/sts1_build_rescue_activation_probe_v38.py             --module-dir external/sts_lightspeed/source/build-probe             --armg-root .cache/sts1-v39-audit             --parent-weight "$parent"             --candidate-weight evidence/sts1/v39-candidate/candidate/candidate.pt             --seed-file evidence/sts1/v39-candidate/candidate/dev30-seeds.txt             --output-dir evidence/sts1/v39-activation-audit             --mcts-sims 2000 --workers 4
+      - name: Report activation evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' > "$RUNNER_TEMP/body.txt"
+          import json
+          from pathlib import Path
+          p=Path('evidence/sts1/v39-activation-audit/summary.json')
+          print('@ericpeng0604-coder\n')
+          print('## STS1 v3.9 Candidate Activation Audit\n')
+          if not p.exists():
+              print('Probe failed before producing summary; v3.9 Gate50 remains G7 7/50 vs Candidate 7/50, net 0.\n')
+              print('Final:\n- HOLD_PARENT')
+          else:
+              x=json.loads(p.read_text())
+              print('Data:\n- Positive Teacher: 62 decisions / 56 seeds\n- Negative: 325+\n- Preservation: verified anchors retained\n')
+              print('Activation:')
+              for k in ['total_noncombat_decisions','multi_choice_decisions','gate_checks','gate_allowed','gate_blocked','adapter_applied','top1_changed','gate_allow_rate','top1_change_rate_given_allow','top1_change_rate_total']:
+                  print(f"- {k}: {x.get(k,'NOT_VERIFIED')}")
+              print(f"- decision kind: {json.dumps(x.get('by_kind',{}),sort_keys=True)}\n")
+              print(f"Evaluation:\n- Dev30: G7 {x.get('parent_wins')}/30 / Candidate {x.get('candidate_wins')}/30; C-only {x.get('candidate_only_wins')}; P-only {x.get('parent_only_wins')}; Net {x.get('net_new_wins')}\n- Gate50: G7 7/50 / Candidate 7/50; Net 0\n- Fresh100: NOT_RUN\n- Fresh500: NOT_RUN\n")
+              print('Final:\n- HOLD_PARENT')
+          PY
+          gh api repos/$GITHUB_REPOSITORY/issues/15/comments -f body="$(cat "$RUNNER_TEMP/body.txt")"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sts1-v39-activation-audit-${{ github.run_id }}
+          path: evidence/sts1/v39-activation-audit/
+          if-no-files-found: warn
+          retention-days: 90

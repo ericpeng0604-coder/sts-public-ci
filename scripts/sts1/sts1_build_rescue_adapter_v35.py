@@ -15,6 +15,7 @@ import numpy as np
 
 import sts1_build_rescue_adapter_v34 as v34
 import sts1_build_rescue_bc_v28 as base
+from roguelike_ai.sts1_phase3.residual_scoring import choice_relative_margin_loss
 
 
 SCHEMA_V1 = "sts1-armg-residual-adapter-v1"
@@ -203,7 +204,7 @@ def main() -> int:
     p.add_argument("--teacher-parent-margin",type=float,default=0.0,
                    help="minimum target-over-parent-top1 logit margin; 0 disables this v3.9 objective")
     p.add_argument("--teacher-contrastive-margin",type=float,default=0.0,
-                   help="require the target residual to overcome the frozen parent top1 gap plus this margin")
+                   help="require the target residual to overcome its parent-top1 gap plus this margin")
     p.add_argument("--residual-init-scale",type=float,default=1.0,
                    help="multiply the warm-start final residual head before guarded training")
     p.add_argument("--clustered-teacher-weighting",action="store_true",
@@ -352,12 +353,13 @@ def main() -> int:
                 clog=torch.log_softmax(logits,0)
                 distill.append((pp*(plog-clog)).sum())
                 zero.append((res**2).mean())
-            teacher=[]; teacher_weights=[]; parent_margin_losses=[]; contrastive_margin_losses=[]
+            teacher=[]; teacher_weights=[]; parent_margin_losses=[]
+            contrastive_margin_losses=[]; contrastive_weights=[]
             for r in positives:
                 weight=float(r.get("cluster_weight",1.0)) if a.clustered_teacher_weighting else 1.0
                 if not np.isfinite(weight) or weight<=0:
                     raise RuntimeError("teacher cluster weight must be finite and positive")
-                logits,_=v34._teacher_logits(parent,adapter,torch,r)
+                logits,residual=v34._teacher_logits(parent,adapter,torch,r)
                 target=int(r["teacher_best_index"])
                 with torch.no_grad():
                     parent_logits=parent.net(v34._x(torch,r)).squeeze(1)
@@ -367,9 +369,12 @@ def main() -> int:
                 if a.teacher_parent_margin>0:
                     parent_margin_losses.append(torch.relu(parent_logits[parent_top]+a.teacher_parent_margin-logits[target]))
                 if a.teacher_contrastive_margin>0:
-                    residual=adapter(v34._x(torch,r)).squeeze(1)
-                    parent_gap=parent_logits[parent_top]-parent_logits[target]
-                    contrastive_margin_losses.append(torch.relu(parent_gap+a.teacher_contrastive_margin-(residual[target]-residual[parent_top])))
+                    contrastive_loss=choice_relative_margin_loss(
+                        parent_logits,residual,target,a.teacher_contrastive_margin,torch.relu
+                    )
+                    if contrastive_loss is not None:
+                        contrastive_margin_losses.append(contrastive_loss)
+                        contrastive_weights.append(weight)
             weights=torch.tensor(teacher_weights,dtype=teacher[0].dtype)
             teacher_loss=(torch.stack(teacher)*weights).sum()/weights.sum()
             neg=[_negative_loss(parent,adapter,torch,r,a.negative_margin) for r in negatives]
@@ -388,7 +393,8 @@ def main() -> int:
                 parent_margin_loss=(torch.stack(parent_margin_losses)*margin_weights).sum()/margin_weights.sum()
                 parts.append(a.teacher_coef*parent_margin_loss)
             if contrastive_margin_losses:
-                contrastive_margin_loss=(torch.stack(contrastive_margin_losses)*weights).sum()/weights.sum()
+                cweights=torch.tensor(contrastive_weights,dtype=contrastive_margin_losses[0].dtype)
+                contrastive_margin_loss=(torch.stack(contrastive_margin_losses)*cweights).sum()/cweights.sum()
                 parts.append(a.teacher_coef*contrastive_margin_loss)
             if pres: parts.append(a.preservation_coef*torch.stack(pres).mean())
             loss=torch.stack(parts).sum()

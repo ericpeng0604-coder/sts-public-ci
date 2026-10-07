@@ -26,6 +26,7 @@ from .frozen_student import (
     sha256_json,
 )
 from .protocol import A0_FROZEN_SEEDS_V1, A0_PROTOCOL_VERSION, frozen_a0_manifest
+from .residual_scoring import apply_residual_scores, top1_index
 
 
 SIMULATOR_EVIDENCE_SCHEMA = "sts1-phase3-a0-simulator-v1"
@@ -587,8 +588,7 @@ class ArmGNoncombatPolicy:
                         f"{int(self.adapter[0].in_features)}"
                     )
                 residual_scores = self.adapter(x).squeeze(1)
-                if gate_allowed:
-                    scores = scores + residual_scores
+                scores = apply_residual_scores(scores, residual_scores, gate_allowed)
             if self.activation_probe:
                 raw_values = [float(x) for x in raw_scores.tolist()]
                 residual_values = [float(x) for x in residual_scores.tolist()]
@@ -607,7 +607,7 @@ class ArmGNoncombatPolicy:
                     "decision_kind": kind,
                     "choice_semantics": [self.describe_choice(kind, d) for d in descs],
                     "g7_raw_scores": raw_values,
-                    "g7_top1_index": int(self.torch.argmax(raw_scores).item()),
+                    "g7_top1_index": top1_index(raw_scores),
                     "gate_checked": gate_checked,
                     "gate_allowed": gate_allowed,
                     "d_positive": gate_metrics["d_positive"],
@@ -617,8 +617,8 @@ class ArmGNoncombatPolicy:
                     "adapter_applied": gate_allowed,
                     "adapter_residual_scores": residual_values,
                     "candidate_scores": candidate_values,
-                    "candidate_top1_index": int(self.torch.argmax(scores).item()),
-                    "top1_changed": int(self.torch.argmax(raw_scores).item()) != int(self.torch.argmax(scores).item()),
+                    "candidate_top1_index": top1_index(scores),
+                    "top1_changed": top1_index(raw_scores) != top1_index(scores),
                     "margin_before": raw_order[0] - raw_order[1],
                     "margin_after": candidate_order[0] - candidate_order[1],
                     "floor": _value(gc, "floor_num"),
@@ -637,7 +637,7 @@ class ArmGNoncombatPolicy:
         if len(descs) == 1:
             return kind, 0, 1
         _, _, scores = self.score_choices(gc)
-        return kind, int(self.torch.argmax(scores).item()), len(descs)
+        return kind, top1_index(scores), len(descs)
 
     def _contextual_card_adjustments(self, gc: Any, descs: list[Any]) -> list[float]:
         """Small, auditable v2 card-reward adjustments derived from winner/near-win mining."""

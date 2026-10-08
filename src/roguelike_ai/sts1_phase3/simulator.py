@@ -50,6 +50,67 @@ def _value(obj: Any, name: str, default: Any = None) -> Any:
     return value() if callable(value) else value
 
 
+def _diagnostic_fallback_legal_choices(
+    gc: Any,
+    sts: Any,
+) -> tuple[list[dict[str, Any]] | None, int | None]:
+    """Snapshot the native legal actions selected by the legacy fallback."""
+
+    get_actions = getattr(sts, "get_legal_game_actions", None)
+    if not callable(get_actions):
+        return None, None
+    try:
+        actions = list(get_actions(gc))
+        if not actions:
+            return None, None
+        screen_name = _enum_name(_value(gc, "screen_state"))
+        choices: list[dict[str, Any]] = []
+        for index, action in enumerate(actions):
+            fields: dict[str, Any] = {}
+            for name in ("bits", "idx1", "idx2", "idx3", "is_potion_action"):
+                value = _value(action, name)
+                if value is not None:
+                    fields[name] = value
+            if screen_name in {"REWARDS", "SHOP_ROOM"}:
+                reward_type = _value(action, "rewards_action_type")
+                if reward_type is not None:
+                    fields["rewards_action_type"] = _enum_name(reward_type)
+            if not fields:
+                return None, None
+            choices.append({
+                "index": index,
+                "descriptor": json.dumps(fields, sort_keys=True, separators=(",", ":")),
+                "semantics": {"native_action_type": type(action).__name__, **fields},
+                "score": None,
+            })
+
+        selected_index = 0
+        if screen_name == "REWARDS":
+            offered = list(gc.get_card_reward())
+            wanted_type = "CARD" if offered else "SKIP"
+            selected_index = next(
+                (
+                    index
+                    for index, action in enumerate(actions)
+                    if _enum_name(_value(action, "rewards_action_type")) == wanted_type
+                    and (
+                        wanted_type != "CARD"
+                        or (
+                            _value(action, "idx1") == 0
+                            and _value(action, "idx2") == 0
+                        )
+                    )
+                ),
+                -1,
+            )
+        if not 0 <= selected_index < len(choices):
+            return None, None
+        return choices, selected_index
+    except Exception:
+        # Diagnostics must fail closed without changing the fallback policy run.
+        return None, None
+
+
 def _sequence(value: Any) -> list[Any]:
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return list(value)
@@ -1107,14 +1168,37 @@ def run_simulator_game(
                 )
                 diagnostic_choices: list[dict[str, Any]] | None = None
                 diagnostic_route: dict[str, Any] | None = None
+                diagnostic_selected_index: int | None = None
                 if armg_policy is None:
                     if diagnostic_trace_path is not None:
-                        diagnostic_legal_actions_complete = False
+                        (
+                            diagnostic_choices,
+                            diagnostic_selected_index,
+                        ) = _diagnostic_fallback_legal_choices(gc, sts)
+                        if (
+                            diagnostic_choices is None
+                            or diagnostic_selected_index is None
+                        ):
+                            diagnostic_legal_actions_complete = False
+                        if screen_before == _enum_name(sts.ScreenState.MAP_SCREEN):
+                            diagnostic_route = _diagnostic_map_route(
+                                gc,
+                                sts,
+                                choice_count=len(diagnostic_choices or []),
+                                selected_index=(
+                                    diagnostic_selected_index
+                                    if diagnostic_selected_index is not None
+                                    else -1
+                                ),
+                            )
+                            if not diagnostic_route["choices_complete"]:
+                                diagnostic_legal_actions_complete = False
                     choice = deterministic_noncombat_step(gc, sts)
                     fallback_count += 1
                     policy_name = "legacy_fallback"
                 else:
                     kind, selected_index, descs, execs, scores = armg_policy.decide(gc, sts)
+                    diagnostic_selected_index = selected_index
                     if diagnostic_trace_path is not None and kind == "map":
                         diagnostic_route = _diagnostic_map_route(
                             gc,
@@ -1200,6 +1284,7 @@ def run_simulator_game(
                         "policy": policy_name,
                         "legal_choices_complete": diagnostic_choices is not None,
                         "legal_choices": diagnostic_choices,
+                        "selected_legal_action_index": diagnostic_selected_index,
                         "route": diagnostic_route,
                         "selected_choice": choice,
                         "state_before": diagnostic_run_before,
@@ -1404,10 +1489,20 @@ def run_simulator_game(
                             for index, action in enumerate(public_actions)
                             if canonical_json(action) == canonical_json(trace_action)
                         ]
-                        chosen_native_index = next(
-                            (index for index, action in enumerate(native_actions) if action is chosen),
-                            None,
+                        chosen_native_matches = [
+                            index
+                            for index, action in enumerate(native_actions)
+                            if _value(action, "bits") == _value(chosen, "bits")
+                        ]
+                        chosen_native_index = (
+                            chosen_native_matches[0]
+                            if len(chosen_native_matches) == 1
+                            else None
                         )
+                        if chosen_native_index is None and len(selected_public_matches) == 1:
+                            public_index = selected_public_matches[0]
+                            if public_index < len(native_index_map):
+                                chosen_native_index = native_index_map[public_index]
                         if len(selected_public_matches) != 1 or chosen_native_index is None:
                             diagnostic_legal_actions_complete = False
                         _record(diagnostic_trace_path, {

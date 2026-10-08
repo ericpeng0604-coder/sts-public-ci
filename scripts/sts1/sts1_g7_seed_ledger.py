@@ -20,7 +20,8 @@ from typing import Any, Mapping
 SCHEMA_VERSION = "sts1-g7-seed-ledger-v1"
 INVENTORY_SCHEMA_VERSION = "sts1-existing-seed-inventory-v1"
 GENERATOR_VERSION = "sha256-counter-rejection-v1"
-MAX_SEED = 10**9
+# The pinned simulator's GameContext constructor accepts std::uint64_t seeds.
+MAX_SEED = (1 << 64) - 1
 REQUIRED_SOURCE_CATEGORIES = (
     "mining",
     "dev",
@@ -418,6 +419,7 @@ def write_exploration_round(
     *,
     inventory_path: Path,
     output_dir: Path,
+    private_output_dir: Path,
     repo_root: Path,
     round_id: str,
     generation_key: str,
@@ -430,13 +432,19 @@ def write_exploration_round(
         generation_key=generation_key,
     )
     destination = _create_output_dir(output_dir, repo_root)
+    private_destination = _create_private_output_dir(private_output_dir, repo_root)
     for name, pool in ledger["pools"].items():
-        (destination / f"{name}.json").write_text(
+        (private_destination / f"{name}.json").write_text(
             json.dumps(pool, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
-    (destination / "ledger.json").write_text(
+    (private_destination / "ledger.json").write_text(
         json.dumps(ledger, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    summary = _public_summary(ledger, record_type="exploration_round")
+    (destination / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
     return ledger
@@ -447,6 +455,7 @@ def write_confirmation_trial(
     inventory_path: Path,
     prior_trials_path: Path,
     output_dir: Path,
+    private_output_dir: Path,
     repo_root: Path,
     trial_k: int,
     generation_key: str,
@@ -465,16 +474,53 @@ def write_confirmation_trial(
         config_sha256=config_sha256,
     )
     destination = _create_output_dir(output_dir, repo_root)
+    private_destination = _create_private_output_dir(private_output_dir, repo_root)
     for name, pool in trial["pools"].items():
-        (destination / f"{name}.json").write_text(
+        (private_destination / f"{name}.json").write_text(
             json.dumps(pool, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
-    (destination / "trial.json").write_text(
+    (private_destination / "trial.json").write_text(
         json.dumps(trial, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+    summary = _public_summary(trial, record_type="confirmation_trial")
+    (destination / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return trial
+
+
+def _public_summary(manifest: Mapping[str, Any], *, record_type: str) -> dict[str, Any]:
+    manifest_hash_key = "trial_manifest_sha256" if record_type == "confirmation_trial" else "ledger_sha256"
+    pools = manifest["pools"]
+    summary: dict[str, Any] = {
+        "schema_version": "sts1-g7-seed-public-summary-v1",
+        "record_type": record_type,
+        "round_id": manifest.get("round_id"),
+        "confirmation_trial_k": manifest.get("confirmation_trial_k"),
+        "alpha_exact": manifest.get("alpha_exact"),
+        "inventory_id": manifest["inventory_id"],
+        "inventory_sha256": manifest["inventory_sha256"],
+        "source_audit_sha256": manifest["source_audit_sha256"],
+        "candidate_sha256": manifest.get("candidate_sha256"),
+        "config_sha256": manifest.get("config_sha256"),
+        "generator": manifest["generator"],
+        "manifest_sha256": manifest[manifest_hash_key],
+        "pools": {
+            name: {
+                "pool_id": pool["pool_id"],
+                "purpose": pool["purpose"],
+                "count": len(pool["seed_ids"]),
+                "manifest_sha256": pool["manifest_sha256"],
+                "status": pool["status"],
+            }
+            for name, pool in pools.items()
+        },
+        "status": manifest["status"],
+    }
+    return {key: value for key, value in summary.items() if value is not None}
 
 
 def _read_inventory(path: Path) -> tuple[Mapping[str, Any], str]:
@@ -494,6 +540,17 @@ def _create_output_dir(output_dir: Path, repo_root: Path) -> Path:
     return destination
 
 
+def _create_private_output_dir(output_dir: Path, repo_root: Path) -> Path:
+    repository = repo_root.resolve()
+    destination = output_dir.resolve()
+    if destination == repository or repository in destination.parents:
+        raise SeedLedgerError("private seed manifests must be stored outside the repository")
+    if not output_dir.is_absolute():
+        raise SeedLedgerError("private output directory must be an absolute path")
+    destination.mkdir(parents=True, exist_ok=False)
+    return destination
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -502,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
     for subparser in (exploration, confirmation):
         subparser.add_argument("--inventory", type=Path, required=True)
         subparser.add_argument("--output-dir", type=Path, required=True)
+        subparser.add_argument("--private-output-dir", type=Path, required=True)
         subparser.add_argument("--generation-key", required=True)
     exploration.add_argument("--round-id", required=True)
     confirmation.add_argument("--trial-k", type=int, required=True)
@@ -516,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
             ledger = write_exploration_round(
                 inventory_path=args.inventory,
                 output_dir=output_dir,
+                private_output_dir=args.private_output_dir,
                 repo_root=repo_root,
                 round_id=args.round_id,
                 generation_key=args.generation_key,
@@ -526,6 +585,7 @@ def main(argv: list[str] | None = None) -> int:
                 inventory_path=args.inventory,
                 prior_trials_path=args.prior_trials,
                 output_dir=output_dir,
+                private_output_dir=args.private_output_dir,
                 repo_root=repo_root,
                 trial_k=args.trial_k,
                 generation_key=args.generation_key,

@@ -10,12 +10,14 @@ from unittest.mock import patch
 from scripts.sts1.sts1_g7_seed_ledger import (
     CONFIRMATION_POOL_SIZES,
     EXPLORATION_POOL_SIZES,
+    MAX_SEED,
     REQUIRED_SOURCE_CATEGORIES,
     SeedLedgerError,
     extend_inventory_with_pools,
     generate_confirmation_trial,
     generate_exploration_round,
     sha256_json,
+    validate_inventory,
     write_confirmation_trial,
     write_exploration_round,
 )
@@ -42,6 +44,21 @@ class SeedLedgerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.inventory = _inventory()
         self.inventory_sha256 = sha256_json(self.inventory)
+
+    def test_inventory_accepts_pinned_simulator_uint64_seed_domain(self) -> None:
+        inventory = _inventory()
+        upper = (1 << 64) - 1
+        inventory["source_manifests"][0]["seed_ids"] = [(1 << 32) + 17, upper]
+
+        excluded, _ = validate_inventory(inventory)
+        self.assertIn((1 << 32) + 17, excluded)
+        self.assertIn(upper, excluded)
+
+        for invalid in (0, 1 << 64):
+            inventory["source_manifests"][0]["seed_ids"] = [invalid]
+            with self.subTest(invalid_seed_domain=True):
+                with self.assertRaises(SeedLedgerError):
+                    validate_inventory(inventory)
 
     def test_exploration_pools_are_deterministic_sized_and_disjoint(self) -> None:
         first = generate_exploration_round(
@@ -74,7 +91,7 @@ class SeedLedgerTests(unittest.TestCase):
             self.assertEqual(len(seeds), len(set(seeds)))
             self.assertFalse(excluded.intersection(seeds))
             self.assertFalse(allocated.intersection(seeds))
-            self.assertTrue(all(1 <= seed <= 10**9 for seed in seeds))
+            self.assertTrue(all(1 <= seed <= MAX_SEED for seed in seeds))
             self.assertEqual(pool["manifest_sha256"], sha256_json({k: v for k, v in pool.items() if k != "manifest_sha256"}))
             allocated.update(seeds)
 
@@ -197,23 +214,33 @@ class SeedLedgerTests(unittest.TestCase):
 
     def test_writer_stays_in_allowed_directory_and_refuses_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            repo_root = Path(temp)
+            repo_root = Path(temp) / "repo"
+            repo_root.mkdir()
             inventory_path = repo_root / "inventory.json"
             inventory_bytes = json.dumps(self.inventory, sort_keys=True, separators=(",", ":")).encode("utf-8")
             inventory_path.write_bytes(inventory_bytes)
             output = repo_root / "evidence" / "sts1" / "g7-improvement" / "seeds" / "round-001"
+            private_output = Path(temp) / "private-round-001"
             ledger = write_exploration_round(
                 inventory_path=inventory_path,
                 output_dir=output,
+                private_output_dir=private_output,
                 repo_root=repo_root,
                 round_id="round-001",
                 generation_key="public-fixed-key-20261008",
             )
-            self.assertEqual(json.loads((output / "ledger.json").read_text(encoding="utf-8"))["ledger_sha256"], ledger["ledger_sha256"])
+            saved_private = json.loads((private_output / "ledger.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved_private["ledger_sha256"], ledger["ledger_sha256"])
+            public_summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(public_summary["manifest_sha256"], ledger["ledger_sha256"])
+            self.assertEqual(public_summary["pools"]["dev"]["count"], 30)
+            self.assertNotIn("generation_key", public_summary)
+            self.assertNotIn("seed_ids", json.dumps(public_summary))
             with self.assertRaises(FileExistsError):
                 write_exploration_round(
                     inventory_path=inventory_path,
                     output_dir=output,
+                    private_output_dir=Path(temp) / "private-round-001-again",
                     repo_root=repo_root,
                     round_id="round-001",
                     generation_key="public-fixed-key-20261008",
@@ -222,34 +249,52 @@ class SeedLedgerTests(unittest.TestCase):
                 write_exploration_round(
                     inventory_path=inventory_path,
                     output_dir=repo_root / "outside",
+                    private_output_dir=Path(temp) / "private-round-002",
                     repo_root=repo_root,
                     round_id="round-002",
+                    generation_key="another-key",
+                )
+            with self.assertRaisesRegex(SeedLedgerError, "outside the repository"):
+                write_exploration_round(
+                    inventory_path=inventory_path,
+                    output_dir=repo_root / "evidence" / "sts1" / "g7-improvement" / "seeds" / "round-003",
+                    private_output_dir=repo_root / "private-round-003",
+                    repo_root=repo_root,
+                    round_id="round-003",
                     generation_key="another-key",
                 )
 
     def test_confirmation_writer_records_frozen_candidate_and_trial_alpha(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            repo_root = Path(temp)
+            repo_root = Path(temp) / "repo"
+            repo_root.mkdir()
             inventory_path = repo_root / "inventory.json"
             inventory_path.write_text(json.dumps(self.inventory), encoding="utf-8")
             prior_trials_path = repo_root / "prior-trials.json"
             prior_trials_path.write_text("[]", encoding="utf-8")
             output = repo_root / "evidence" / "sts1" / "g7-improvement" / "seeds" / "confirmation-k001"
+            private_output = Path(temp) / "private-confirmation-k001"
             trial = write_confirmation_trial(
                 inventory_path=inventory_path,
                 prior_trials_path=prior_trials_path,
                 output_dir=output,
+                private_output_dir=private_output,
                 repo_root=repo_root,
                 trial_k=1,
                 generation_key="confirm-key-20261008",
                 candidate_sha256="a" * 64,
                 config_sha256="b" * 64,
             )
-            saved = json.loads((output / "trial.json").read_text(encoding="utf-8"))
+            saved = json.loads((private_output / "trial.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["trial_manifest_sha256"], trial["trial_manifest_sha256"])
             self.assertEqual(saved["alpha_exact"], "1/40")
             self.assertEqual(saved["candidate_sha256"], "a" * 64)
-            self.assertEqual(len(json.loads((output / "confirmation_a.json").read_text(encoding="utf-8"))["seed_ids"]), 100)
+            summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["alpha_exact"], "1/40")
+            self.assertEqual(summary["pools"]["confirmation_a"]["count"], 100)
+            self.assertNotIn("generation_key", summary)
+            self.assertNotIn("seed_ids", json.dumps(summary))
+            self.assertEqual(len(saved["pools"]["confirmation_a"]["seed_ids"]), 100)
 
 
 if __name__ == "__main__":

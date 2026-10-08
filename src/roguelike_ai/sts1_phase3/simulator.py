@@ -359,6 +359,142 @@ def public_run_state(gc: Any) -> dict[str, Any]:
     }
 
 
+def _diagnostic_label(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    identifier = _value(value, "id")
+    if identifier is not None:
+        return _enum_name(identifier)
+    name = _value(value, "name")
+    if name is not None:
+        return str(name)
+    return str(value)
+
+
+def _diagnostic_run_snapshot(gc: Any, armg_policy: Any = None) -> dict[str, Any]:
+    """Capture current run resources without changing simulator state."""
+
+    state = public_run_state(gc)
+    screen = _enum_name(_value(gc, "screen_state"))
+    state.update({
+        "screen_state": screen,
+        "room": screen,
+        "map_node": {
+            "x": _value(gc, "cur_map_node_x"),
+            "y": _value(gc, "cur_map_node_y"),
+        },
+        "hp": _value(gc, "cur_hp"),
+        "max_hp": _value(gc, "max_hp"),
+        "deck": (
+            armg_policy.deck_snapshot(gc)
+            if callable(getattr(armg_policy, "deck_snapshot", None))
+            else [_card(card) for card in _sequence(_value(gc, "deck", []))]
+        ),
+        "relics": [_diagnostic_label(item) for item in _sequence(_value(gc, "relics", []))],
+        "potions": [_diagnostic_label(item) for item in _sequence(_value(gc, "potions", []))],
+    })
+    return state
+
+
+def _diagnostic_battle_snapshot(battle: Any, gc: Any, armg_policy: Any = None) -> dict[str, Any]:
+    player = _value(battle, "player")
+    run_state = _diagnostic_run_snapshot(gc, armg_policy)
+    run_state["room"] = "COMBAT"
+    return {
+        "run": run_state,
+        "turn": _value(battle, "turn"),
+        "outcome": _enum_name(_value(battle, "outcome", "UNKNOWN")),
+        "player": {
+            "hp": _value(player, "cur_hp"),
+            "max_hp": _value(player, "max_hp"),
+            "block": _value(player, "block"),
+            "energy": _value(player, "energy"),
+            "powers": _player_powers(player),
+        },
+        "hand": [_card(card, position=index + 1) for index, card in enumerate(_sequence(_value(battle, "hand", [])))],
+        "draw_pile": [_card(card) for card in _sequence(_value(battle, "draw_pile", []))],
+        "discard_pile": [_card(card) for card in _sequence(_value(battle, "discard_pile", []))],
+        "exhaust_pile": [_card(card) for card in _sequence(_value(battle, "exhaust_pile", []))],
+        "enemies": [
+            _enemy(enemy, index=index, battle=battle)
+            for index, enemy in enumerate(_sequence(_value(battle, "monsters", [])))
+        ],
+    }
+
+
+def _diagnostic_map_route(
+    gc: Any,
+    sts: Any,
+    *,
+    choice_count: int,
+    selected_index: int,
+) -> dict[str, Any]:
+    """Identify each current legal map edge without reading beyond the next node."""
+
+    source_x = _value(gc, "cur_map_node_x")
+    source_y = _value(gc, "cur_map_node_y")
+    trace: dict[str, Any] = {
+        "source_node": {"x": source_x, "y": source_y},
+        "choice_count": choice_count,
+        "choices_complete": False,
+        "choices": [],
+        "selected_route": None,
+    }
+    get_actions = getattr(sts, "get_legal_game_actions", None)
+    if not callable(get_actions):
+        trace["incomplete_reason"] = "legal_game_actions_unavailable"
+        return trace
+    if (
+        not isinstance(source_x, int)
+        or isinstance(source_x, bool)
+        or not isinstance(source_y, int)
+        or isinstance(source_y, bool)
+    ):
+        trace["incomplete_reason"] = "current_map_node_unavailable"
+        return trace
+
+    try:
+        actions = list(get_actions(gc))
+        room_at = getattr(gc, "map_node_room", None)
+        choices = []
+        for index, action in enumerate(actions):
+            target_x = _value(action, "idx1")
+            target_y = source_y + 1
+            room = room_at(target_x, target_y) if callable(room_at) and isinstance(target_x, int) else None
+            choices.append({
+                "legal_action_index": index,
+                "action_bits": _value(action, "bits"),
+                "target_node": {"x": target_x, "y": target_y},
+                "target_room": _enum_name(room) if room is not None else None,
+            })
+        trace["choices"] = choices
+        targets = [
+            (item["target_node"]["x"], item["target_node"]["y"])
+            for item in choices
+        ]
+        trace["choices_complete"] = (
+            len(actions) == choice_count
+            and all(isinstance(x, int) and not isinstance(x, bool) for x, _ in targets)
+            and len(targets) == len(set(targets))
+        )
+        if trace["choices_complete"] and 0 <= selected_index < len(choices):
+            trace["selected_route"] = {
+                "from": trace["source_node"],
+                "to": choices[selected_index]["target_node"],
+                "room": choices[selected_index]["target_room"],
+                "legal_action_index": selected_index,
+            }
+        elif not trace["choices_complete"]:
+            trace["incomplete_reason"] = "legal_action_choice_count_or_target_mismatch"
+        else:
+            trace["incomplete_reason"] = "selected_map_choice_unavailable"
+    except Exception as exc:
+        trace["incomplete_reason"] = f"map_route_read_failed:{type(exc).__name__}"
+    return trace
+
+
 def deterministic_noncombat_step(gc: Any, sts: Any) -> str:
     if gc.screen_state == sts.ScreenState.REWARDS:
         offered = list(gc.get_card_reward())
@@ -849,6 +985,8 @@ def run_simulator_game(
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
     collect_teacher: bool = False,
+    diagnostic_trace_path: Path | None = None,
+    diagnostic_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     ui_seed, simulator_seed = resolve_simulator_seed(
         sts,
@@ -928,9 +1066,11 @@ def run_simulator_game(
     equivalent_action_alias_count = 0
     latencies_ms: list[float] = []
     game_steps = 0
+    encounter_index = 0
     max_floor = int(_value(gc, "floor_num", 0) or 0)
     max_act = int(_value(gc, "act", 0) or 0)
     error: str | None = None
+    diagnostic_legal_actions_complete = True
 
     _record(evidence_path, {
         "type": "frozen_manifest",
@@ -938,6 +1078,15 @@ def run_simulator_game(
         "ui_seed": ui_seed,
         "simulator_seed_long": simulator_seed,
         "seed_contract": seed_contract,
+    })
+    _record(diagnostic_trace_path, {
+        "type": "diagnostic_trace_header_v1",
+        "trace_schema": "sts1-diagnostic-trace-v1",
+        "manifest": frozen_a0_manifest(),
+        "ui_seed": ui_seed,
+        "simulator_seed_long": simulator_seed,
+        "seed_contract": seed_contract,
+        "run_metadata": dict(diagnostic_metadata or {}),
     })
 
     try:
@@ -951,14 +1100,33 @@ def run_simulator_game(
 
             if gc.screen_state != sts.ScreenState.BATTLE:
                 screen_before = _enum_name(gc.screen_state)
+                diagnostic_run_before = (
+                    _diagnostic_run_snapshot(gc, armg_policy)
+                    if diagnostic_trace_path is not None
+                    else None
+                )
+                diagnostic_choices: list[dict[str, Any]] | None = None
+                diagnostic_route: dict[str, Any] | None = None
                 if armg_policy is None:
+                    if diagnostic_trace_path is not None:
+                        diagnostic_legal_actions_complete = False
                     choice = deterministic_noncombat_step(gc, sts)
                     fallback_count += 1
                     policy_name = "legacy_fallback"
                 else:
                     kind, selected_index, descs, execs, scores = armg_policy.decide(gc, sts)
+                    if diagnostic_trace_path is not None and kind == "map":
+                        diagnostic_route = _diagnostic_map_route(
+                            gc,
+                            sts,
+                            choice_count=len(descs),
+                            selected_index=selected_index,
+                        )
+                        if not diagnostic_route["choices_complete"]:
+                            diagnostic_legal_actions_complete = False
                     before = public_run_state(gc)
                     choice_descriptions = [repr(value) for value in descs]
+                    choice_semantics = [armg_policy.describe_choice(kind, value) for value in descs]
                     deck_before = armg_policy.deck_snapshot(gc)
                     training_vector = armg_policy.training_vector_snapshot(gc, descs)
                     capture = getattr(armg_policy, "capture_conversion_state", None)
@@ -989,7 +1157,7 @@ def run_simulator_game(
                         "selected_index": selected_index,
                         "choice_count": len(descs),
                         "choice_descriptions": choice_descriptions,
-                        "choice_semantics": [armg_policy.describe_choice(kind, value) for value in descs],
+                        "choice_semantics": choice_semantics,
                         "choice_scores": scores,
                         "obs_412": training_vector["obs_412"],
                         "candidate_desc_368": training_vector["candidate_desc_368"],
@@ -1003,6 +1171,16 @@ def run_simulator_game(
                         "hp_before": _value(gc, "cur_hp"),
                         "max_hp_before": _value(gc, "max_hp"),
                     })
+                    if diagnostic_trace_path is not None:
+                        diagnostic_choices = [
+                            {
+                                "index": index,
+                                "descriptor": choice_descriptions[index],
+                                "semantics": choice_semantics[index],
+                                "score": scores[index] if index < len(scores) else None,
+                            }
+                            for index in range(len(descs))
+                        ]
                 _record(evidence_path, {
                     "type": "simulator_noncombat",
                     "floor": int(_value(gc, "floor_num", 0) or 0),
@@ -1012,10 +1190,34 @@ def run_simulator_game(
                     "policy": policy_name,
                     "choice": choice,
                 })
+                if diagnostic_trace_path is not None:
+                    _record(diagnostic_trace_path, {
+                        "type": "noncombat_decision_trace_v1",
+                        "game_step": game_steps,
+                        "floor": int(_value(gc, "floor_num", 0) or 0),
+                        "act": int(_value(gc, "act", 0) or 0),
+                        "screen_before": screen_before,
+                        "policy": policy_name,
+                        "legal_choices_complete": diagnostic_choices is not None,
+                        "legal_choices": diagnostic_choices,
+                        "route": diagnostic_route,
+                        "selected_choice": choice,
+                        "state_before": diagnostic_run_before,
+                        "state_after": _diagnostic_run_snapshot(gc, armg_policy),
+                    })
                 continue
 
             battle = sts.BattleContext()
             battle.init(gc)
+            encounter_index += 1
+            _record(diagnostic_trace_path, {
+                "type": "encounter_started_v1",
+                "game_step": game_steps,
+                "encounter_index": encounter_index,
+                "floor": int(_value(gc, "floor_num", 0) or 0),
+                "act": int(_value(gc, "act", 0) or 0),
+                "state": _diagnostic_battle_snapshot(battle, gc, armg_policy),
+            })
             battle_steps = 0
             while battle.outcome == sts.Outcome.UNDECIDED and battle_steps < max_battle_steps:
                 battle_steps += 1
@@ -1188,6 +1390,48 @@ def run_simulator_game(
                     ):
                         trace_card = _card(hand_raw[trace_source_idx], position=trace_source_idx + 1)
                     trace_player = _value(battle, "player")
+                    if diagnostic_trace_path is not None:
+                        diagnostic_run_state = _diagnostic_run_snapshot(gc, armg_policy)
+                        diagnostic_run_state["room"] = "COMBAT"
+                        diagnostic_state = adapter.adapt(
+                            battle,
+                            legal_actions=native_actions,
+                            run_state=diagnostic_run_state,
+                            projected_legal_actions=public_actions,
+                        )
+                        selected_public_matches = [
+                            index
+                            for index, action in enumerate(public_actions)
+                            if canonical_json(action) == canonical_json(trace_action)
+                        ]
+                        chosen_native_index = next(
+                            (index for index, action in enumerate(native_actions) if action is chosen),
+                            None,
+                        )
+                        if len(selected_public_matches) != 1 or chosen_native_index is None:
+                            diagnostic_legal_actions_complete = False
+                        _record(diagnostic_trace_path, {
+                            "type": "combat_decision_trace_v1",
+                            "game_step": game_steps,
+                            "encounter_index": encounter_index,
+                            "battle_step": battle_steps,
+                            "floor": floor_now,
+                            "act": int(_value(gc, "act", 0) or 0),
+                            "turn": _value(battle, "turn"),
+                            "mcts_sims": active_mcts_sims,
+                            "public_state": diagnostic_state,
+                            "canonical_native_legal_actions": [
+                                _public_action(action, hand_raw) for action in native_actions
+                            ],
+                            "policy_legal_actions": public_actions,
+                            "legal_actions_complete": True,
+                            "legal_action_alias_count": alias_count,
+                            "selected_action": trace_action,
+                            "selected_public_action_index": (
+                                selected_public_matches[0] if len(selected_public_matches) == 1 else None
+                            ),
+                            "selected_native_action_index": chosen_native_index,
+                        })
                     _record(evidence_path, {
                         "type": "combat_play_trace_v2",
                         "floor": floor_now,
@@ -1284,6 +1528,15 @@ def run_simulator_game(
             if battle.outcome == sts.Outcome.UNDECIDED:
                 timeout_count += 1
                 raise SimulatorRunError(f"battle step bound reached: {max_battle_steps}")
+            _record(diagnostic_trace_path, {
+                "type": "encounter_finished_v1",
+                "game_step": game_steps,
+                "encounter_index": encounter_index,
+                "floor": int(_value(gc, "floor_num", 0) or 0),
+                "act": int(_value(gc, "act", 0) or 0),
+                "battle_outcome": _enum_name(_value(battle, "outcome", "UNKNOWN")),
+                "state": _diagnostic_battle_snapshot(battle, gc, armg_policy),
+            })
             battle.exit_battle(gc)
 
         if gc.outcome == sts.GameOutcome.UNDECIDED:
@@ -1367,6 +1620,21 @@ def run_simulator_game(
         "teacher_collection": collect_teacher,
     }
     _record(evidence_path, {"type": "summary", **summary})
+    _record(diagnostic_trace_path, {
+        "type": "terminal_trace_v1",
+        "complete": error is None and outcome in {"victory", "defeat"},
+        "outcome": outcome,
+        "result": result,
+        "error": error,
+        "legal_actions_complete": diagnostic_legal_actions_complete,
+        "illegal_action_count": illegal_actions,
+        "timeout_count": timeout_count,
+        "crash_count": crash_count,
+        "final_floor": summary["final_floor"],
+        "final_act": int(_value(gc, "act", 0) or 0),
+        "final_hp": summary["final_hp"],
+        "final_state": _diagnostic_run_snapshot(gc, armg_policy),
+    })
     return summary
 
 

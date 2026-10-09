@@ -181,6 +181,44 @@
   },
   "raw_manifests": "PRIVATE_LOCAL_STORAGE_ONLY",
   "raw_traces": "PRIVATE_LOCAL_STORAGE_ONLY",
+  "pool_reuse_events": [
+    {
+      "pool": "dev",
+      "manifest_sha256": "1c5902006c427aee215e7b79eca65e58cf489ef125b18113a4b99c72e007d856",
+      "historical_purpose": "frozen_h3_version_selection",
+      "additional_purpose": "bounded_retrospective_diagnostic_only",
+      "scope": "saved H3 Dev30 evidence only; no rerun, training, candidate selection, or confirmation",
+      "registered_before_trace_access": true,
+      "status": "DIAGNOSTIC_COMPLETE",
+      "inventory": {
+        "mode": "Inventory",
+        "ndjson_files": 122,
+        "ndjson_bytes": 322730775,
+        "ndjson_listing_sha256": "b6c2918d8c3cafa4525e7983d1f0c58ea42a12b9f39b206e98b2939703257dc8",
+        "trace_files": 60,
+        "trace_bytes": 180419981
+      },
+      "diagnostic": {
+        "pinned_simulator_commit": "7476a81954020087da31d41d16fddf475746ec2d",
+        "native_action_mapping": {
+          "option_0": "REST; heals then returns to map or opens Dream Catcher rewards",
+          "option_1": "SMITH; opens one-card upgrade selection"
+        },
+        "bounded_trace_counts": {
+          "paired_dev_seeds": 30,
+          "trace_files": 60,
+          "complete_legal_terminal_records": 60,
+          "rest_decisions": 427,
+          "selected_rest": 281,
+          "selected_smith": 146,
+          "smith_to_card_select": 146,
+          "rest_to_map": 251,
+          "rest_to_rewards": 30
+        },
+        "interpretation": "The immediate REST_ROOM snapshot after SMITH is expected to show CARD_SELECT before the upgrade is applied. Retrospective Dev evidence is diagnostic only; it was not used for training, candidate selection, or confirmation."
+      }
+    }
+  ],
   "gate_fresh_result_data": "NOT_READ_OR_USED",
   "champion": "G7",
   "confirmation": "NOT_RUN",

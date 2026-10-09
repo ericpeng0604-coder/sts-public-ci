@@ -1,0 +1,92 @@
+{
+  "generator": "sha256-counter-rejection-v1",
+  "inventory_id": "sts1-g7-existing-seeds-v3-20261009-round003",
+  "inventory_sha256": "e5f1ba60dab54809a3ba63eaf836fcdc5af20c2254547b329fb88774c601b325",
+  "manifest_sha256": "368c1544f7d830fa864539d9897c00b9f72edcce420ea5a949e6cf236c84784a",
+  "pools": {
+    "dev": {
+      "count": 30,
+      "manifest_sha256": "95c1de6ae79dac46f79d9503639f0977162f5ae0927e1a216aa33a180323def2",
+      "pool_id": "round-004-20261009-dev",
+      "purpose": "dev",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "probe": {
+      "count": 10,
+      "manifest_sha256": "52786f8081986a698925b833ee21dae735a030004d618fd588034a65975ca4eb",
+      "pool_id": "round-004-20261009-probe",
+      "purpose": "probe",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_1": {
+      "count": 10,
+      "manifest_sha256": "a71e75062e99066016243023ec7c7f978ff84fdeedec440fee1504b2e5151777",
+      "pool_id": "round-004-20261009-train_hypothesis_1",
+      "purpose": "train",
+      "status": "EVALUATED_COMPLETE"
+    },
+    "train_hypothesis_2": {
+      "count": 10,
+      "manifest_sha256": "a097c132b48999929a29848990433c3d2aea0b6a73333e2111f8e1f668befb1b",
+      "pool_id": "round-004-20261009-train_hypothesis_2",
+      "purpose": "train",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_3": {
+      "count": 10,
+      "manifest_sha256": "69894049edaf474a1568ea4c1d9844ccf0522ee89747554ab45e971026bedd9a",
+      "pool_id": "round-004-20261009-train_hypothesis_3",
+      "purpose": "train",
+      "status": "GENERATED_NOT_RUN"
+    }
+  },
+  "record_type": "exploration_round",
+  "round_id": "round-004-20261009",
+  "schema_version": "sts1-g7-seed-public-summary-v1",
+  "registered_hypothesis": {
+    "candidate_policy": "h4-campfire-overheal",
+    "description": "When ArmG recommends legal REST and exact native Rest healing would exceed max HP, choose the unique legal SMITH option; otherwise keep ArmG's choice.",
+    "first_train_pool": "train_hypothesis_1",
+    "first_train_pool_count": 10,
+    "first_train_pool_manifest_sha256": "a71e75062e99066016243023ec7c7f978ff84fdeedec440fee1504b2e5151777",
+    "hypothesis_source": "round-003 bounded H3 Dev diagnostic; hypothesis generation only",
+    "status": "TRAIN_COMPLETE_POSITIVE_SIGNAL",
+    "train_result": {
+      "candidate_wins": 2,
+      "parent_wins": 1,
+      "candidate_only_wins": 1,
+      "parent_only_wins": 0,
+      "net_wins": 1,
+      "discordant_pairs": 1,
+      "exact_one_sided_sign_p_candidate_positive": 0.5,
+      "paired_seed_count": 10,
+      "episode_count": 21,
+      "candidate_campfire_overheal_opportunities": 29,
+      "candidate_campfire_overheal_overrides": 29,
+      "seeds_with_opportunity": 7,
+      "trace_files": 20,
+      "complete_legal_terminal_traces": 20,
+      "trace_invariance": "PASS",
+      "illegal_actions": 0,
+      "crashes": 0,
+      "timeouts": 0,
+      "communication_errors": "N/A_LOCAL_SIMULATOR",
+      "interpretation": "Positive train signal only; not a win-rate acceptance result. Proceed to the preregistered Probe10 gate without changing the frozen policy."
+    },
+    "frozen_candidate_identity": {
+      "local_authoring_commit": "30bb16c1519049b6b9c27c38370a883ed9df6fe9",
+      "github_commit": "029e2d94b1c2539f7e25ada7fe5beb6d9b431350",
+      "git_tree_sha": "b23f8169925d3f7e33f61504e030b0ad8c3edf69",
+      "same_tree_verified": true
+    }
+  },
+  "source_audit_sha256": "5f4e7775b5bde11159e3c675086fa581c4d5e4a70471881c076d882658fe53dc",
+  "next_round_exclusion_inventory": {
+    "inventory_id": "sts1-g7-existing-seeds-v3-20261009-round004",
+    "raw_sha256": "148e9e72b2f01cb5bcc40bd8fa323e3ae720e0c68514d298286e854484cb5b97",
+    "excluded_seed_count": 22826,
+    "source_manifest_count": 66,
+    "use": "future-round disjointness only; private seed IDs remain storage-only"
+  },
+  "status": "TRAIN_HYPOTHESIS_1_COMPLETE_PENDING_PROBE10"
+}

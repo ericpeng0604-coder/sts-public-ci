@@ -1,4 +1,4 @@
-"""Run the pre-registered H2 train pool as a private paired G7 counterfactual."""
+"""Run the pre-registered H6 Round005 train pool as a private paired G7 counterfactual."""
 
 from __future__ import annotations
 
@@ -24,9 +24,18 @@ from roguelike_ai.sts1_phase3.simulator import (  # noqa: E402
 from sts1_g7_seed_ledger import MAX_SEED, sha256_json, validate_inventory  # noqa: E402
 
 
-POOL_ID = "round-003-20261009-train_hypothesis_2"
+POOL_ID = "round-005-20261009-train_hypothesis_2"
 POOL_FILE = "train_hypothesis_2.json"
-EXPECTED_POOL_SHA256 = "101477197215c2b53773848f1f11182e3d9e9aa5b1539bcbc8b836b7ec9ba8a0"
+EXPECTED_POOL_SHA256 = "79ef213f04549431937649f30c0a2087184c3fc14040e8adf48cced9b4099200"
+INVENTORY_HASH_MODE = "raw"
+SIMULATOR_SOURCE_SHA256 = "fe735348978f2886fe7b5bc3a840c743c0de6fc3e37f124ceb6644367a1e0a49"
+ROUND_POOL_FILES = {
+    "train_hypothesis_1": "train_hypothesis_1.json",
+    "train_hypothesis_2": "train_hypothesis_2.json",
+    "train_hypothesis_3": "train_hypothesis_3.json",
+    "probe": "probe.json",
+    "dev": "dev.json",
+}
 G7_SHA256 = "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0"
 SIMULATOR_BINDING_SHA256 = "dea5e3b88097c7e7b7ffb74f03c227b7244a548b07fc5344c6b195d737c65512"
 MCTS_SIMS = 2000
@@ -47,7 +56,7 @@ FAIL_CLOSED_REASONS = frozenset(
 
 
 class EvaluationIntegrityError(RuntimeError):
-    """A private H2 run did not satisfy its frozen manifest or safety contract."""
+    """A private H6 run did not satisfy its frozen manifest or safety contract."""
 
 
 def _file_sha256(path: Path) -> str:
@@ -74,78 +83,106 @@ def _read_jsonl(path: Path):
                     yield value
 
 
+def _inventory_sha256(path: Path, inventory: dict[str, Any]) -> str:
+    if INVENTORY_HASH_MODE == "raw":
+        return _file_sha256(path)
+    if INVENTORY_HASH_MODE == "canonical":
+        return sha256_json(inventory)
+    raise EvaluationIntegrityError("unsupported exclusion-inventory hash mode")
+
+
 def _validate_pool(pool_path: Path, pools_dir: Path, inventory_path: Path) -> tuple[dict[str, Any], tuple[int, ...], dict[str, Any]]:
     if pool_path.name != POOL_FILE:
-        raise EvaluationIntegrityError("only the pre-registered H2 train pool is accepted")
+        raise EvaluationIntegrityError("only the pre-registered H6 Round005 train pool is accepted")
     pool = _read_json(pool_path)
     if pool.get("pool_id") != POOL_ID or pool.get("purpose") != "train":
-        raise EvaluationIntegrityError("H2 pool identity or purpose mismatch")
+        raise EvaluationIntegrityError("H6 pool identity or purpose mismatch")
     if pool.get("status") != "GENERATED_NOT_RUN":
-        raise EvaluationIntegrityError("H2 pool is not marked unused")
+        raise EvaluationIntegrityError("H6 pool is not marked unused")
     recorded_hash = pool.get("manifest_sha256")
     payload = {key: value for key, value in pool.items() if key != "manifest_sha256"}
     if recorded_hash != EXPECTED_POOL_SHA256 or sha256_json(payload) != recorded_hash:
-        raise EvaluationIntegrityError("H2 pool manifest hash mismatch")
+        raise EvaluationIntegrityError("H6 pool manifest hash mismatch")
     seed_values = pool.get("seed_ids")
     if not isinstance(seed_values, list) or len(seed_values) != 10:
-        raise EvaluationIntegrityError("H2 train pool must contain exactly ten seeds")
+        raise EvaluationIntegrityError("H6 train pool must contain exactly ten seeds")
     if any(
         not isinstance(seed, int) or isinstance(seed, bool) or not 1 <= seed <= MAX_SEED
         for seed in seed_values
     ):
-        raise EvaluationIntegrityError("H2 pool contains an invalid simulator seed")
+        raise EvaluationIntegrityError("H6 pool contains an invalid simulator seed")
     seeds = tuple(seed_values)
     if len(set(seeds)) != 10:
-        raise EvaluationIntegrityError("H2 train pool contains duplicate seeds")
+        raise EvaluationIntegrityError("H6 train pool contains duplicate seeds")
 
     inventory = _read_json(inventory_path)
     excluded, source_audit = validate_inventory(inventory)
-    inventory_hash = sha256_json(inventory)
+    inventory_hash = _inventory_sha256(inventory_path, inventory)
     if (
         pool.get("inventory_id") != inventory.get("inventory_id")
         or pool.get("inventory_sha256") != inventory_hash
         or pool.get("source_audit_sha256") != sha256_json(source_audit)
         or pool.get("source_audit") != source_audit
     ):
-        raise EvaluationIntegrityError("H2 pool does not match the verified exclusion inventory")
+        raise EvaluationIntegrityError("H6 pool does not match the verified exclusion inventory")
     if set(seeds) & excluded:
-        raise EvaluationIntegrityError("H2 train pool overlaps the existing exclusion inventory")
+        raise EvaluationIntegrityError("H6 train pool overlaps the existing exclusion inventory")
 
     ledger = _read_json(pools_dir / "ledger.json")
     ledger_payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
     if sha256_json(ledger_payload) != ledger.get("ledger_sha256"):
-        raise EvaluationIntegrityError("H2 round seed ledger hash mismatch")
+        raise EvaluationIntegrityError("Round005 seed ledger hash mismatch")
     ledger_h2 = ledger.get("pools", {}).get("train_hypothesis_2")
     if not isinstance(ledger_h2, dict) or ledger_h2.get("manifest_sha256") != recorded_hash or ledger_h2.get("seed_ids") != seed_values:
-        raise EvaluationIntegrityError("round-001 seed ledger and H2 pool file differ")
+        raise EvaluationIntegrityError("Round005 seed ledger and H6 pool file differ")
 
     seen: set[int] = set()
     pool_count = 0
-    for path in sorted(pools_dir.glob("*.json")):
-        if path.name in {"ledger.json", "exclusion_inventory_private.json"}:
-            continue
+    ledger_pools = ledger.get("pools", {})
+    for pool_key, filename in ROUND_POOL_FILES.items():
+        path = pools_dir / filename
         other = _read_json(path)
         other_payload = {key: value for key, value in other.items() if key != "manifest_sha256"}
-        if sha256_json(other_payload) != other.get("manifest_sha256"):
-            raise EvaluationIntegrityError("an H2 round pool manifest hash is invalid")
+        other_hash = other.get("manifest_sha256")
+        if sha256_json(other_payload) != other_hash:
+            raise EvaluationIntegrityError("a Round005 pool manifest hash is invalid")
         other_seeds = other.get("seed_ids")
-        if not isinstance(other_seeds, list):
-            raise EvaluationIntegrityError("an H2 round pool is missing its seed list")
+        if not isinstance(other_seeds, list) or any(
+            not isinstance(seed, int) or isinstance(seed, bool) or not 1 <= seed <= MAX_SEED
+            for seed in other_seeds
+        ):
+            raise EvaluationIntegrityError("a Round005 pool has an invalid seed list")
+        expected_purpose = "train" if pool_key.startswith("train_") else pool_key
+        ledger_pool = ledger_pools.get(pool_key)
+        if (
+            not isinstance(ledger_pool, dict)
+            or ledger_pool.get("manifest_sha256") != other_hash
+            or ledger_pool.get("seed_ids") != other_seeds
+            or other.get("purpose") != expected_purpose
+            or other.get("inventory_id") != inventory.get("inventory_id")
+            or other.get("inventory_sha256") != inventory_hash
+            or other.get("source_audit_sha256") != sha256_json(source_audit)
+            or other.get("source_audit") != source_audit
+        ):
+            raise EvaluationIntegrityError("Round005 ledger, pool, or exclusion inventory differs")
         normalized = set(other_seeds)
         if len(normalized) != len(other_seeds) or normalized & seen:
-            raise EvaluationIntegrityError("H2 round pool manifests overlap")
+            raise EvaluationIntegrityError("Round005 pool manifests overlap")
+        if normalized & excluded:
+            raise EvaluationIntegrityError("a Round005 pool overlaps the protected exclusion inventory")
         seen.update(normalized)
         pool_count += 1
-    if pool_count != 5 or not set(seeds).issubset(seen):
-        raise EvaluationIntegrityError("H2 round pool inventory is incomplete")
+    if pool_count != len(ROUND_POOL_FILES) or set(seeds) != set(ledger_h2["seed_ids"]):
+        raise EvaluationIntegrityError("Round005 pool inventory is incomplete")
 
     return pool, seeds, {
-        "h2_seed_count": len(seeds),
+        "train_seed_count": len(seeds),
         "exclusion_seed_count": len(excluded),
         "pool_manifest_count": pool_count,
         "inventory_sha256": inventory_hash,
+        "inventory_hash_mode": INVENTORY_HASH_MODE,
         "disjoint_from_exclusion_inventory": True,
-        "h2_round_pools_pairwise_disjoint": True,
+        "round_pools_pairwise_disjoint": True,
     }
 
 
@@ -161,13 +198,13 @@ def _check_private_paths(output_dir: Path, usage_ledger: Path) -> None:
     repo = REPO_ROOT.resolve()
     for path in (output_dir.resolve(), usage_ledger.resolve()):
         if path == repo or repo in path.parents:
-            raise EvaluationIntegrityError("raw H2 evidence and usage records must stay outside the repository")
+            raise EvaluationIntegrityError("raw H6 evidence and usage records must stay outside the repository")
     if output_dir.exists():
         raise EvaluationIntegrityError("private output directory already exists; do not rerun this pool")
     if usage_ledger.exists():
         for event in _read_jsonl(usage_ledger):
             if event.get("pool_id") == POOL_ID:
-                raise EvaluationIntegrityError("H2 pool already has a private use record")
+                raise EvaluationIntegrityError("H6 pool already has a private use record")
 
 
 def _summary_view(result: dict[str, Any]) -> dict[str, Any]:
@@ -295,7 +332,7 @@ def _check_terminal_trace(
                     or recommended_route.get("room") != "ELITE"
                     or actual_route.get("room") == "ELITE"
                 ):
-                    raise EvaluationIntegrityError("H2 override did not replace a low-HP Elite route")
+                    raise EvaluationIntegrityError("H6 override did not replace a low-HP Elite route")
                 if status == "fail_closed":
                     if detail.get("overridden") is not False or actual_index != recommended_index:
                         raise EvaluationIntegrityError("fail-closed map decision changed the ArmG action")
@@ -399,7 +436,7 @@ def _action_signature(path: Path) -> str:
 
 def _paired_summary(parent: list[str], candidate: list[str]) -> dict[str, Any]:
     if len(parent) != 10 or len(candidate) != 10:
-        raise EvaluationIntegrityError("paired H2 training requires ten complete pairs")
+        raise EvaluationIntegrityError("paired H6 training requires ten complete pairs")
     if any(value not in {"victory", "defeat"} for value in parent + candidate):
         raise EvaluationIntegrityError("unknown outcomes cannot be counted as losses")
     parent_wins = sum(value == "victory" for value in parent)
@@ -491,15 +528,19 @@ def main() -> int:
         if checkpoint_sha != G7_SHA256:
             raise EvaluationIntegrityError("local checkpoint does not match the pinned G7 hash")
         if Path(str(args.g7_checkpoint) + ".adapter.pt").exists():
-            raise EvaluationIntegrityError("G7 checkpoint has an adapter sidecar; H2 must use the unmodified G7 policy")
+            raise EvaluationIntegrityError("G7 checkpoint has an adapter sidecar; H6 must use the unmodified G7 policy")
         binding = args.module_dir / "slaythespire.cp312-win_amd64.pyd"
         if _file_sha256(binding) != SIMULATOR_BINDING_SHA256:
             raise EvaluationIntegrityError("native simulator binding hash mismatch")
+        simulator_source = REPO_ROOT / "src" / "roguelike_ai" / "sts1_phase3" / "simulator.py"
+        simulator_source_sha = _file_sha256(simulator_source)
+        if simulator_source_sha != SIMULATOR_SOURCE_SHA256:
+            raise EvaluationIntegrityError("pinned simulator source hash mismatch")
         armg_source = args.armg_root / "armG_train.py"
         if not armg_source.is_file():
             raise EvaluationIntegrityError("pinned ArmG source file is missing")
         if os.environ.get("STS1_TEACHER_V2_CONTEXTUAL_RERANK", "0") == "1":
-            raise EvaluationIntegrityError("contextual card reranking must be disabled for the fixed H2 comparison")
+            raise EvaluationIntegrityError("contextual card reranking must be disabled for the fixed H6 comparison")
 
         sts = _load_sts(args.module_dir)
         parent_policy = ArmGNoncombatPolicy(root=args.armg_root, weight_path=args.g7_checkpoint)
@@ -508,6 +549,7 @@ def main() -> int:
             "stage": "train_hypothesis_2",
             "pool_id": POOL_ID,
             "pool_manifest_sha256": EXPECTED_POOL_SHA256,
+            "simulator_source_sha256": simulator_source_sha,
             "simulator_binding_sha256": SIMULATOR_BINDING_SHA256,
             "armg_source_sha256": _file_sha256(armg_source),
             "g7_checkpoint_sha256": checkpoint_sha,
@@ -539,7 +581,7 @@ def main() -> int:
         completed_episodes = 0
         try:
             for pair_index, seed in enumerate(seeds):
-                print(f"H2 train pair {pair_index + 1}/10: parent")
+                print(f"H6 train pair {pair_index + 1}/10: parent")
                 parent_result, _, _, _ = _run_one(
                     sts=sts,
                     policy=parent_policy,
@@ -553,7 +595,7 @@ def main() -> int:
                     diagnostic_metadata=metadata,
                 )
                 completed_episodes += 1
-                print(f"H2 train pair {pair_index + 1}/10: candidate")
+                print(f"H6 train pair {pair_index + 1}/10: candidate")
                 candidate_result, candidate_evidence, _, candidate_trace_stats = _run_one(
                     sts=sts,
                     policy=candidate_policy,
@@ -568,7 +610,7 @@ def main() -> int:
                 )
                 completed_episodes += 1
                 if pair_index == 0:
-                    print("H2 tracing invariance check: candidate with trace disabled")
+                    print("H6 tracing invariance check: candidate with trace disabled")
                     trace_off_result, trace_off_evidence, _, _ = _run_one(
                         sts=sts,
                         policy=candidate_policy,
@@ -608,7 +650,7 @@ def main() -> int:
                 for reason, count in row["candidate_trace"]["fail_closed_reasons"].items():
                     candidate_fail_closed_reasons[reason] = candidate_fail_closed_reasons.get(reason, 0) + int(count)
             final = {
-                "schema_version": "sts1-g7-h2-train-paired-v1",
+                "schema_version": "sts1-g7-h6-train-paired-v1",
                 "status": "COMPLETE",
                 "pool_id": POOL_ID,
                 "pool_manifest_sha256": EXPECTED_POOL_SHA256,

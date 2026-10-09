@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import struct
 import sys
 import time
 from typing import Any
@@ -268,6 +269,230 @@ def _usable_potion_slots(
         ):
             slots.add(slot)
     return slots
+
+
+def _strict_integer(value: Any) -> int | None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or int(value) != value
+    ):
+        return None
+    return int(value)
+
+
+def _float32(value: float) -> float:
+    return struct.unpack("<f", struct.pack("<f", float(value)))[0]
+
+
+def _native_status_flag(entity: Any, sts: Any, enum_name: str, status_name: str) -> bool | None:
+    status_enum = getattr(getattr(sts, enum_name, None), status_name, None)
+    has_status = getattr(entity, "has_status", None)
+    if status_enum is None or not callable(has_status):
+        return None
+    try:
+        value = has_status(status_enum)
+    except Exception:
+        return None
+    return value if isinstance(value, bool) else None
+
+
+def _project_attack_hp_after_hit_sequence(
+    *, player_hp: int, player_block: int, damage_per_hit: int, hit_count: int
+) -> int:
+    hp = player_hp
+    block = player_block
+    for _ in range(hit_count):
+        saved_block = block
+        block = max(0, block - damage_per_hit)
+        damage = damage_per_hit - saved_block
+        if damage > 0:
+            damage -= block
+        if damage > 0:
+            hp -= damage
+        if hp <= 0:
+            return hp
+    return hp
+
+
+def _apply_lethal_potion_rescue(
+    recommended_action: Any,
+    legal_actions: Sequence[Any],
+    *,
+    hand: Sequence[Any],
+    battle: Any,
+    game_context: Any,
+    sts: Any,
+) -> tuple[Any, bool, str]:
+    """Use an exact legal potion only when it improves post-attack HP.
+
+    The projection follows the pinned BattleContext damage and potion effects.
+    If the baseline attack is lethal, the potion must still prevent death.
+    Unsupported damage modifiers or incomplete native state fail closed.
+    """
+
+    if _public_action(recommended_action, hand).get("kind") != "end_turn":
+        return recommended_action, False, "not_end_turn"
+
+    player = _value(battle, "player", None)
+    hp = _strict_integer(_value(player, "cur_hp", None))
+    max_hp = _strict_integer(_value(player, "max_hp", None))
+    block = _strict_integer(_value(player, "block", None))
+    if player is None or hp is None or max_hp is None or block is None or hp <= 0 or max_hp <= 0 or block < 0:
+        return recommended_action, False, "incomplete_player_state"
+
+    try:
+        monsters = list(_value(battle, "monsters", None))
+    except (TypeError, ValueError):
+        return recommended_action, False, "incomplete_monster_state"
+    living: list[Any] = []
+    for monster in monsters:
+        monster_hp = _strict_integer(_value(monster, "cur_hp", None))
+        alive = _value(monster, "alive", None)
+        if monster_hp is None or (alive is not None and not isinstance(alive, bool)):
+            return recommended_action, False, "incomplete_monster_state"
+        if monster_hp > 0 and alive is not False:
+            living.append(monster)
+    if len(living) != 1:
+        return recommended_action, False, "not_exactly_one_living_enemy"
+
+    enemy = living[0]
+    enemy_poison = _strict_integer(_value(enemy, "poison", None))
+    enemy_strength = _strict_integer(_value(enemy, "strength", None))
+    enemy_weak = _strict_integer(_value(enemy, "weak", None))
+    if enemy_poison is None or enemy_strength is None or enemy_weak is None:
+        return recommended_action, False, "incomplete_enemy_modifiers"
+    if enemy_poison > 0:
+        return recommended_action, False, "enemy_may_die_before_attack"
+
+    intent_damage = getattr(enemy, "intent_damage", None)
+    if not callable(intent_damage):
+        return recommended_action, False, "unknown_attack_intent"
+    try:
+        damage_info = intent_damage(battle)
+    except Exception:
+        return recommended_action, False, "unknown_attack_intent"
+    base_damage = _strict_integer(_value(damage_info, "damage", None))
+    hit_count = _strict_integer(_value(damage_info, "attack_count", None))
+    if base_damage is None or hit_count is None or base_damage <= 0 or hit_count <= 0:
+        return recommended_action, False, "unknown_attack_intent"
+
+    player_vulnerable = _native_status_flag(player, sts, "PlayerStatus", "VULNERABLE")
+    player_intangible = _native_status_flag(player, sts, "PlayerStatus", "INTANGIBLE")
+    if player_vulnerable is None or player_intangible is None:
+        return recommended_action, False, "incomplete_player_modifiers"
+
+    # These end-turn effects can change the attack outcome or invalidate a
+    # lethal classification, and are not represented in this narrow projection.
+    for status_name in ("REGEN", "METALLICIZE", "PLATED_ARMOR"):
+        active = _native_status_flag(player, sts, "PlayerStatus", status_name)
+        if active is None:
+            return recommended_action, False, "incomplete_player_modifiers"
+        if active:
+            return recommended_action, False, "unsupported_end_turn_status"
+
+    relic_values = _value(game_context, "relics", None)
+    if relic_values is None:
+        return recommended_action, False, "incomplete_relic_inventory"
+    try:
+        relics = list(relic_values)
+    except (TypeError, ValueError):
+        return recommended_action, False, "incomplete_relic_inventory"
+    relic_names: set[str] = set()
+    for relic in relics:
+        relic_id = _value(relic, "id", None)
+        if relic_id is None:
+            return recommended_action, False, "incomplete_relic_inventory"
+        relic_names.add(_enum_name(relic_id).upper())
+    if relic_names & {
+        "FOSSILIZED_HELIX",
+        "LIZARD_TAIL",
+        "ORICHALCUM",
+        "STONE_CALENDAR",
+        "TORII",
+        "TUNGSTEN_ROD",
+    }:
+        return recommended_action, False, "unsupported_damage_or_end_turn_relic"
+
+    potion_values = _value(game_context, "potions", None)
+    if potion_values is None:
+        return recommended_action, False, "incomplete_potion_inventory"
+    try:
+        potions = list(potion_values)
+    except (TypeError, ValueError):
+        return recommended_action, False, "incomplete_potion_inventory"
+    if len(potions) != 5 or any(
+        not isinstance(potion, str)
+        or not potion.strip()
+        or potion.upper() in {"INVALID", "UNKNOWN"}
+        for potion in potions
+    ):
+        return recommended_action, False, "incomplete_potion_inventory"
+    if any("FAIRY" in potion.upper() for potion in potions):
+        return recommended_action, False, "automatic_death_prevention_potion_present"
+
+    # Match the pinned Monster::calculateDamageToPlayer float32 operations.
+    damage_value = _float32(float(base_damage + enemy_strength))
+    if enemy_weak > 0:
+        weak_multiplier = 0.6 if "PAPER_KRANE" in relic_names else 0.75
+        damage_value = _float32(damage_value * _float32(weak_multiplier))
+    if player_vulnerable:
+        vulnerable_multiplier = 1.25 if "ODD_MUSHROOM" in relic_names else 1.5
+        damage_value = _float32(damage_value * _float32(vulnerable_multiplier))
+    if player_intangible:
+        damage_value = min(damage_value, 1.0)
+    damage_per_hit = max(int(math.floor(damage_value)), 0)
+    if damage_per_hit <= 0:
+        return recommended_action, False, "attack_not_damaging"
+
+    parent_hp_after = _project_attack_hp_after_hit_sequence(
+        player_hp=hp,
+        player_block=block,
+        damage_per_hit=damage_per_hit,
+        hit_count=hit_count,
+    )
+    bark = "SACRED_BARK" in relic_names
+    rescue_actions: list[tuple[int, Any]] = []
+    for action in legal_actions:
+        if _action_type(action) != "POTION":
+            continue
+        public_action = _public_action(action, hand)
+        if public_action.get("kind") != "use_potion":
+            continue
+        slot = public_action.get("potion_index")
+        if not isinstance(slot, int) or isinstance(slot, bool) or not 0 <= slot < len(potions):
+            continue
+        potion_name = potions[slot].upper()
+        new_hp = hp
+        new_block = block
+        if potion_name == "BLOCK_POTION":
+            new_block += 24 if bark else 12
+        elif potion_name == "BLOOD_POTION":
+            heal_percent = 20 if bark else 40
+            heal_amount = int(math.floor(_float32(_float32(float(max_hp * heal_percent)) / _float32(100.0))))
+            if "MARK_OF_THE_BLOOM" in relic_names:
+                heal_amount = 0
+            elif "MAGIC_FLOWER" in relic_names:
+                heal_amount = heal_amount * 3 // 2
+            new_hp = min(max_hp, hp + heal_amount)
+        else:
+            continue
+        projected_hp = _project_attack_hp_after_hit_sequence(
+            player_hp=new_hp,
+            player_block=new_block,
+            damage_per_hit=damage_per_hit,
+            hit_count=hit_count,
+        )
+        if projected_hp > 0 and (
+            parent_hp_after <= 0 or projected_hp > parent_hp_after
+        ):
+            rescue_actions.append((slot, action))
+
+    if not rescue_actions:
+        return recommended_action, False, "no_legal_potion_improves_projected_hp"
+    _, selected = min(rescue_actions, key=lambda item: item[0])
+    return selected, True, "override"
 
 
 def _apply_low_hp_emergency_potion(
@@ -542,12 +767,54 @@ def _diagnostic_label(value: Any) -> str | None:
     return str(value)
 
 
+def _potion_inventory_snapshot(gc: Any) -> dict[str, Any]:
+    """Return all five native potion slots, failing closed on incomplete data."""
+
+    inventory = _value(gc, "potions", None)
+    if inventory is None:
+        return {
+            "potions": None,
+            "potion_inventory_complete": False,
+            "potion_inventory_source": "unavailable",
+            "potion_inventory_reason": "native_potion_property_missing",
+        }
+    try:
+        slots = list(inventory)
+    except (TypeError, ValueError):
+        slots = []
+    if len(slots) != 5:
+        return {
+            "potions": None,
+            "potion_inventory_complete": False,
+            "potion_inventory_source": "native_gamecontext_potion_enum_names_v1",
+            "potion_inventory_reason": "expected_exactly_five_slots",
+        }
+    if any(
+        not isinstance(slot, str)
+        or not slot.strip()
+        or slot.upper() in {"INVALID", "UNKNOWN"}
+        for slot in slots
+    ):
+        return {
+            "potions": None,
+            "potion_inventory_complete": False,
+            "potion_inventory_source": "native_gamecontext_potion_enum_names_v1",
+            "potion_inventory_reason": "unknown_or_invalid_native_slot",
+        }
+    return {
+        "potions": slots,
+        "potion_inventory_complete": True,
+        "potion_inventory_source": "native_gamecontext_potion_enum_names_v1",
+        "potion_inventory_reason": "exactly_five_valid_native_slots",
+    }
+
+
 def _diagnostic_run_snapshot(gc: Any, armg_policy: Any = None) -> dict[str, Any]:
     """Capture current run resources without changing simulator state."""
 
     state = public_run_state(gc)
     screen = _enum_name(_value(gc, "screen_state"))
-    potion_inventory = _value(gc, "potions", None)
+    potion_inventory = _potion_inventory_snapshot(gc)
     state.update({
         "screen_state": screen,
         "room": screen,
@@ -563,12 +830,7 @@ def _diagnostic_run_snapshot(gc: Any, armg_policy: Any = None) -> dict[str, Any]
             else [_card(card) for card in _sequence(_value(gc, "deck", []))]
         ),
         "relics": [_diagnostic_label(item) for item in _sequence(_value(gc, "relics", []))],
-        "potions": (
-            [_diagnostic_label(item) for item in _sequence(potion_inventory)]
-            if potion_inventory is not None
-            else None
-        ),
-        "potion_inventory_complete": potion_inventory is not None,
+        **potion_inventory,
     })
     return state
 
@@ -809,19 +1071,27 @@ def _apply_campfire_overheal_override(
     gc: Any,
     sts: Any,
     armg_policy: Any,
+    *,
+    require_overheal_exceeds_effective_rest_heal: bool = False,
 ) -> tuple[int, dict[str, Any]]:
-    """Choose the legal Smith action only when the recommended Rest over-heals.
+    """Choose the legal Smith action under the selected fixed over-heal rule.
 
     The rule uses the pinned simulator's REST (option 0) and SMITH (option 1)
     semantics. Missing state, relic, or descriptor data keeps the ArmG action.
     """
 
     detail: dict[str, Any] = {
-        "kind": "prefer_smith_when_rest_overheals",
+        "kind": (
+            "prefer_smith_when_overheal_exceeds_effective_rest_heal"
+            if require_overheal_exceeds_effective_rest_heal
+            else "prefer_smith_when_rest_overheals"
+        ),
         "recommended_index": recommended_index,
         "selected_index": recommended_index,
         "recommended_option_index": None,
         "rest_heal_amount": None,
+        "overheal_amount": None,
+        "effective_rest_heal_amount": None,
         "overridden": False,
         "reason": "unchanged",
     }
@@ -873,6 +1143,7 @@ def _apply_campfire_overheal_override(
         or isinstance(max_hp, bool)
         or not math.isfinite(float(max_hp))
         or current_hp < 0
+        or current_hp > max_hp
         or max_hp <= 0
     ):
         detail["reason"] = "player_hp_unavailable_or_invalid"
@@ -900,17 +1171,197 @@ def _apply_campfire_overheal_override(
     detail["rest_heal_amount"] = heal_amount
     detail["hp_before"] = int(current_hp) if isinstance(current_hp, int) else float(current_hp)
     detail["max_hp_before"] = int(max_hp) if isinstance(max_hp, int) else float(max_hp)
+    overheal_amount = max(0.0, float(current_hp) + heal_amount - float(max_hp))
+    effective_rest_heal = min(float(heal_amount), float(max_hp) - float(current_hp))
+    detail["overheal_amount"] = (
+        int(overheal_amount) if overheal_amount.is_integer() else overheal_amount
+    )
+    detail["effective_rest_heal_amount"] = (
+        int(effective_rest_heal)
+        if effective_rest_heal.is_integer()
+        else effective_rest_heal
+    )
     if current_hp + heal_amount <= max_hp:
         detail["reason"] = "rest_heal_does_not_overflow"
+        return recommended_index, detail
+    if require_overheal_exceeds_effective_rest_heal and overheal_amount <= effective_rest_heal:
+        detail["reason"] = "overheal_not_greater_than_effective_rest_heal"
         return recommended_index, detail
 
     smith_index = smith_indices[0]
     detail.update({
         "selected_index": smith_index,
         "overridden": True,
-        "reason": "rest_heal_would_exceed_max_hp",
+        "reason": (
+            "overheal_exceeds_effective_rest_heal"
+            if require_overheal_exceeds_effective_rest_heal
+            else "rest_heal_would_exceed_max_hp"
+        ),
     })
     return smith_index, detail
+
+
+def _apply_card_reward_skip_deck_threshold(
+    recommended_index: int,
+    kind: str,
+    descs: Sequence[Any],
+    gc: Any,
+    armg_policy: Any,
+    *,
+    deck_size_threshold: int | None,
+    require_recommended_duplicate: bool = False,
+    require_all_options_duplicate: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    """Select the exact legal Skip descriptor for a sufficiently large deck."""
+
+    detail: dict[str, Any] = {
+        "kind": (
+            "skip_duplicate_card_reward_when_deck_size_at_least"
+            if require_recommended_duplicate
+            else "skip_card_reward_when_deck_size_at_least"
+        ),
+        "threshold": deck_size_threshold,
+        "deck_size": None,
+        "require_recommended_duplicate": require_recommended_duplicate,
+        "recommended_card_is_duplicate": None,
+        "require_all_options_duplicate": require_all_options_duplicate,
+        "all_reward_options_are_duplicates": None,
+        "legal_reward_card_count": None,
+        "duplicate_reward_card_count": None,
+        "novel_reward_card_count": None,
+        "skip_choice_index": None,
+        "eligible": False,
+        "overridden": False,
+        "reason": "disabled" if deck_size_threshold is None else "not_card_reward",
+    }
+    if deck_size_threshold is None or kind != "card":
+        return recommended_index, detail
+    if (
+        not isinstance(recommended_index, int)
+        or isinstance(recommended_index, bool)
+        or not 0 <= recommended_index < len(descs)
+    ):
+        detail["reason"] = "invalid_parent_recommendation"
+        return recommended_index, detail
+
+    deck_value = _value(gc, "deck", None)
+    if deck_value is None:
+        detail["reason"] = "incomplete_deck"
+        return recommended_index, detail
+    try:
+        deck_size = len(_sequence(deck_value))
+    except Exception:
+        detail["reason"] = "incomplete_deck"
+        return recommended_index, detail
+    detail["deck_size"] = deck_size
+    if deck_size < deck_size_threshold:
+        detail["reason"] = "deck_below_threshold"
+        return recommended_index, detail
+
+    if require_recommended_duplicate:
+        try:
+            recommended = armg_policy.describe_choice(kind, descs[recommended_index])
+            if isinstance(recommended, Mapping) and recommended.get("choice") == "skip":
+                detail["reason"] = "parent_already_selected_skip"
+                return recommended_index, detail
+            recommended_name = recommended.get("card_name") if isinstance(recommended, Mapping) else None
+            deck_snapshot = armg_policy.deck_snapshot(gc)
+            if (
+                not isinstance(recommended_name, str)
+                or not recommended_name
+                or not isinstance(deck_snapshot, list)
+                or any(
+                    not isinstance(card, Mapping) or not isinstance(card.get("name"), str)
+                    for card in deck_snapshot
+                )
+            ):
+                detail["reason"] = "incomplete_recommended_card_identity"
+                return recommended_index, detail
+            is_duplicate = any(card["name"] == recommended_name for card in deck_snapshot)
+        except Exception:
+            detail["reason"] = "incomplete_recommended_card_identity"
+            return recommended_index, detail
+        detail["recommended_card_is_duplicate"] = is_duplicate
+        if not is_duplicate:
+            detail["reason"] = "recommended_card_not_duplicate"
+            return recommended_index, detail
+
+    if require_all_options_duplicate:
+        try:
+            deck_snapshot = armg_policy.deck_snapshot(gc)
+            if (
+                not isinstance(deck_snapshot, list)
+                or any(
+                    not isinstance(card, Mapping)
+                    or not isinstance(card.get("name"), str)
+                    or not card.get("name")
+                    for card in deck_snapshot
+                )
+            ):
+                detail["reason"] = "incomplete_deck_card_identity"
+                return recommended_index, detail
+            deck_names = {card["name"] for card in deck_snapshot}
+            reward_names: list[str] = []
+            for descriptor in descs:
+                semantics = armg_policy.describe_choice(kind, descriptor)
+                if not isinstance(semantics, Mapping):
+                    detail["reason"] = "incomplete_reward_card_identity"
+                    return recommended_index, detail
+                if semantics.get("choice") == "skip":
+                    continue
+                card_name = semantics.get("card_name")
+                if not isinstance(card_name, str) or not card_name:
+                    detail["reason"] = "incomplete_reward_card_identity"
+                    return recommended_index, detail
+                reward_names.append(card_name)
+        except Exception:
+            detail["reason"] = "incomplete_reward_card_identity"
+            return recommended_index, detail
+
+        if not reward_names:
+            detail["reason"] = "no_legal_reward_card_options"
+            return recommended_index, detail
+        duplicate_count = sum(name in deck_names for name in reward_names)
+        novel_count = len(reward_names) - duplicate_count
+        all_duplicate = novel_count == 0
+        detail.update({
+            "legal_reward_card_count": len(reward_names),
+            "duplicate_reward_card_count": duplicate_count,
+            "novel_reward_card_count": novel_count,
+            "all_reward_options_are_duplicates": all_duplicate,
+        })
+        if not all_duplicate:
+            detail["reason"] = "legal_novel_reward_option"
+            return recommended_index, detail
+
+    try:
+        skip_indices = []
+        for index, descriptor in enumerate(descs):
+            semantics = armg_policy.describe_choice(kind, descriptor)
+            if isinstance(semantics, Mapping) and semantics.get("choice") == "skip":
+                skip_indices.append(index)
+    except Exception:
+        detail["reason"] = "incomplete_choice_semantics"
+        return recommended_index, detail
+    if len(skip_indices) != 1:
+        detail["reason"] = "skip_choice_missing_or_ambiguous"
+        return recommended_index, detail
+
+    skip_index = skip_indices[0]
+    detail.update({"skip_choice_index": skip_index, "eligible": True})
+    if skip_index == recommended_index:
+        detail["reason"] = "parent_already_selected_skip"
+        return recommended_index, detail
+    detail.update({
+        "selected_index": skip_index,
+        "overridden": True,
+        "reason": (
+            "large_deck_duplicate_skip_override"
+            if require_recommended_duplicate
+            else "large_deck_skip_override"
+        ),
+    })
+    return skip_index, detail
 
 
 def deterministic_noncombat_step(gc: Any, sts: Any) -> str:
@@ -1401,8 +1852,13 @@ def run_simulator_game(
     combat_mcts_exploration: float | None = None,
     reserve_last_potion_until_floor: int | None = None,
     use_potion_below_hp_fraction: float | None = None,
+    lethal_potion_rescue: bool = False,
     avoid_low_hp_elite_routes: bool = False,
     prefer_smith_when_rest_overheals: bool = False,
+    prefer_smith_when_overheal_exceeds_effective_rest_heal: bool = False,
+    skip_card_reward_when_deck_size_at_least: int | None = None,
+    skip_duplicate_card_reward_when_deck_size_at_least: int | None = None,
+    require_all_card_reward_options_are_duplicates: bool = False,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
@@ -1410,6 +1866,35 @@ def run_simulator_game(
     diagnostic_trace_path: Path | None = None,
     diagnostic_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if prefer_smith_when_rest_overheals and prefer_smith_when_overheal_exceeds_effective_rest_heal:
+        raise SimulatorRunError("choose only one Campfire over-heal rule")
+    if skip_card_reward_when_deck_size_at_least is not None:
+        if (
+            not isinstance(skip_card_reward_when_deck_size_at_least, int)
+            or isinstance(skip_card_reward_when_deck_size_at_least, bool)
+            or skip_card_reward_when_deck_size_at_least < 1
+        ):
+            raise SimulatorRunError("card-reward deck-size threshold must be a positive integer")
+        if armg_policy is None:
+            raise SimulatorRunError("card-reward Skip intervention requires the ArmG policy")
+    if skip_duplicate_card_reward_when_deck_size_at_least is not None:
+        if (
+            not isinstance(skip_duplicate_card_reward_when_deck_size_at_least, int)
+            or isinstance(skip_duplicate_card_reward_when_deck_size_at_least, bool)
+            or skip_duplicate_card_reward_when_deck_size_at_least < 1
+        ):
+            raise SimulatorRunError("duplicate-card deck-size threshold must be a positive integer")
+        if armg_policy is None:
+            raise SimulatorRunError("duplicate-card Skip intervention requires the ArmG policy")
+    if not isinstance(require_all_card_reward_options_are_duplicates, bool):
+        raise SimulatorRunError("all-duplicate reward option mode must be a boolean")
+    if (
+        require_all_card_reward_options_are_duplicates
+        and skip_duplicate_card_reward_when_deck_size_at_least is None
+    ):
+        raise SimulatorRunError(
+            "all-duplicate reward option mode requires the duplicate-card Skip intervention"
+        )
     ui_seed, simulator_seed = resolve_simulator_seed(
         sts,
         seed,
@@ -1494,6 +1979,19 @@ def run_simulator_game(
             raise SimulatorRunError(
                 "emergency potion use requires one fixed, untuned combat MCTS budget"
             )
+    if not isinstance(lethal_potion_rescue, bool):
+        raise SimulatorRunError("lethal potion rescue must be a boolean")
+    if lethal_potion_rescue and (
+        combat_mcts_sims is None
+        or consensus_budgets
+        or hybrid_budgets
+        or combat_mcts_late_sims is not None
+        or combat_mcts_boss_sims is not None
+        or combat_mcts_exploration is not None
+    ):
+        raise SimulatorRunError(
+            "lethal potion rescue requires one fixed, untuned combat MCTS budget"
+        )
     if not isinstance(avoid_low_hp_elite_routes, bool):
         raise SimulatorRunError("low-HP Elite route intervention must be a boolean")
     if avoid_low_hp_elite_routes and armg_policy is None:
@@ -1504,6 +2002,9 @@ def run_simulator_game(
             avoid_low_hp_elite_routes,
             reserve_last_potion_until_floor is not None,
             use_potion_below_hp_fraction is not None,
+            lethal_potion_rescue,
+            skip_card_reward_when_deck_size_at_least is not None,
+            skip_duplicate_card_reward_when_deck_size_at_least is not None,
         )
     ) > 1:
         raise SimulatorRunError("enable only one primary policy intervention per run")
@@ -1532,6 +2033,11 @@ def run_simulator_game(
     mcts_action_count = 0
     potion_reserve_override_count = 0
     emergency_potion_override_count = 0
+    lethal_potion_rescue_override_count = 0
+    lethal_potion_rescue_reason_counts: dict[str, int] = {}
+    card_reward_skip_override_count = 0
+    card_reward_skip_eligible_count = 0
+    card_reward_skip_reason_counts: dict[str, int] = {}
     campfire_overheal_override_count = 0
     map_elite_avoidance_override_count = 0
     map_elite_avoidance_fail_closed_count = 0
@@ -1583,13 +2089,25 @@ def run_simulator_game(
         ),
         "campfire_policy_intervention": (
             {
-                "kind": "prefer_smith_when_rest_overheals",
+                "kind": (
+                    "prefer_smith_when_overheal_exceeds_effective_rest_heal"
+                    if prefer_smith_when_overheal_exceeds_effective_rest_heal
+                    else "prefer_smith_when_rest_overheals"
+                ),
                 "rest_option_index": 0,
                 "smith_option_index": 1,
                 "rest_heal": "round(0.30*max_hp) + 15 with REGAL_PILLOW",
+                "override_condition": (
+                    "overheal > min(rest_heal, max_hp - current_hp)"
+                    if prefer_smith_when_overheal_exceeds_effective_rest_heal
+                    else "rest_heal > max_hp - current_hp"
+                ),
                 "fallback": "keep_armg_recommendation_if_state_or_legal_choices_are_incomplete",
             }
-            if prefer_smith_when_rest_overheals
+            if (
+                prefer_smith_when_rest_overheals
+                or prefer_smith_when_overheal_exceeds_effective_rest_heal
+            )
             else None
         ),
         "map_policy_intervention": (
@@ -1626,6 +2144,7 @@ def run_simulator_game(
                 diagnostic_recommended_index: int | None = None
                 map_policy_intervention: dict[str, Any] | None = None
                 campfire_policy_intervention: dict[str, Any] | None = None
+                card_reward_skip_intervention: dict[str, Any] | None = None
                 if armg_policy is None:
                     if diagnostic_trace_path is not None:
                         (
@@ -1710,7 +2229,10 @@ def run_simulator_game(
                                     "room": actual_route.get("target_room"),
                                     "legal_action_index": selected_index,
                                 }
-                    if prefer_smith_when_rest_overheals and kind == "rest":
+                    if (
+                        prefer_smith_when_rest_overheals
+                        or prefer_smith_when_overheal_exceeds_effective_rest_heal
+                    ) and kind == "rest":
                         selected_index, campfire_policy_intervention = (
                             _apply_campfire_overheal_override(
                                 recommended_index,
@@ -1719,10 +2241,44 @@ def run_simulator_game(
                                 gc,
                                 sts,
                                 armg_policy,
+                                require_overheal_exceeds_effective_rest_heal=(
+                                    prefer_smith_when_overheal_exceeds_effective_rest_heal
+                                ),
                             )
                         )
                         if campfire_policy_intervention["overridden"]:
                             campfire_overheal_override_count += 1
+                    card_reward_skip_threshold = (
+                        skip_card_reward_when_deck_size_at_least
+                        if skip_card_reward_when_deck_size_at_least is not None
+                        else skip_duplicate_card_reward_when_deck_size_at_least
+                    )
+                    if card_reward_skip_threshold is not None:
+                        selected_index, card_reward_skip_intervention = (
+                            _apply_card_reward_skip_deck_threshold(
+                                selected_index,
+                                kind,
+                                descs,
+                                gc,
+                                armg_policy,
+                                deck_size_threshold=card_reward_skip_threshold,
+                                require_recommended_duplicate=(
+                                    skip_duplicate_card_reward_when_deck_size_at_least is not None
+                                ),
+                                require_all_options_duplicate=(
+                                    require_all_card_reward_options_are_duplicates
+                                ),
+                            )
+                        )
+                        if card_reward_skip_intervention["eligible"]:
+                            card_reward_skip_eligible_count += 1
+                        if kind == "card":
+                            reason = str(card_reward_skip_intervention["reason"])
+                            card_reward_skip_reason_counts[reason] = (
+                                card_reward_skip_reason_counts.get(reason, 0) + 1
+                            )
+                        if card_reward_skip_intervention["overridden"]:
+                            card_reward_skip_override_count += 1
                     diagnostic_selected_index = selected_index
                     before = public_run_state(gc)
                     choice_descriptions = [repr(value) for value in descs]
@@ -1807,6 +2363,7 @@ def run_simulator_game(
                         "recommended_legal_action_index": diagnostic_recommended_index,
                         "map_policy_intervention": map_policy_intervention,
                         "campfire_policy_intervention": campfire_policy_intervention,
+                        "card_reward_skip_intervention": card_reward_skip_intervention,
                         "route": diagnostic_route,
                         "selected_choice": choice,
                         "state_before": diagnostic_run_before,
@@ -1956,6 +2513,8 @@ def run_simulator_game(
                     mcts_recommended_action = chosen
                     potion_reserve_override = False
                     emergency_potion_override = False
+                    lethal_potion_rescue_override = False
+                    lethal_potion_rescue_reason = "disabled"
                     if reserve_last_potion_until_floor is not None:
                         player = _value(battle, "player")
                         player_hp_raw = _value(player, "cur_hp", None)
@@ -2033,6 +2592,26 @@ def run_simulator_game(
                         )
                         if emergency_potion_override:
                             emergency_potion_override_count += 1
+                    if lethal_potion_rescue:
+                        (
+                            chosen,
+                            lethal_potion_rescue_override,
+                            lethal_potion_rescue_reason,
+                        ) = _apply_lethal_potion_rescue(
+                            mcts_recommended_action,
+                            native_actions,
+                            hand=hand_raw,
+                            battle=battle,
+                            game_context=gc,
+                            sts=sts,
+                        )
+                        lethal_potion_rescue_reason_counts[
+                            lethal_potion_rescue_reason
+                        ] = lethal_potion_rescue_reason_counts.get(
+                            lethal_potion_rescue_reason, 0
+                        ) + 1
+                        if lethal_potion_rescue_override:
+                            lethal_potion_rescue_override_count += 1
                     latency_ms = (time.perf_counter() - started) * 1000.0
                     latencies_ms.append(latency_ms)
                     chosen_bits = _value(chosen, "bits")
@@ -2096,8 +2675,13 @@ def run_simulator_game(
                         diagnostic_state["potion_inventory_complete"] = bool(
                             diagnostic_run_state.get("potion_inventory_complete", False)
                         )
-                        if not diagnostic_state["potion_inventory_complete"]:
-                            diagnostic_state["potions"] = None
+                        diagnostic_state["potions"] = diagnostic_run_state.get("potions")
+                        diagnostic_state["potion_inventory_source"] = diagnostic_run_state.get(
+                            "potion_inventory_source"
+                        )
+                        diagnostic_state["potion_inventory_reason"] = diagnostic_run_state.get(
+                            "potion_inventory_reason"
+                        )
                         selected_public_matches = [
                             index
                             for index, action in enumerate(public_actions)
@@ -2140,6 +2724,8 @@ def run_simulator_game(
                             ),
                             "potion_reserve_override": potion_reserve_override,
                             "emergency_potion_override": emergency_potion_override,
+                            "lethal_potion_rescue_override": lethal_potion_rescue_override,
+                            "lethal_potion_rescue_reason": lethal_potion_rescue_reason,
                             "selected_action": trace_action,
                             "selected_public_action_index": (
                                 selected_public_matches[0] if len(selected_public_matches) == 1 else None
@@ -2161,6 +2747,8 @@ def run_simulator_game(
                         ),
                         "potion_reserve_override": potion_reserve_override,
                         "emergency_potion_override": emergency_potion_override,
+                        "lethal_potion_rescue_override": lethal_potion_rescue_override,
+                        "lethal_potion_rescue_reason": lethal_potion_rescue_reason,
                         "action_type": _action_type(chosen),
                         "card": trace_card,
                         "target_index": _value(chosen, "target_idx", -1),
@@ -2280,6 +2868,7 @@ def run_simulator_game(
         outcome = "unknown"
         result = "BLOCKED_SIMULATOR_UNKNOWN_OUTCOME"
 
+    potion_inventory_snapshot = _potion_inventory_snapshot(gc)
     summary = {
         "schema_version": SIMULATOR_EVIDENCE_SCHEMA,
         "phase_protocol": A0_PROTOCOL_VERSION,
@@ -2329,12 +2918,34 @@ def run_simulator_game(
             )
         ),
         "noncombat_policy": "armg" if armg_policy is not None else "legacy_fallback",
-        "potion_inventory_snapshot_complete": _value(gc, "potions", None) is not None,
+        "potion_inventory_snapshot_complete": potion_inventory_snapshot[
+            "potion_inventory_complete"
+        ],
+        "potion_inventory_source": potion_inventory_snapshot["potion_inventory_source"],
+        "potion_inventory_reason": potion_inventory_snapshot["potion_inventory_reason"],
         "potion_reserve_until_floor": reserve_last_potion_until_floor,
         "potion_reserve_override_count": potion_reserve_override_count,
         "use_potion_below_hp_fraction": use_potion_below_hp_fraction,
         "emergency_potion_override_count": emergency_potion_override_count,
+        "lethal_potion_rescue_enabled": lethal_potion_rescue,
+        "lethal_potion_rescue_override_count": lethal_potion_rescue_override_count,
+        "lethal_potion_rescue_reason_counts": lethal_potion_rescue_reason_counts,
+        "skip_card_reward_when_deck_size_at_least": (
+            skip_card_reward_when_deck_size_at_least
+        ),
+        "skip_duplicate_card_reward_when_deck_size_at_least": (
+            skip_duplicate_card_reward_when_deck_size_at_least
+        ),
+        "require_all_card_reward_options_are_duplicates": (
+            require_all_card_reward_options_are_duplicates
+        ),
+        "card_reward_skip_eligible_count": card_reward_skip_eligible_count,
+        "card_reward_skip_override_count": card_reward_skip_override_count,
+        "card_reward_skip_reason_counts": card_reward_skip_reason_counts,
         "prefer_smith_when_rest_overheals": prefer_smith_when_rest_overheals,
+        "prefer_smith_when_overheal_exceeds_effective_rest_heal": (
+            prefer_smith_when_overheal_exceeds_effective_rest_heal
+        ),
         "campfire_overheal_override_count": campfire_overheal_override_count,
         "avoid_low_hp_elite_routes": avoid_low_hp_elite_routes,
         "map_elite_avoidance_override_count": map_elite_avoidance_override_count,
@@ -2364,6 +2975,11 @@ def run_simulator_game(
         "potion_inventory_snapshot_complete": summary[
             "potion_inventory_snapshot_complete"
         ],
+        "potion_inventory_source": summary["potion_inventory_source"],
+        "potion_inventory_reason": summary["potion_inventory_reason"],
+        "lethal_potion_rescue_enabled": lethal_potion_rescue,
+        "lethal_potion_rescue_override_count": lethal_potion_rescue_override_count,
+        "lethal_potion_rescue_reason_counts": lethal_potion_rescue_reason_counts,
         "final_floor": summary["final_floor"],
         "final_act": int(_value(gc, "act", 0) or 0),
         "final_hp": summary["final_hp"],

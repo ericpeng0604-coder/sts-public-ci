@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -7,9 +8,39 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "sts1"))
 
 from sts1_g7_h2_elite_route_eval import (  # noqa: E402
+    EXPECTED_POOL_SHA256,
+    INVENTORY_HASH_MODE,
+    POOL_ID,
+    ROUND_POOL_FILES,
+    SIMULATOR_SOURCE_SHA256,
     EvaluationIntegrityError,
     _check_terminal_trace,
+    _inventory_sha256,
 )
+
+
+def test_h6_registration_uses_reserved_round005_pool_and_explicit_pool_files():
+    assert POOL_ID == "round-005-20261009-train_hypothesis_2"
+    assert EXPECTED_POOL_SHA256 == "79ef213f04549431937649f30c0a2087184c3fc14040e8adf48cced9b4099200"
+    assert INVENTORY_HASH_MODE == "raw"
+    assert SIMULATOR_SOURCE_SHA256 == "fe735348978f2886fe7b5bc3a840c743c0de6fc3e37f124ceb6644367a1e0a49"
+    assert tuple(ROUND_POOL_FILES.values()) == (
+        "train_hypothesis_1.json",
+        "train_hypothesis_2.json",
+        "train_hypothesis_3.json",
+        "probe.json",
+        "dev.json",
+    )
+
+
+def test_h6_exclusion_inventory_hash_uses_exact_registered_file_bytes(tmp_path):
+    inventory_bytes = b'{ "source": "fixed", "count": 3 }\r\n'
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_bytes(inventory_bytes)
+
+    assert _inventory_sha256(inventory_path, {"source": "fixed", "count": 3}) == (
+        hashlib.sha256(inventory_bytes).hexdigest()
+    )
 
 
 def _trace_file(

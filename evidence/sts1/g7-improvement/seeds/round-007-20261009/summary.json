@@ -1,0 +1,307 @@
+{
+  "generator": "sha256-counter-rejection-v1",
+  "inventory_id": "g7-exclusions-plus-round-006-20261009",
+  "inventory_sha256": "5ab4074279680148978cac38588285598f3a0b5e3eac1c759d6b3236f91e65eb",
+  "manifest_sha256": "0d18d7ddb662d705280c13e9a1b479d80695158c04f940b52f7ecf61e5d2c37d",
+  "pools": {
+    "dev": {
+      "count": 30,
+      "manifest_sha256": "c4a512d5252044731c137f71aa68ec0adb68d7b24e8da2bbdc9d061a67a9b6a9",
+      "pool_id": "round-007-20261009-dev",
+      "purpose": "dev",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "probe": {
+      "count": 10,
+      "manifest_sha256": "97540602fbdbf5a69dc30ee6845fd054c98b3292f18e0b35c612f845c3bd8de3",
+      "pool_id": "round-007-20261009-probe",
+      "purpose": "probe",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_1": {
+      "count": 10,
+      "manifest_sha256": "5d06f80b952af7bac04fc01cd35e3711eaa334194021900305c07db7fbebeaf2",
+      "pool_id": "round-007-20261009-train_hypothesis_1",
+      "purpose": "train",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_2": {
+      "count": 10,
+      "manifest_sha256": "24279ac7bc8139efaa5298eb38291ca9ff7326c18e575d3a1a2e57305a19cbbd",
+      "pool_id": "round-007-20261009-train_hypothesis_2",
+      "purpose": "train",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_3": {
+      "count": 10,
+      "manifest_sha256": "f566468ee12b169c0c4e3bc4f6628b0971dcdb5c9150b403baf3c597eb1098c9",
+      "pool_id": "round-007-20261009-train_hypothesis_3",
+      "purpose": "train",
+      "status": "GENERATED_NOT_RUN"
+    }
+  },
+  "experiment_registration": {
+    "id": "H12_card_reward_skip_deck30",
+    "hypothesis": "G7 may add low-value cards when decks are already large because it never skipped an observed reward; test one deterministic skip rule.",
+    "candidate_rule": "On a Card Reward screen, choose the legal Skip action when decision-time deck size is at least 30; otherwise keep the G7 recommendation.",
+    "train_pool_key": "train_hypothesis_1",
+    "probe_pool_key": "probe",
+    "dev_pool_key": "dev",
+    "mcts_sims": 2000,
+    "status": "COMPLETE_NO_PROBE",
+    "implementation_path": "src/roguelike_ai/sts1_phase3/simulator.py",
+    "test_path": "tests/test_sts1_card_reward_skip_rule.py",
+    "train_report_path": "evidence/sts1/g7-improvement/round-007-h12-train-report.md",
+    "candidate_commit": "9dc78b8395a4a6613b65a7258ada456ccc997259",
+    "candidate_source_sha256": "34093825bc8c3f03d090d59a67cefea237dc4af076fb4a76eeaed3ce08d58803",
+    "candidate_evaluator_sha256": "fe64a9f21bd90064f3c785761b1531f7fc769ee527add8cb7b3b938f88a946e5",
+    "episodes": 21,
+    "paired_results": {
+      "g7_wins": 0,
+      "candidate_wins": 0,
+      "candidate_only_wins": 0,
+      "parent_only_wins": 0,
+      "net_wins": 0,
+      "discordant_pairs": 0,
+      "exact_one_sided_sign_p_candidate_positive": 1.0
+    },
+    "safety": {
+      "illegal_actions": 0,
+      "crashes": 0,
+      "timeouts": 0,
+      "communication_errors": 0,
+      "communication_error_basis": "offline in-process simulator; no game-bridge transport",
+      "complete_episodes": 21,
+      "legal_trace_episodes": 20,
+      "trace_on_off_invariance": "PASS"
+    },
+    "retention": {
+      "candidate_lower_terminal_floor_pairs": 1,
+      "candidate_equal_terminal_floor_pairs": 8,
+      "candidate_higher_terminal_floor_pairs": 1,
+      "candidate_lower_final_hp_pairs": 0,
+      "strict_h12_guard_passed": false
+    },
+    "trace_coverage": {
+      "combat_decision_count": 5608,
+      "encounter_count": 324,
+      "noncombat_decision_count": 1450,
+      "route_decision_count": 668,
+      "potion_snapshot_count": 8852
+    },
+    "private_artifact_count": 44,
+    "private_artifact_bytes": 79001481,
+    "private_artifact_manifest_sha256": "2a391961f5bcd0d6269742c74aad57ac5c612b305296d8fa2ca68b686a8adb28"
+  },
+  "next_experiment_registration": {
+    "id": "H13_duplicate_card_skip_deck30",
+    "hypothesis": "Large-deck Skip may be harmful when it suppresses a novel card favored by G7; test only duplicate recommended-card skips.",
+    "candidate_rule": "On a Card Reward screen with deck size at least 30, choose the exact legal Skip only when G7's recommended card name is already present in the decision-time deck; otherwise preserve G7.",
+    "train_pool_key": "train_hypothesis_2",
+    "mcts_sims": 2000,
+    "status": "COMPLETE_NO_DEV",
+    "source_h12_report": "evidence/sts1/g7-improvement/round-007-h12-train-report.md",
+    "candidate_commit": "22153109e0732586703cba741275b89df3b47091",
+    "candidate_source_sha256": "f0ff9d751b8c100f3666433527ca2c30de09be585c0859aa6f3ac48d94057281",
+    "candidate_evaluator_sha256": "1ff7d778f7486c906200ca850d40966e62e2ba00488b60166bdc17987bfbcc82",
+    "stage_evaluator_sha256": "371abd2731adff8bf9b251fb3ac1c0feeee04ca036e7ae884b220e12dc333b77",
+    "train_report_path": "evidence/sts1/g7-improvement/round-007-h13-train-report.md",
+    "train_result": {
+      "status": "COMPLETE_PROBE_ALLOWED",
+      "seed_count": 10,
+      "episodes": 21,
+      "parent_wins": 0,
+      "candidate_wins": 0,
+      "candidate_only_wins": 0,
+      "parent_only_wins": 0,
+      "net_wins": 0,
+      "discordant_pairs": 0,
+      "exact_one_sided_sign_p_candidate_positive": 1.0,
+      "duplicate_skip_eligible_decisions": 21,
+      "duplicate_skip_overrides": 21,
+      "trace_on_off_invariance": "PASS",
+      "safety": {
+        "illegal_actions": 0,
+        "crashes": 0,
+        "timeouts": 0,
+        "communication_errors": 0,
+        "complete_episodes": 21,
+        "legal_trace_episodes": 20
+      },
+      "retention": {
+        "candidate_lower_terminal_floor_pairs": 0,
+        "candidate_equal_terminal_floor_pairs": 9,
+        "candidate_higher_terminal_floor_pairs": 1,
+        "candidate_lower_final_hp_pairs": 0,
+        "strict_no_floor_or_hp_regression_passed": true
+      },
+      "trace_coverage": {
+        "combat_decision_count": 8017,
+        "encounter_count": 450,
+        "noncombat_decision_count": 1918,
+        "route_decision_count": 878,
+        "potion_snapshot_count": 12323
+      },
+      "private_artifact_count": 44,
+      "private_artifact_bytes": 111762697,
+      "private_artifact_manifest_sha256": "922d3c95a665eae20570c79078afec73bc430606bfd8745d6b7c3582a30d469b"
+    },
+    "probe_registration": {
+      "status": "COMPLETE_NO_DEV",
+      "pool_key": "probe",
+      "pool_manifest_sha256": "97540602fbdbf5a69dc30ee6845fd054c98b3292f18e0b35c612f845c3bd8de3",
+      "seed_count": 10,
+      "episodes_planned": 21,
+      "mcts_sims": 2000,
+      "candidate_commit": "22153109e0732586703cba741275b89df3b47091",
+      "candidate_source_sha256": "f0ff9d751b8c100f3666433527ca2c30de09be585c0859aa6f3ac48d94057281",
+      "candidate_evaluator_sha256": "1ff7d778f7486c906200ca850d40966e62e2ba00488b60166bdc17987bfbcc82",
+      "stage_evaluator_sha256": "371abd2731adff8bf9b251fb3ac1c0feeee04ca036e7ae884b220e12dc333b77",
+      "seed_contract": "heldout_internal",
+      "report_path": "evidence/sts1/g7-improvement/round-007-h13-probe-report.md",
+      "result": {
+        "episodes": 21,
+        "parent_wins": 1,
+        "candidate_wins": 1,
+        "candidate_only_wins": 1,
+        "parent_only_wins": 1,
+        "net_wins": 0,
+        "discordant_pairs": 2,
+        "exact_one_sided_sign_p_candidate_positive": 0.75,
+        "duplicate_skip_eligible_decisions": 20,
+        "duplicate_skip_overrides": 20,
+        "trace_on_off_invariance": "PASS",
+        "safety": {
+          "illegal_actions": 0,
+          "crashes": 0,
+          "timeouts": 0,
+          "communication_errors": 0,
+          "complete_episodes": 21,
+          "legal_trace_episodes": 20
+        },
+        "retention": {
+          "candidate_lower_terminal_floor_pairs": 1,
+          "candidate_equal_terminal_floor_pairs": 8,
+          "candidate_higher_terminal_floor_pairs": 1,
+          "candidate_lower_final_hp_pairs": 1,
+          "strict_no_floor_or_hp_regression_passed": false
+        },
+        "trace_coverage": {
+          "combat_decision_count": 7192,
+          "encounter_count": 428,
+          "noncombat_decision_count": 1688,
+          "route_decision_count": 798,
+          "potion_snapshot_count": 11016
+        },
+        "private_artifact_count": 44,
+        "private_artifact_bytes": 101867172,
+        "private_artifact_manifest_sha256": "4655768d5b1c48dd1ff0e2baf58c22887ea3f404762b89ee34eca5fb61cef52d"
+      },
+      "dev_status": "NOT_RUN_RETENTION_GATE_FAILED",
+      "preflight_history": [
+        {
+          "attempt": 1,
+          "status": "NOT_VERIFIED",
+          "reason": "The registered stage evaluator SHA had an incorrect two-character suffix; no episode started and the pool remained unused."
+        },
+        {
+          "attempt": 2,
+          "status": "PREFLIGHT_PASS",
+          "note": "Passed before the evaluator added an explicit preregistered heldout seed-contract check; no episodes started.",
+          "disjoint_from_exclusion_inventory": true,
+          "round_pools_pairwise_disjoint": true,
+          "seed_ids_emitted": false
+        },
+        {
+          "attempt": 3,
+          "status": "PREFLIGHT_PASS",
+          "seed_contract": "heldout_internal",
+          "disjoint_from_exclusion_inventory": true,
+          "round_pools_pairwise_disjoint": true,
+          "seed_ids_emitted": false
+        }
+      ]
+    }
+  },
+  "third_experiment_registration": {
+    "id": "H14_duplicate_skip_only_when_all_options_duplicate_deck30",
+    "hypothesis": "When G7 recommends a duplicate reward card in a deck of at least 30 cards, skipping may be useful only if every legal non-Skip reward option is also already in the deck.",
+    "candidate_rule": "On Card Reward decisions with decision-time deck size at least 30, choose the exact unique legal Skip only when G7's recommended card is in the deck and every legal non-Skip reward card has a complete identity and is in the deck; otherwise preserve G7.",
+    "train_pool_key": "train_hypothesis_3",
+    "mcts_sims": 2000,
+    "status": "COMPLETE_NO_PROBE",
+    "source_hypothesis": "H13 Train-only candidate-trace aggregate; no Probe/Dev traces or outcomes used.",
+    "candidate_commit": "bef46c7ec7b02e0d4976eda112d3575244e4f053",
+    "candidate_source_sha256": "981b33b0f39a0f139457185caa48dc84e93d179e4e0b67940cb2392890f1f72c",
+    "candidate_evaluator_sha256": "b399776ce3267b2a8e56882ac7e86cf991f83ef7bef471798123d74e0c6ee5c3",
+    "train_report_path": "evidence/sts1/g7-improvement/round-007-h14-train-report.md",
+    "episodes_planned": 21,
+    "seed_contract": "training_internal",
+    "train_result": {
+      "status": "COMPLETE_NO_PROBE",
+      "seed_count": 10,
+      "episodes": 21,
+      "parent_wins": 2,
+      "candidate_wins": 2,
+      "candidate_only_wins": 0,
+      "parent_only_wins": 0,
+      "net_wins": 0,
+      "discordant_pairs": 0,
+      "exact_one_sided_sign_p_candidate_positive": 1.0,
+      "eligible_card_reward_decisions": 2,
+      "card_reward_skip_overrides": 2,
+      "override_states_matching_parent": 2,
+      "trace_on_off_invariance": "PASS",
+      "retention": {
+        "candidate_lower_terminal_floor_pairs": 1,
+        "candidate_equal_terminal_floor_pairs": 9,
+        "candidate_higher_terminal_floor_pairs": 0,
+        "candidate_lower_final_hp_pairs": 0,
+        "strict_no_floor_or_hp_regression_passed": false,
+        "lower_floor_pairs_with_h14_override": 1
+      },
+      "safety": {
+        "illegal_actions": 0,
+        "crashes": 0,
+        "timeouts": 0,
+        "communication_errors": 0,
+        "communication_error_basis": "local in-process simulator; no remote/game-bridge transport",
+        "complete_episodes": 21,
+        "legal_trace_episodes": 20
+      },
+      "trace_coverage": {
+        "combat_decision_count": 7774,
+        "encounter_count": 401,
+        "noncombat_decision_count": 1758,
+        "route_decision_count": 820,
+        "potion_snapshot_count": 11711
+      },
+      "private_artifact_count": 44,
+      "private_artifact_bytes": 103911649,
+      "private_artifact_manifest_sha256": "0a06dd1adc2e90ae73c41634fd6c4bcb8c4b898832e4b694886abc8845848168",
+      "artifact_manifest_integrity": "PASS"
+    },
+    "train_gate": {
+      "require_at_least_one_legal_override": true,
+      "require_nonnegative_net": true,
+      "require_no_lower_terminal_floor_pair": true,
+      "require_no_lower_final_hp_pair": true,
+      "require_complete_legal_records": true,
+      "require_zero_illegal_crash_timeout_communication_errors": true,
+      "require_trace_on_off_equality": true,
+      "gate_thresholds_changed": false
+    },
+    "if_train_gate_passes": "Register a new Round008 Probe10 pool; do not reuse the consumed Round007 Probe or Dev pools.",
+    "resulting_next_stage_status": "NOT_RUN_RETENTION_GATE_FAILED"
+  },
+  "record_type": "exploration_round",
+  "round_id": "round-007-20261009",
+  "schema_version": "sts1-g7-seed-public-summary-v1",
+  "source_audit_sha256": "0b347a42212b28bf79807395f324f32778f77d39c2e2c958e72a93634425e8a0",
+  "round_episode_usage": {
+    "completed": 84,
+    "cap": 140,
+    "remaining": 56
+  },
+  "status": "ROUND_ACTIVE"
+}

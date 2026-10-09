@@ -1,4 +1,4 @@
-"""Run a pre-registered H3 or H4 train pool as a private paired G7 counterfactual."""
+"""Run a pre-registered H3, H4, or H5 pool as a private paired G7 counterfactual."""
 
 from __future__ import annotations
 
@@ -32,16 +32,15 @@ from roguelike_ai.sts1_phase3.simulator import (  # noqa: E402
 from sts1_g7_seed_ledger import MAX_SEED, sha256_json, validate_inventory  # noqa: E402
 
 
-POOL_ID = "round-003-20261009-train_hypothesis_3"
-POOL_FILE = "train_hypothesis_3.json"
-EXPECTED_POOL_SHA256 = "3f3d5f8f0e9fd762529bddc7577bd02ea29331e66d72cbdf9b36001d48669f52"
-H4_POOL_ID = "round-004-20261009-train_hypothesis_1"
+H3_POOL_FILE = "train_hypothesis_3.json"
 H4_POOL_FILE = "train_hypothesis_1.json"
-H4_EXPECTED_POOL_SHA256 = "a71e75062e99066016243023ec7c7f978ff84fdeedec440fee1504b2e5151777"
 H4_POLICY = "h4-campfire-overheal"
+H5_POOL_FILE = "train_hypothesis_1.json"
+H5_POLICY = "h5-effective-rest-heal"
 H3_POLICY = "h3-emergency-potion"
 G7_SHA256 = "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0"
 SIMULATOR_COMMIT = "7476a81954020087da31d41d16fddf475746ec2d"
+SIMULATOR_PYTHON_SOURCE_SHA256 = "fe735348978f2886fe7b5bc3a840c743c0de6fc3e37f124ceb6644367a1e0a49"
 SIMULATOR_BINDING_SHA256 = "dea5e3b88097c7e7b7ffb74f03c227b7244a548b07fc5344c6b195d737c65512"
 MCTS_SIMS = 2000
 HP_RATIO_THRESHOLD = 0.5
@@ -64,10 +63,10 @@ def _validate_pool(
     pools_dir: Path,
     inventory_path: Path,
     *,
-    pool_id: str = POOL_ID,
-    pool_file: str = POOL_FILE,
-    expected_pool_sha256: str = EXPECTED_POOL_SHA256,
-    pool_key: str = "train_hypothesis_3",
+    pool_id: str,
+    pool_file: str,
+    expected_pool_sha256: str,
+    pool_key: str,
     inventory_hash_mode: str = "canonical",
 ) -> tuple[dict[str, Any], tuple[int, ...], dict[str, Any]]:
     if pool_path.name != pool_file:
@@ -168,7 +167,62 @@ def _validate_pool(
     }
 
 
-def _check_private_paths(output_dir: Path, usage_ledger: Path, *, pool_id: str = POOL_ID) -> None:
+def _public_pool_registration(candidate_policy: str, pool_key: str) -> dict[str, Any]:
+    """Load a public seed-free registration instead of embedding pool IDs or hashes."""
+    round_by_policy = {
+        H3_POLICY: "round-003-20261009",
+        H4_POLICY: "round-004-20261009",
+        H5_POLICY: "round-005-20261009",
+    }
+    expected_status = {
+        H3_POLICY: "COMPLETED",
+        H4_POLICY: "EVALUATED_COMPLETE",
+        H5_POLICY: "GENERATED_NOT_RUN",
+    }
+    round_id = round_by_policy.get(candidate_policy)
+    if round_id is None:
+        raise EvaluationIntegrityError("candidate policy has no public pool registration")
+    summary_path = (
+        REPO_ROOT
+        / "evidence"
+        / "sts1"
+        / "g7-improvement"
+        / "seeds"
+        / round_id
+        / "summary.json"
+    )
+    summary = shared._read_json(summary_path)
+    if (
+        summary.get("schema_version") != "sts1-g7-seed-public-summary-v1"
+        or summary.get("round_id") != round_id
+    ):
+        raise EvaluationIntegrityError("public seed registration identity mismatch")
+    registration = summary.get("pools", {}).get(pool_key)
+    if not isinstance(registration, dict):
+        raise EvaluationIntegrityError("public seed registration is missing the requested pool")
+    expected_pool_id = f"{round_id}-{pool_key}"
+    pool_id = registration.get("pool_id", expected_pool_id)
+    manifest_sha256 = registration.get("manifest_sha256")
+    if (
+        registration.get("status") != expected_status[candidate_policy]
+        or registration.get("count") != 10
+        or pool_id != expected_pool_id
+        or registration.get("purpose", "train") != "train"
+        or not isinstance(manifest_sha256, str)
+        or len(manifest_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in manifest_sha256)
+    ):
+        raise EvaluationIntegrityError("public train registration is invalid or has the wrong status")
+    return {"pool_id": pool_id, "manifest_sha256": manifest_sha256}
+
+
+def _variant_override_count_key(candidate_policy: str) -> str:
+    if candidate_policy in {H4_POLICY, H5_POLICY}:
+        return "campfire_overheal_override_count"
+    return "emergency_potion_override_count"
+
+
+def _check_private_paths(output_dir: Path, usage_ledger: Path, *, pool_id: str) -> None:
     repo = REPO_ROOT.resolve()
     for path in (output_dir.resolve(), usage_ledger.resolve()):
         if path == repo or repo in path.parents:
@@ -186,10 +240,44 @@ def _summary_view(result: dict[str, Any]) -> dict[str, Any]:
         "armg_action_count", "mcts_action_count", "potion_reserve_override_count",
         "use_potion_below_hp_fraction", "emergency_potion_override_count",
         "campfire_overheal_override_count", "prefer_smith_when_rest_overheals",
+        "prefer_smith_when_overheal_exceeds_effective_rest_heal",
         "map_elite_avoidance_override_count", "map_elite_avoidance_fail_closed_count",
         "illegal_action_count", "timeout_count", "crash_count", "game_steps",
     )
     return {key: result.get(key) for key in keys}
+
+
+def _paired_summary_for_stage(parent: list[str], candidate: list[str]) -> dict[str, Any]:
+    """Summarize any registered paired stage without inheriting H2's fixed n=10 guard."""
+    if not parent or len(parent) != len(candidate):
+        raise EvaluationIntegrityError("paired stage requires equal nonempty outcome lists")
+    if any(value not in {"victory", "defeat"} for value in parent + candidate):
+        raise EvaluationIntegrityError("unknown outcomes cannot be counted as losses")
+
+    parent_wins = sum(value == "victory" for value in parent)
+    candidate_wins = sum(value == "victory" for value in candidate)
+    candidate_only = sum(
+        p != "victory" and c == "victory" for p, c in zip(parent, candidate, strict=True)
+    )
+    parent_only = sum(
+        p == "victory" and c != "victory" for p, c in zip(parent, candidate, strict=True)
+    )
+    discordant = candidate_only + parent_only
+    p_value = (
+        1.0
+        if discordant == 0
+        else sum(math.comb(discordant, value) for value in range(candidate_only, discordant + 1))
+        / (2**discordant)
+    )
+    return {
+        "parent_wins": parent_wins,
+        "candidate_wins": candidate_wins,
+        "candidate_only_wins": candidate_only,
+        "parent_only_wins": parent_only,
+        "net_wins": candidate_wins - parent_wins,
+        "discordant_pairs": discordant,
+        "exact_one_sided_sign_p_candidate_positive": p_value,
+    }
 
 
 def _check_trace(
@@ -209,8 +297,26 @@ def _check_trace(
         event_type = event.get("type")
         if event_type == "diagnostic_trace_header_v1":
             policy = event.get("campfire_policy_intervention")
-            if (candidate and candidate_policy == H4_POLICY) != isinstance(policy, dict):
-                raise EvaluationIntegrityError("campfire intervention header differs from the frozen policy")
+            expects_campfire_rule = candidate and candidate_policy in {H4_POLICY, H5_POLICY}
+            if expects_campfire_rule:
+                expected_kind = (
+                    "prefer_smith_when_overheal_exceeds_effective_rest_heal"
+                    if candidate_policy == H5_POLICY
+                    else "prefer_smith_when_rest_overheals"
+                )
+                expected_condition = (
+                    "overheal > min(rest_heal, max_hp - current_hp)"
+                    if candidate_policy == H5_POLICY
+                    else "rest_heal > max_hp - current_hp"
+                )
+                if (
+                    not isinstance(policy, dict)
+                    or policy.get("kind") != expected_kind
+                    or policy.get("override_condition") != expected_condition
+                ):
+                    raise EvaluationIntegrityError("campfire intervention header differs from the frozen policy")
+            elif isinstance(policy, dict):
+                raise EvaluationIntegrityError("unexpected Campfire intervention is enabled")
             continue
         if event_type == "terminal_trace_v1":
             terminal = event
@@ -241,7 +347,7 @@ def _check_trace(
                     item.get("option_index") if isinstance(item, dict) else None
                     for item in semantics
                 ]
-                if candidate and candidate_policy == H4_POLICY and any(
+                if candidate and candidate_policy in {H4_POLICY, H5_POLICY} and any(
                     not isinstance(value, int) or isinstance(value, bool)
                     for value in option_indices
                 ):
@@ -256,32 +362,82 @@ def _check_trace(
                     isinstance(hp, (int, float)) and not isinstance(hp, bool)
                     and isinstance(max_hp, (int, float)) and not isinstance(max_hp, bool)
                     and math.isfinite(float(hp)) and math.isfinite(float(max_hp))
-                    and hp >= 0 and max_hp > 0
+                    and hp >= 0 and hp <= max_hp and max_hp > 0
                 )
                 overflow = False
+                overheal_amount = None
+                effective_rest_heal = None
                 if len(rest) == 1 and len(smith) == 1 and hp_valid and isinstance(relics, list):
                     pillow = any(str(item).upper().endswith("REGAL_PILLOW") for item in relics)
                     heal = int(math.floor(float(max_hp) * 0.30 + 0.5)) + (15 if pillow else 0)
                     overflow = hp + heal > max_hp
-                is_candidate_rule = candidate and candidate_policy == H4_POLICY
+                    overheal_amount = max(0.0, float(hp) + heal - float(max_hp))
+                    effective_rest_heal = min(float(heal), float(max_hp) - float(hp))
+                is_candidate_rule = candidate and candidate_policy in {H4_POLICY, H5_POLICY}
+                rule_opportunity = bool(
+                    overflow
+                    and (
+                        candidate_policy == H4_POLICY
+                        or (
+                            candidate_policy == H5_POLICY
+                            and overheal_amount is not None
+                            and effective_rest_heal is not None
+                            and overheal_amount > effective_rest_heal
+                        )
+                    )
+                )
                 expected_intervention = bool(
                     is_candidate_rule
                     and len(rest) == 1
                     and len(smith) == 1
                     and option_indices[recommended_index] == 0
-                    and overflow
+                    and rule_opportunity
                 )
                 intervention = event.get("campfire_policy_intervention")
                 if is_candidate_rule and not isinstance(intervention, dict):
                     raise EvaluationIntegrityError("Campfire intervention detail is missing")
+                if (
+                    candidate
+                    and candidate_policy == H5_POLICY
+                    and len(rest) == 1
+                    and len(smith) == 1
+                    and option_indices[recommended_index] == 0
+                    and hp_valid
+                    and isinstance(relics, list)
+                ):
+                    expected_reason = (
+                        "rest_heal_does_not_overflow"
+                        if not overflow
+                        else (
+                            "overheal_exceeds_effective_rest_heal"
+                            if rule_opportunity
+                            else "overheal_not_greater_than_effective_rest_heal"
+                        )
+                    )
+                    if (
+                        not isinstance(intervention, dict)
+                        or intervention.get("kind") != "prefer_smith_when_overheal_exceeds_effective_rest_heal"
+                        or intervention.get("rest_heal_amount") != heal
+                        or intervention.get("overheal_amount") != overheal_amount
+                        or intervention.get("effective_rest_heal_amount") != effective_rest_heal
+                        or intervention.get("recommended_index") != recommended_index
+                        or intervention.get("selected_index") != selected_index
+                        or intervention.get("reason") != expected_reason
+                    ):
+                        raise EvaluationIntegrityError("H5 Campfire value accounting differs from the fixed rule")
                 observed_intervention = isinstance(intervention, dict) and intervention.get("overridden") is True
                 if observed_intervention is not expected_intervention:
-                    raise EvaluationIntegrityError("Campfire intervention differs from the preregistered overflow rule")
+                    raise EvaluationIntegrityError("Campfire intervention differs from the preregistered fixed rule")
                 if expected_intervention:
+                    expected_kind = (
+                        "prefer_smith_when_overheal_exceeds_effective_rest_heal"
+                        if candidate_policy == H5_POLICY
+                        else "prefer_smith_when_rest_overheals"
+                    )
                     if (
                         selected_index != smith[0]
                         or (event.get("state_after") or {}).get("screen_state") != "CARD_SELECT"
-                        or intervention.get("kind") != "prefer_smith_when_rest_overheals"
+                        or intervention.get("kind") != expected_kind
                         or intervention.get("rest_heal_amount") != heal
                         or intervention.get("recommended_index") != recommended_index
                         or intervention.get("selected_index") != selected_index
@@ -290,7 +446,12 @@ def _check_trace(
                     campfire_overrides += 1
                 elif selected_index != recommended_index:
                     raise EvaluationIntegrityError("Campfire choice changed outside the preregistered override")
-                if len(rest) == 1 and len(smith) == 1 and option_indices[recommended_index] == 0 and overflow:
+                if (
+                    len(rest) == 1
+                    and len(smith) == 1
+                    and option_indices[recommended_index] == 0
+                    and rule_opportunity
+                ):
                     campfire_overheal_opportunities += 1
             continue
         if event_type != "combat_decision_trace_v1":
@@ -354,7 +515,11 @@ def _check_trace(
         or combat_decisions < 1
     ):
         raise EvaluationIntegrityError("terminal trace failed completeness or safety guards")
-    expected_variant_overrides = campfire_overrides if candidate_policy == H4_POLICY else potion_overrides
+    expected_variant_overrides = (
+        campfire_overrides
+        if candidate_policy in {H4_POLICY, H5_POLICY}
+        else potion_overrides
+    )
     if candidate and expected_variant_overrides != expected_overrides:
         raise EvaluationIntegrityError("trace override count differs from the run summary")
     if not candidate and (potion_overrides or campfire_overrides):
@@ -419,6 +584,9 @@ def _run_one(
         ),
         avoid_low_hp_elite_routes=False,
         prefer_smith_when_rest_overheals=(candidate and candidate_policy == H4_POLICY),
+        prefer_smith_when_overheal_exceeds_effective_rest_heal=(
+            candidate and candidate_policy == H5_POLICY
+        ),
         training_seeds=all_training_seeds,
         collect_ppo=False,
         collect_teacher=False,
@@ -431,14 +599,7 @@ def _run_one(
         trace_stats = _check_trace(
             trace_path,
             candidate=candidate,
-            expected_overrides=int(
-                result.get(
-                    "campfire_overheal_override_count"
-                    if candidate_policy == H4_POLICY
-                    else "emergency_potion_override_count",
-                    0,
-                )
-            ),
+            expected_overrides=int(result.get(_variant_override_count_key(candidate_policy), 0)),
             candidate_policy=candidate_policy,
         )
     return result, evidence_path, trace_path, trace_stats
@@ -454,7 +615,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--g7-checkpoint", type=Path, required=True)
     parser.add_argument("--private-output-dir", type=Path, required=True)
     parser.add_argument("--private-usage-ledger", type=Path, required=True)
-    parser.add_argument("--candidate-policy", choices=(H3_POLICY, H4_POLICY), default=H3_POLICY)
+    parser.add_argument(
+        "--candidate-policy",
+        choices=(H3_POLICY, H4_POLICY, H5_POLICY),
+        default=H3_POLICY,
+    )
     parser.add_argument("--candidate-commit")
     parser.add_argument("--preflight-only", action="store_true")
     return parser
@@ -465,23 +630,29 @@ def main() -> int:
     try:
         candidate_mode = args.candidate_policy
         if candidate_mode == H4_POLICY:
-            pool_id = H4_POOL_ID
             pool_file = H4_POOL_FILE
-            expected_pool_sha256 = H4_EXPECTED_POOL_SHA256
             pool_key = "train_hypothesis_1"
             stage_name = "train_hypothesis_1_h4_campfire_overheal"
             intervention_description = (
                 "choose legal Smith only when ArmG recommends Rest and the exact native Rest heal would exceed max HP"
             )
+        elif candidate_mode == H5_POLICY:
+            pool_file = H5_POOL_FILE
+            pool_key = "train_hypothesis_1"
+            stage_name = "train_hypothesis_1_h5_effective_rest_heal"
+            intervention_description = (
+                "choose legal Smith only when ArmG recommends Rest and heal overflow exceeds the effective capped Rest heal"
+            )
         else:
-            pool_id = POOL_ID
-            pool_file = POOL_FILE
-            expected_pool_sha256 = EXPECTED_POOL_SHA256
+            pool_file = H3_POOL_FILE
             pool_key = "train_hypothesis_3"
             stage_name = "train_hypothesis_3"
             intervention_description = (
                 "at HP/maxHP <= 0.5, use the lowest-slot legal potion; preserve the parent MCTS action when required data or a legal potion is unavailable"
             )
+        registration = _public_pool_registration(candidate_mode, pool_key)
+        pool_id = registration["pool_id"]
+        expected_pool_sha256 = registration["manifest_sha256"]
         pool, seeds, preflight = _validate_pool(
             args.pool_file.resolve(),
             args.pools_dir.resolve(),
@@ -490,7 +661,7 @@ def main() -> int:
             pool_file=pool_file,
             expected_pool_sha256=expected_pool_sha256,
             pool_key=pool_key,
-            inventory_hash_mode="raw" if candidate_mode == H4_POLICY else "canonical",
+            inventory_hash_mode="raw" if candidate_mode in {H4_POLICY, H5_POLICY} else "canonical",
         )
         _check_private_paths(args.private_output_dir, args.private_usage_ledger, pool_id=pool_id)
         checkpoint_sha = _sha256(args.g7_checkpoint)
@@ -501,6 +672,9 @@ def main() -> int:
         binding = args.module_dir / "slaythespire.cp312-win_amd64.pyd"
         if _sha256(binding) != SIMULATOR_BINDING_SHA256:
             raise EvaluationIntegrityError("native simulator binding hash mismatch")
+        simulator_source_sha = _sha256(Path(simulator_module.__file__).resolve())
+        if simulator_source_sha != SIMULATOR_PYTHON_SOURCE_SHA256:
+            raise EvaluationIntegrityError("simulator Python source differs from the frozen H5 build")
         armg_source = args.armg_root / "armG_train.py"
         if not armg_source.is_file():
             raise EvaluationIntegrityError("pinned ArmG source file is missing")
@@ -512,7 +686,9 @@ def main() -> int:
             if not isinstance(candidate_commit, str) or len(candidate_commit) != 40:
                 raise EvaluationIntegrityError("run requires the frozen 40-character candidate commit SHA")
             observed_commit = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
+                ["git", "-c", f"safe.directory={REPO_ROOT.as_posix()}", "rev-parse", "HEAD"],
+                cwd=REPO_ROOT,
+                text=True,
             ).strip()
             if observed_commit != candidate_commit:
                 raise EvaluationIntegrityError("local HEAD differs from the frozen candidate commit SHA")
@@ -526,7 +702,7 @@ def main() -> int:
             "pool_id": pool_id,
             "pool_manifest_sha256": expected_pool_sha256,
             "simulator_commit": SIMULATOR_COMMIT,
-            "simulator_python_source_sha256": _sha256(Path(simulator_module.__file__).resolve()),
+            "simulator_python_source_sha256": simulator_source_sha,
             "runner_source_sha256": _sha256(Path(__file__).resolve()),
             "candidate_git_commit_sha": candidate_commit or "NOT_COMMITTED_PREFLIGHT",
             "simulator_binding_sha256": SIMULATOR_BINDING_SHA256,
@@ -535,7 +711,9 @@ def main() -> int:
             "mcts_sims": MCTS_SIMS,
             "candidate_intervention": intervention_description,
             "tie_break": (
-                "native option 0 REST to native option 1 SMITH only when exact Rest heal overflows max HP"
+                "native option 0 REST to native option 1 SMITH only when overheal exceeds effective capped Rest healing"
+                if candidate_mode == H5_POLICY
+                else "native option 0 REST to native option 1 SMITH only when exact Rest heal overflows max HP"
                 if candidate_mode == H4_POLICY
                 else "lowest_potion_slot_then_native_legal_action_order"
             ),
@@ -608,10 +786,10 @@ def main() -> int:
                 })
                 shared._append_jsonl(args.private_output_dir / "paired-runs.ndjson", rows[-1])
 
-            paired = shared._paired_summary(parent_outcomes, candidate_outcomes)
+            paired = _paired_summary_for_stage(parent_outcomes, candidate_outcomes)
             override_key = (
                 "campfire_overheal_override_count"
-                if candidate_mode == H4_POLICY
+                if candidate_mode in {H4_POLICY, H5_POLICY}
                 else "emergency_potion_override_count"
             )
             candidate_overrides = sum(int(row["candidate"].get(override_key) or 0) for row in rows)
@@ -622,7 +800,9 @@ def main() -> int:
             )
             final = {
                 "schema_version": (
-                    "sts1-g7-h4-train-paired-v1"
+                    "sts1-g7-h5-train-paired-v1"
+                    if candidate_mode == H5_POLICY
+                    else "sts1-g7-h4-train-paired-v1"
                     if candidate_mode == H4_POLICY
                     else "sts1-g7-h3-train-paired-v1"
                 ),
@@ -639,7 +819,7 @@ def main() -> int:
                 "candidate_combat_decisions": sum(int(row["candidate_trace"]["combat_decisions"]) for row in rows),
                 "communication_errors": "N/A_LOCAL_SIMULATOR",
             }
-            if candidate_mode == H4_POLICY:
+            if candidate_mode in {H4_POLICY, H5_POLICY}:
                 final["candidate_campfire_overheal_opportunities"] = campfire_opportunities
                 final["candidate_campfire_overheal_overrides"] = candidate_overrides
             else:
@@ -668,7 +848,7 @@ def main() -> int:
                         "candidate_campfire_overheal_opportunities": campfire_opportunities,
                         "candidate_campfire_overheal_overrides": candidate_overrides,
                     }
-                    if candidate_mode == H4_POLICY
+                    if candidate_mode in {H4_POLICY, H5_POLICY}
                     else {
                         "candidate_low_hp_potion_opportunities": low_hp_opportunities,
                         "candidate_emergency_potion_overrides": candidate_overrides,

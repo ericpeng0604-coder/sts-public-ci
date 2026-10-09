@@ -1,0 +1,246 @@
+{
+  "generator": "sha256-counter-rejection-v1",
+  "inventory_id": "sts1-g7-exclusions-round006-20261009-v1",
+  "inventory_sha256": "07ca394a9f872f06c9654cf05ca88243745fc3f93b11defbdfe3b95e69155ca8",
+  "manifest_sha256": "610bcb32a33fc9146629f357ff7b593376f9dcbdb832520536c6eeed165039ea",
+  "pools": {
+    "dev": {
+      "count": 30,
+      "manifest_sha256": "a9f195b41525aab30e8c58ec78db6564685d086bc2f7e54a83c4cf31b10572c5",
+      "pool_id": "round-006-20261009-dev",
+      "purpose": "hypothesis_generation_only",
+      "purpose_history": [
+        {
+          "purpose": "dev",
+          "stage": "H9_dev30",
+          "status": "COMPLETE_NULL_NO_CONFIRMATION"
+        },
+        {
+          "purpose": "hypothesis_generation_only",
+          "preregistered_comment_id": 6079488103,
+          "report": "evidence/sts1/g7-improvement/round-006-direction-review.md",
+          "status": "COMPLETED_HYPOTHESIS_GENERATION_REVIEW"
+        }
+      ],
+      "status": "HYPOTHESIS_GENERATION_REVIEW_COMPLETE"
+    },
+    "probe": {
+      "count": 10,
+      "manifest_sha256": "5b9d7e4f2aa22cb6e8db339a8b288f615876b7b0a96f5d8ff2513d6f4b43a95c",
+      "pool_id": "round-006-20261009-probe",
+      "purpose": "probe",
+      "status": "COMPLETE_NULL"
+    },
+    "train_hypothesis_1": {
+      "count": 10,
+      "manifest_sha256": "848de4877ffbed275955f8fbf0a669824d044168e6014cea5e0d512201beec50",
+      "pool_id": "round-006-20261009-train_hypothesis_1",
+      "purpose": "train",
+      "status": "COMPLETE_NULL_NO_PROBE"
+    },
+    "train_hypothesis_2": {
+      "count": 10,
+      "manifest_sha256": "fe704802b804a2ffe41fd7690f43bf1a810d9f8edd6721202245b8e194559335",
+      "pool_id": "round-006-20261009-train_hypothesis_2",
+      "purpose": "train",
+      "status": "COMPLETE_NULL_THROUGH_DEV"
+    },
+    "train_hypothesis_3": {
+      "count": 10,
+      "manifest_sha256": "61e017611edb50bf0b68ad633ee49034e1985c8176a3cb8fcd043aaea80fb9aa",
+      "pool_id": "round-006-20261009-train_hypothesis_3",
+      "purpose": "train",
+      "status": "COMPLETE_TRACE_AUDIT_ONLY"
+    }
+  },
+  "evaluation_history": [
+    {
+      "candidate_commit": "032c4312e1f81c4add7bc5f9af4195951c1c0281",
+      "episodes": 21,
+      "paired": {
+        "candidate_only_wins": 0,
+        "discordant_pairs": 0,
+        "exact_one_sided_sign_p_candidate_positive": 1.0,
+        "net_wins": 0,
+        "parent_only_wins": 0
+      },
+      "report": "evidence/sts1/g7-improvement/round-006-h8-train-report.md",
+      "stage": "H8_train_hypothesis_1",
+      "status": "COMPLETE_NULL_NO_PROBE",
+      "trace_coverage": {
+        "combat_decisions": 3922,
+        "encounters": 209,
+        "noncombat_decisions": 903,
+        "potion_snapshots": 5947,
+        "route_decisions": 434,
+        "trace_on_off_invariance": true
+      }
+    },
+    {
+      "artifact_manifest_sha256": "bf3450af4c004acaa561fbca518e93038785cf36fea1540a2f8b0fe7bf67e101",
+      "candidate_commit": "2bd7487b99523dc2e5f00a3baf1d3062b3c5156c",
+      "candidate_source_sha256": "a9ac8c65ac665c2e75f7e1e807dd140d67f3532acd092b60b5d5a55092cadf72",
+      "episodes": 21,
+      "manifest_sha256": "fe704802b804a2ffe41fd7690f43bf1a810d9f8edd6721202245b8e194559335",
+      "paired": {
+        "candidate_only_wins": 0,
+        "discordant_pairs": 0,
+        "exact_one_sided_sign_p_candidate_positive": 1.0,
+        "net_wins": 0,
+        "parent_only_wins": 0
+      },
+      "report": "evidence/sts1/g7-improvement/round-006-h9-train-report.md",
+      "stage": "H9_train_hypothesis_2",
+      "status": "COMPLETE_NULL_PROBE_ALLOWED",
+      "trace_coverage": {
+        "combat_decisions": 3196,
+        "encounters": 180,
+        "noncombat_decisions": 811,
+        "potion_snapshots": 5008,
+        "route_decisions": 377,
+        "trace_on_off_invariance": true
+      }
+    },
+    {
+      "artifact_manifest_sha256": "6f550e23e156f6979d3204de0c4e097a64f97ee6658dea68e13f75e8346f7ec4",
+      "candidate_commit": "2bd7487b99523dc2e5f00a3baf1d3062b3c5156c",
+      "candidate_source_sha256": "a9ac8c65ac665c2e75f7e1e807dd140d67f3532acd092b60b5d5a55092cadf72",
+      "episodes": 20,
+      "manifest_sha256": "5b9d7e4f2aa22cb6e8db339a8b288f615876b7b0a96f5d8ff2513d6f4b43a95c",
+      "paired": {
+        "candidate_only_wins": 0,
+        "discordant_pairs": 0,
+        "exact_one_sided_sign_p_candidate_positive": 1.0,
+        "net_wins": 0,
+        "parent_only_wins": 0
+      },
+      "report": "evidence/sts1/g7-improvement/round-006-h9-probe-report.md",
+      "stage": "H9_probe10",
+      "status": "COMPLETE_NULL_DEV_ALLOWED",
+      "trace_coverage": {
+        "combat_decisions": 3341,
+        "encounters": 188,
+        "noncombat_decisions": 754,
+        "potion_snapshots": 5047,
+        "route_decisions": 358
+      }
+    },
+    {
+      "artifact_manifest_sha256": "485dc3cf862db05f421a8c4b43a6c86280f05fcb1bf72622a2a8ebac5f8dc00",
+      "candidate_commit": "2bd7487b99523dc2e5f00a3baf1d3062b3c5156c",
+      "candidate_source_sha256": "a9ac8c65ac665c2e75f7e1e807dd140d67f3532acd092b60b5d5a55092cadf72",
+      "episodes": 60,
+      "manifest_sha256": "a9f195b41525aab30e8c58ec78db6564685d086bc2f7e54a83c4cf31b10572c5",
+      "paired": {
+        "candidate_only_wins": 0,
+        "discordant_pairs": 0,
+        "exact_one_sided_sign_p_candidate_positive": 1.0,
+        "net_wins": 0,
+        "parent_only_wins": 0
+      },
+      "report": "evidence/sts1/g7-improvement/round-006-h9-dev-report.md",
+      "stage": "H9_dev30",
+      "status": "COMPLETE_NULL_NO_CONFIRMATION",
+      "trace_coverage": {
+        "combat_decisions": 9642,
+        "encounters": 576,
+        "noncombat_decisions": 2414,
+        "potion_snapshots": 15076,
+        "route_decisions": 1138
+      }
+    },
+    {
+      "artifact_count": 21,
+      "artifact_bytes": 37895984,
+      "artifact_manifest_sha256": "f117ccf04c7dfcd688910107d544004a8909c8f1f1a12f4962db0b2f7fa29d6e",
+      "candidate_policy": "G7 unchanged",
+      "episodes": 10,
+      "g7_checkpoint_sha256": "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0",
+      "late_floor_endturn": {
+        "defeat_episodes": 8,
+        "defeat_last_decision_end_turn": 8,
+        "defeat_last_floor_45_plus": 0,
+        "floor45_endturn_all_attack_intents_complete": 0,
+        "floor45_endturn_decisions": 14,
+        "floor45_endturn_inventory_complete": 14,
+        "floor45_endturn_with_legal_skill": 0,
+        "floor45_endturn_with_legal_use_potion": 5,
+        "floor45_endturn_with_usable_potion": 5,
+        "floor45_endturn_without_legal_skill": 14
+      },
+      "outcomes": {
+        "defeat": 8,
+        "victory": 2
+      },
+      "pool_id": "round-006-20261009-train_hypothesis_3",
+      "report": "evidence/sts1/g7-improvement/round-006-h10-train-trace-report.md",
+      "safety": {
+        "communication_errors": 0,
+        "crash_count": 0,
+        "illegal_action_count": 0,
+        "timeout_count": 0
+      },
+      "simulator_source_sha256": "a9ac8c65ac665c2e75f7e1e807dd140d67f3532acd092b60b5d5a55092cadf72",
+      "stage": "H10_trace_diagnostic_train_hypothesis_3",
+      "status": "COMPLETE_TRACE_AUDIT_ONLY_NO_POLICY_CHANGE",
+      "terminal_floor_bands": {
+        "17-33": 8,
+        "50+": 2
+      },
+      "trace_coverage": {
+        "combat_decisions": 2832,
+        "encounters": 164,
+        "noncombat_decisions": 733,
+        "potion_snapshots": 4472,
+        "route_decisions": 350
+      },
+      "trace_on_off_invariance": "REUSED_H9_SAME_SIMULATOR_SOURCE"
+    },
+    {
+      "artifact_bytes": 269373150,
+      "artifact_count": 121,
+      "artifact_manifest_sha256": "485dc3cf862db05f421a8c4b43a6c86280f05fcb1bf72622a2a8ebac5f8dc00",
+      "candidate_trace_access": "FORBIDDEN",
+      "decision_records": 2414,
+      "decisions_by_screen": {
+        "EVENT_SCREEN": 203,
+        "MAP_SCREEN": 1138,
+        "REST_ROOM": 210,
+        "REWARDS": 554,
+        "SHOP_ROOM": 309
+      },
+      "episodes": 0,
+      "legal_choices_complete": 2414,
+      "malformed_trace_lines": 0,
+      "manifest_sha256": "a9f195b41525aab30e8c58ec78db6564685d086bc2f7e54a83c4cf31b10572c5",
+      "parent_trace_files_read": 30,
+      "pool_id": "round-006-20261009-dev",
+      "purpose": "hypothesis_generation_only",
+      "report": "evidence/sts1/g7-improvement/round-006-direction-review.md",
+      "scope_comment_id": 6079488103,
+      "selected_action_index_valid": 2414,
+      "selected_action_categories": {
+        "EVENT_SCREEN": {"option_0": 18, "option_1": 72, "option_2": 72, "option_3": 39, "option_4": 2},
+        "MAP_SCREEN": {"BOSS": 66, "COMBAT": 379, "ELITE": 77, "EVENT": 253, "REST": 210, "SHOP": 83, "TREASURE": 70},
+        "REST_ROOM": {"OPTION_0": 134, "OPTION_1": 76},
+        "REWARDS": {"CARD": 554, "SKIP": 0},
+        "SHOP_ROOM": {"BUY_CARD": 191, "BUY_POTION": 13, "BUY_RELIC": 5, "LEAVE": 100}
+      },
+      "available_action_categories": {
+        "EVENT_SCREEN": {"option_0": 178, "option_1": 195, "option_2": 109, "option_3": 41, "option_4": 3, "option_5": 2},
+        "MAP_SCREEN": {"BOSS": 66, "COMBAT": 760, "ELITE": 111, "EVENT": 309, "REST": 241, "SHOP": 94, "TREASURE": 101},
+        "REST_ROOM": {"OPTION_0": 180, "OPTION_1": 191, "OPTION_2": 210, "OPTION_3": 6, "OPTION_4": 6},
+        "REWARDS": {"CARD": 1666, "SKIP": 554},
+        "SHOP_ROOM": {"BUY_CARD": 1041, "BUY_POTION": 500, "BUY_RELIC": 194, "LEAVE": 309}
+      },
+      "source_stage": "H9_dev30_G7_parent_traces_only",
+      "stage": "H11_direction_review",
+      "status": "COMPLETE_HYPOTHESIS_GENERATION_REVIEW"
+    }
+  ],
+  "record_type": "exploration_round",
+  "round_id": "round-006-20261009",
+  "schema_version": "sts1-g7-seed-public-summary-v1",
+  "source_audit_sha256": "d4eae74a5b54e66efa82833688c45870dae092dd135345d84159afde8fe516e0",
+  "status": "PARTIALLY_EVALUATED"
+}

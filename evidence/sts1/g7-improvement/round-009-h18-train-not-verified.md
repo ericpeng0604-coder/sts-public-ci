@@ -41,3 +41,9 @@ This is an integrity repair, not a new strategy candidate or episode batch. The 
 - Tests: 58 passed across the H16 evaluator, H7 potion trace, simulator trace, and H15 trace-audit suites using Python 3.11.9 with the existing Torch installation. Pytest reported a cache-write warning under the sandbox; it did not affect test execution.
 - No new episodes or seed pools were used. The partial H18 pool remains consumed and excluded. G7 remains Champion. Formal Gate/Fresh outcomes were not read or used; real-game remains `NOT_RUN`.
 - Before another episode, re-verify the pinned CPython 3.12 simulator module/binding identities and preregister a fresh disjoint train pool with its runtime provenance. Those follow-up checks remain `NOT_VERIFIED`.
+
+## Public provenance fingerprint exposure and response
+
+A review of the existing PR file list found private provenance fingerprint fields in the earlier public Round009 seed summary and H16/H17 train reports. The audited public summaries/reports contained no raw numeric seed-ID arrays; no fingerprint values are repeated here. The current versions redact private inventory, pool, manifest, artifact-manifest, summary, and usage-ledger fingerprints. Because Round009's provenance fingerprints were exposed in reachable PR history, every Round009 pool is withdrawn from future research; Train10 was already consumed and remains unusable. H16/H17 pools remain consumed.
+
+Older commits containing those values remain reachable in PR history. The project forbids history rewriting/force-push, so complete historical removal is `NOT_VERIFIED`; treat the affected fingerprints as exposed. This is a data-handling issue, not a simulator outcome or win-rate result. No Gate/Fresh outcomes, traces, decisions, or labels were read or used.

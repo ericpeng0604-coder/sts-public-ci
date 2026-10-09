@@ -9,25 +9,25 @@ H16's 3,194 candidate combat decisions contained 3,117 `visible_intent_not_letha
 ## Frozen identities and data provenance
 
 - Candidate local source commit: `0838f660eaf02754af21d29490846de76b88d521`.
-- Simulator policy source SHA-256: `23f7b8891a81f0c95e0ea128530738580148a611079f5b40a734101be9bac252`.
-- Candidate evaluator SHA-256: `7093887a3fccc506643f427e8fa20a7e02ca6f4957274f7cea0bfde785dec7b3`.
-- G7 checkpoint SHA-256: `8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0`.
-- Pinned native binding SHA-256: `bc2a3d272c5dc1f51f66619604fb1b202e0915f29dddd719837e5ca0b8cfc89e`.
-- ArmG source / vocabulary SHA-256: `7b4417484ade4320996f4ce0f2154944e6bd75e90500ab8f209bc84ab67d7f3b` / `832e199c359af8408ea430ffa3f9fcdc68f32533f7292bb102848d3fb558eb6a`.
-- Round008 `train_hypothesis_2` manifest SHA-256: `a71b491d582dfd358c9fc48c0a3f3e9f2a907e3623a447aff598f19417eb2190`.
-- Exclusion inventory: 81 source manifests, 23,036 unique IDs; SHA-256 `0d47f8956ad9f962ede5bac7bbd99931bbcfb1f7e9892dfbfb33259f921749be`. Numeric IDs remain private.
+- Simulator policy source SHA-256: `[PRIVATE_SHA256_REDACTED]`.
+- Candidate evaluator SHA-256: `[PRIVATE_SHA256_REDACTED]`.
+- G7 checkpoint SHA-256: `[PRIVATE_SHA256_REDACTED]`.
+- Pinned native binding SHA-256: `[PRIVATE_SHA256_REDACTED]`.
+- ArmG source / vocabulary SHA-256: `[PRIVATE_SHA256_REDACTED]` / `[PRIVATE_SHA256_REDACTED]`.
+- Round008 `train_hypothesis_2` manifest SHA-256: `[PRIVATE_HASH_REDACTED]`.
+- Exclusion inventory: 81 source manifests, 23,036 unique IDs; SHA-256 `[PRIVATE_HASH_REDACTED]`. Numeric IDs remain private.
 - MCTS budget: 2,000 per arm. PPO/Teacher collection and all Gate/Fresh result use were disabled.
 - A preflight-only invocation initially rejected an unverified candidate-commit argument; it created no run output or usage record and consumed no episode. Re-running with the exact `HEAD` SHA passed.
 
-The user-supplied Actions ZIP SHA-256 was `3f4fc50b9452138e50ed5274cc7ac71a9ad011077785279de7834a478c934e66`, matching the previously registered G7 archive. The pinned local G7 checkpoint matched the recorded G7 hash. PPO critic/replay members were not read or used.
+The user-supplied Actions ZIP SHA-256 was `[PRIVATE_HASH_REDACTED]`, matching the previously registered G7 archive. The pinned local G7 checkpoint matched the recorded G7 hash. PPO critic/replay members were not read or used.
 
 ## Safety, completeness, and artifacts
 
 - Episodes: 20 complete paired episodes across 10 unique train seeds.
 - G7/H16 terminal floors and final HP: equal in all 10 pairs; the registered retention guard passed.
 - Complete terminal and legal trace records: 20/20. Illegal actions / crashes / timeouts: 0/0/0. Communication errors: `N/A_LOCAL_SIMULATOR`.
-- Private artifact manifest: 41 files, 88,948,934 bytes; SHA-256 `64bc960314c6ebff9afc74a50401eb82fde33b8c487413623bf7bf214c6846b4` over the canonical JSON file-entry list.
-- Private summary SHA-256: `fca4e539b5507f5fa31f1c41bbdfa182c77008c0ad3bc2d04c3c6150a8c96bc6`; all 41 recorded artifact sizes and hashes were independently rechecked.
+- Private artifact manifest: 41 files, 88,948,934 bytes; SHA-256 `[PRIVATE_HASH_REDACTED]` over the canonical JSON file-entry list.
+- Private summary SHA-256: `[PRIVATE_HASH_REDACTED]`; all 41 recorded artifact sizes and hashes were independently rechecked.
 - Raw traces, per-episode evidence, numeric seed IDs, and the usage ledger remain in the private Temp evaluation directory.
 - Focused tests: 22 passed (`test_sts1_h16_lethal_defend.py`, `test_sts1_h15_trace_audit.py`, `test_sts1_h7_potion_trace.py`). Torch emitted a NumPy-unavailable warning; pinned Torch, native binding, ArmG, and G7 checkpoint loaded, and preflight/evaluation completed.
 

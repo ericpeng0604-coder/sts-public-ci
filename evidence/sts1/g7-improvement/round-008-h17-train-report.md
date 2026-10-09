@@ -12,13 +12,13 @@ H16 used the same faulty ID map. Its trace classification is also invalid; retro
 
 - Local H17 experiment source commit: `929898121b8db8fcb3e6c4b6230d114a351199d6`.
 - GitHub API code commit: `5cf5879a8be50d6ec633d3cce8211c7ff2555f43`; tree `fe33e629b8db2707ee6749715cd61acfd18efc5d` matches the local commit tree, its parent is H16 `484fd8b79d6665b2ec25a2d59b10f2c133d9ef30`, and both changed blob SHAs match local Git.
-- Candidate evaluator SHA-256: `8f80decae0229886c6bf278e7d8858f272d9e6bc75f367ef7225c245d249ca57`.
-- Simulator policy source SHA-256: `23f7b8891a81f0c95e0ea128530738580148a611079f5b40a734101be9bac252`.
-- G7 checkpoint SHA-256: `8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0`.
-- Native simulator binding SHA-256: `bc2a3d272c5dc1f51f66619604fb1b202e0915f29dddd719837e5ca0b8cfc89e`.
-- ArmG source / vocabulary SHA-256: `7b4417484ade4320996f4ce0f2154944e6bd75e90500ab8f209bc84ab67d7f3b` / `832e199c359af8408ea430ffa3f9fcdc68f32533f7292bb102848d3fb558eb6a`.
-- H17 train pool: 10 seeds, manifest SHA-256 `fe8f0bc33ba50bac941ddb40278775cb0f36934df027b9e2c1df595b7b3d4b7d`; MCTS budget 2,000 per arm.
-- The read-only exclusion preflight checked 81 source manifests and 23,036 unique IDs; inventory SHA-256 `0d47f8956ad9f962ede5bac7bbd99931bbcfb1f7e9892dfbfb33259f921749be`. Numeric IDs remain private. Gate/Fresh data was read only for the authorized seed-ID overlap exclusion; no outcomes, traces, decisions, or labels were used.
+- Candidate evaluator SHA-256: `[PRIVATE_SHA256_REDACTED]`.
+- Simulator policy source SHA-256: `[PRIVATE_SHA256_REDACTED]`.
+- G7 checkpoint SHA-256: `[PRIVATE_SHA256_REDACTED]`.
+- Native simulator binding SHA-256: `[PRIVATE_SHA256_REDACTED]`.
+- ArmG source / vocabulary SHA-256: `[PRIVATE_SHA256_REDACTED]` / `[PRIVATE_SHA256_REDACTED]`.
+- H17 train pool: 10 seeds, manifest SHA-256 `[PRIVATE_HASH_REDACTED]`; MCTS budget 2,000 per arm.
+- The read-only exclusion preflight checked 81 source manifests and 23,036 unique IDs; inventory SHA-256 `[PRIVATE_HASH_REDACTED]`. Numeric IDs remain private. Gate/Fresh data was read only for the authorized seed-ID overlap exclusion; no outcomes, traces, decisions, or labels were used.
 - The private H17 allocation record was written before preflight, as the first usage-ledger entry. It records H16's completed train allocation, the unrun H16 Probe/Dev association, and the H17 pool hashes; it contains no numeric seed IDs.
 
 ## Safety and artifact audit
@@ -26,8 +26,8 @@ H16 used the same faulty ID map. Its trace classification is also invalid; retro
 - Episodes: 20 complete paired episodes across 10 unique train seeds.
 - Complete terminal records / legal traces: 20/20. Illegal actions / crashes / timeouts: 0/0/0. Local simulator communication errors: `N/A_LOCAL_SIMULATOR`.
 - Floors and final HP were equal in all 10 pairs; the registered retention guard passed.
-- Private artifact manifest: 41 entries, 73,214,714 bytes; canonical entry-list SHA-256 `06e9bfd64821e2db61302e907f226e61f2557bb3c0421e13de5b41192a70f7e8`.
-- Private summary SHA-256: `9fc6c8c588411d980b5fab18110c28e8d73a0b646b46920e240c89b71170d7ff`. All 41 artifact sizes and SHA-256 values were independently rechecked. The private usage-ledger SHA-256 is `97840e953e151c27c08f2283800888a352c78f4cda387c0771fbb35861ba1a5d`.
+- Private artifact manifest: 41 entries, 73,214,714 bytes; canonical entry-list SHA-256 `[PRIVATE_HASH_REDACTED]`.
+- Private summary SHA-256: `[PRIVATE_HASH_REDACTED]`. All 41 artifact sizes and SHA-256 values were independently rechecked. The private usage-ledger SHA-256 is `[PRIVATE_HASH_REDACTED]`.
 - Torch emitted a nonfatal warning that NumPy was unavailable; pinned simulator preflight and all 20 episodes completed successfully.
 - Focused H16/H17 runner, H15 trace, and H7 trace tests: 27 passed.
 

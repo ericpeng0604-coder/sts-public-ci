@@ -270,6 +270,58 @@ def _usable_potion_slots(
     return slots
 
 
+def _apply_low_hp_emergency_potion(
+    recommended_action: Any,
+    legal_actions: Sequence[Any],
+    *,
+    hand: Sequence[Any],
+    player_hp: int | None,
+    player_max_hp: int | None,
+    hp_ratio_threshold: float,
+) -> tuple[Any, bool]:
+    """Use the first deterministically ordered legal potion below a fixed HP ratio.
+
+    Missing or invalid HP data, an invalid threshold, or a missing legal potion
+    action leaves the MCTS recommendation unchanged.
+    """
+
+    if (
+        not isinstance(hp_ratio_threshold, (int, float))
+        or isinstance(hp_ratio_threshold, bool)
+        or not math.isfinite(float(hp_ratio_threshold))
+        or not 0.0 <= float(hp_ratio_threshold) <= 1.0
+        or not isinstance(player_hp, int)
+        or isinstance(player_hp, bool)
+        or not isinstance(player_max_hp, int)
+        or isinstance(player_max_hp, bool)
+        or player_hp <= 0
+        or player_max_hp <= 0
+        or player_hp / player_max_hp > float(hp_ratio_threshold)
+    ):
+        return recommended_action, False
+
+    if (
+        _action_type(recommended_action) == "POTION"
+        and _public_action(recommended_action, hand).get("kind") == "use_potion"
+    ):
+        return recommended_action, False
+
+    usable_slots = _usable_potion_slots(legal_actions, hand)
+    if not usable_slots:
+        return recommended_action, False
+
+    target_slot = min(usable_slots)
+    for action in legal_actions:
+        public_action = _public_action(action, hand)
+        if (
+            _action_type(action) == "POTION"
+            and public_action.get("kind") == "use_potion"
+            and public_action.get("potion_index") == target_slot
+        ):
+            return action, True
+    return recommended_action, False
+
+
 def _apply_last_potion_reserve(
     recommended_action: Any,
     legal_actions: Sequence[Any],
@@ -1237,6 +1289,7 @@ def run_simulator_game(
     combat_mcts_boss_floors: Sequence[int] = (16, 33, 50),
     combat_mcts_exploration: float | None = None,
     reserve_last_potion_until_floor: int | None = None,
+    use_potion_below_hp_fraction: float | None = None,
     avoid_low_hp_elite_routes: bool = False,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
@@ -1310,11 +1363,37 @@ def run_simulator_game(
             raise SimulatorRunError(
                 "last-potion reserve requires one fixed, untuned combat MCTS budget"
             )
+    if use_potion_below_hp_fraction is not None:
+        if (
+            not isinstance(use_potion_below_hp_fraction, (int, float))
+            or isinstance(use_potion_below_hp_fraction, bool)
+            or not math.isfinite(float(use_potion_below_hp_fraction))
+            or not 0.0 <= float(use_potion_below_hp_fraction) <= 1.0
+        ):
+            raise SimulatorRunError("emergency potion HP threshold must be between zero and one")
+        if (
+            combat_mcts_sims is None
+            or consensus_budgets
+            or hybrid_budgets
+            or combat_mcts_late_sims is not None
+            or combat_mcts_boss_sims is not None
+            or combat_mcts_exploration is not None
+        ):
+            raise SimulatorRunError(
+                "emergency potion use requires one fixed, untuned combat MCTS budget"
+            )
     if not isinstance(avoid_low_hp_elite_routes, bool):
         raise SimulatorRunError("low-HP Elite route intervention must be a boolean")
     if avoid_low_hp_elite_routes and armg_policy is None:
         raise SimulatorRunError("low-HP Elite route intervention requires the ArmG map policy")
-    if avoid_low_hp_elite_routes and reserve_last_potion_until_floor is not None:
+    if sum(
+        value
+        for value in (
+            avoid_low_hp_elite_routes,
+            reserve_last_potion_until_floor is not None,
+            use_potion_below_hp_fraction is not None,
+        )
+    ) > 1:
         raise SimulatorRunError("enable only one primary policy intervention per run")
     if any(value < 1 for value in consensus_budgets):
         raise SimulatorRunError("all MCTS consensus budgets must be positive")
@@ -1340,6 +1419,7 @@ def run_simulator_game(
     armg_action_count = 0
     mcts_action_count = 0
     potion_reserve_override_count = 0
+    emergency_potion_override_count = 0
     map_elite_avoidance_override_count = 0
     map_elite_avoidance_fail_closed_count = 0
     hybrid_student_vote_count = 0
@@ -1376,6 +1456,16 @@ def run_simulator_game(
                 "until_floor": reserve_last_potion_until_floor,
             }
             if reserve_last_potion_until_floor is not None
+            else None
+        ),
+        "emergency_potion_policy_intervention": (
+            {
+                "kind": "use_first_legal_potion_below_hp_fraction",
+                "hp_ratio_threshold": float(use_potion_below_hp_fraction),
+                "tie_break": "lowest_potion_slot_then_native_legal_action_order",
+                "fallback": "keep_mcts_recommendation_if_required_data_or_legal_action_missing",
+            }
+            if use_potion_below_hp_fraction is not None
             else None
         ),
         "map_policy_intervention": (
@@ -1725,6 +1815,7 @@ def run_simulator_game(
                             chosen = native_actions[0]
                     mcts_recommended_action = chosen
                     potion_reserve_override = False
+                    emergency_potion_override = False
                     if reserve_last_potion_until_floor is not None:
                         player = _value(battle, "player")
                         player_hp_raw = _value(player, "cur_hp", None)
@@ -1774,6 +1865,34 @@ def run_simulator_game(
                         )
                         if potion_reserve_override:
                             potion_reserve_override_count += 1
+                    if use_potion_below_hp_fraction is not None:
+                        player = _value(battle, "player")
+                        player_hp_raw = _value(player, "cur_hp", None)
+                        player_max_hp_raw = _value(player, "max_hp", None)
+                        player_hp = (
+                            int(player_hp_raw)
+                            if isinstance(player_hp_raw, (int, float))
+                            and not isinstance(player_hp_raw, bool)
+                            and math.isfinite(float(player_hp_raw))
+                            else None
+                        )
+                        player_max_hp = (
+                            int(player_max_hp_raw)
+                            if isinstance(player_max_hp_raw, (int, float))
+                            and not isinstance(player_max_hp_raw, bool)
+                            and math.isfinite(float(player_max_hp_raw))
+                            else None
+                        )
+                        chosen, emergency_potion_override = _apply_low_hp_emergency_potion(
+                            mcts_recommended_action,
+                            native_actions,
+                            hand=hand_raw,
+                            player_hp=player_hp,
+                            player_max_hp=player_max_hp,
+                            hp_ratio_threshold=use_potion_below_hp_fraction,
+                        )
+                        if emergency_potion_override:
+                            emergency_potion_override_count += 1
                     latency_ms = (time.perf_counter() - started) * 1000.0
                     latencies_ms.append(latency_ms)
                     chosen_bits = _value(chosen, "bits")
@@ -1880,6 +1999,7 @@ def run_simulator_game(
                                 mcts_recommended_action, hand_raw
                             ),
                             "potion_reserve_override": potion_reserve_override,
+                            "emergency_potion_override": emergency_potion_override,
                             "selected_action": trace_action,
                             "selected_public_action_index": (
                                 selected_public_matches[0] if len(selected_public_matches) == 1 else None
@@ -1900,6 +2020,7 @@ def run_simulator_game(
                             mcts_recommended_action, hand_raw
                         ),
                         "potion_reserve_override": potion_reserve_override,
+                        "emergency_potion_override": emergency_potion_override,
                         "action_type": _action_type(chosen),
                         "card": trace_card,
                         "target_index": _value(chosen, "target_idx", -1),
@@ -1910,6 +2031,7 @@ def run_simulator_game(
                         ],
                         "mcts_sims": active_mcts_sims,
                         "potion_reserve_override": potion_reserve_override,
+                        "emergency_potion_override": emergency_potion_override,
                     })
                     chosen.execute(battle)
                     mcts_action_count += 1
@@ -2070,6 +2192,8 @@ def run_simulator_game(
         "potion_inventory_snapshot_complete": _value(gc, "potions", None) is not None,
         "potion_reserve_until_floor": reserve_last_potion_until_floor,
         "potion_reserve_override_count": potion_reserve_override_count,
+        "use_potion_below_hp_fraction": use_potion_below_hp_fraction,
+        "emergency_potion_override_count": emergency_potion_override_count,
         "avoid_low_hp_elite_routes": avoid_low_hp_elite_routes,
         "map_elite_avoidance_override_count": map_elite_avoidance_override_count,
         "map_elite_avoidance_fail_closed_count": map_elite_avoidance_fail_closed_count,

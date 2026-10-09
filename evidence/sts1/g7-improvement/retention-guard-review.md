@@ -51,7 +51,7 @@ Protocol v1 remains the historical classification for H12-H18, including the inc
 
 - The public evaluator no longer embeds checkpoint, native-binding, ArmG, exclusion-inventory, or H17/H18 allocation fingerprints. It reads the expected runtime identities from a required private identity-lock file outside the repository and records only the validated identities in private stage evidence.
 - The runner accepts only H19 exploration stages and validates the Round011 inventory, ledger, manifests, pairwise disjointness, and private allocation record. H16-H18 and consumed Round010 pools cannot be selected through its CLI.
-- This evaluator refactor does not change the candidate policy. Round011 remains NOT_STARTED until the synchronized remote code, private identity lock, new pool lineage, and runtime preflight all pass.
+- This evaluator refactor does not change the candidate policy. On 2026-10-10, Round011 passed a zero-game preflight against synchronized remote commit `ffc216f63f43e4ccaf1ba9ae377441d1115abe75` (tree `ee22915476ddbc41f22a546772886cd7d37b6973`): the 10-seed Train pool is disjoint, runtime and private identity checks passed, and 20 paired episodes plus one trace-invariance replay are planned. The preflight wrote only the private pool-allocation record; the run output directory is absent and no episode has started. Round011 remains NOT_STARTED pending this report update's commit synchronization.
 
 ### Guards retained
 

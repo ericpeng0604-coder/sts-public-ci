@@ -30,4 +30,14 @@ This verifies a wasted-purchase mechanism, not the full cause of the 600-step bo
 - Preserve this failed attempt permanently; any follow-up requires a diagnosed cause, a prospective protocol/scope update, and a fresh disjoint train pool.
 - G7 remains Champion. No promotion or deployment occurred.
 - Formal Gate/Fresh outcomes, traces, decisions, and labels were not read or used. Real-game evaluation is `NOT_RUN`.
-- The earlier focused code verification remains 50 passing tests across four STS1 suites; this report-only update does not claim new code verification or any win-rate result.
+- The earlier pre-run focused verification had 50 passing tests. A later shared-guard code repair and its 58-test verification are recorded below; neither is a win-rate result.
+
+## Follow-up: shared full-potion Shop guard repair
+
+This is an integrity repair, not a new strategy candidate or episode batch. The shared evaluator now skips a recommended potion purchase on `SHOP_ROOM` only when all five native potion slots are occupied, using the unique legal leave/SKIP action. It preserves the complete legal-choice list and logs the recommended and executed actions and reason in both evidence and decision traces. Incomplete inventory semantics or a missing/ambiguous legal skip fails closed. Parent and candidate use the same guard; it is excluded from candidate-specific override coverage.
+
+- Local code commit: `588013b25acdaf393cc9fe5dc173ca9b624e31d6`.
+- Synchronized GitHub code commit on PR #28: `6c0f37bbbc6569e0e115cfe7f814a6dab25b9a17`; local and remote tree are identical (`8f76549662c0f5c0039c8b353a62c29c2582bb31`), and both changed blobs were verified identical.
+- Tests: 58 passed across the H16 evaluator, H7 potion trace, simulator trace, and H15 trace-audit suites using Python 3.11.9 with the existing Torch installation. Pytest reported a cache-write warning under the sandbox; it did not affect test execution.
+- No new episodes or seed pools were used. The partial H18 pool remains consumed and excluded. G7 remains Champion. Formal Gate/Fresh outcomes were not read or used; real-game remains `NOT_RUN`.
+- Before another episode, re-verify the pinned CPython 3.12 simulator module/binding identities and preregister a fresh disjoint train pool with its runtime provenance. Those follow-up checks remain `NOT_VERIFIED`.

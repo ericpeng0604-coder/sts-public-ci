@@ -54,5 +54,18 @@
     "formal_seed_results_read_or_executed": false,
     "g7_champion_changed": false,
     "reason": "The pinned simulator imports, but the exact G7 checkpoint is not present in the audited local roots and the existing recovery artifact could not be downloaded through the available temporary reference."
+  },
+  "superseding_artifact_recovery_update": {
+    "recorded_at": "2026-10-09",
+    "status": "VERIFIED",
+    "source": "user-supplied GitHub Actions ZIP",
+    "actions_run_id": 36674639174,
+    "actions_artifact_id": 11079234863,
+    "archive_sha256": "3f4fc50b9452138e50ed5274cc7ac71a9ad011077785279de7834a478c934e66",
+    "artifact_digest_match": true,
+    "checkpoint_role": "pinned G7 parent",
+    "checkpoint_sha256": "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0",
+    "checkpoint_matches_pinned_parent": true,
+    "inspection_boundary": "Verified archive identity, checkpoint hash, and top-level checkpoint keys only; cached evaluation outputs, replay rows, labels, traces, and Gate/Fresh result contents were not inspected or used."
   }
 }

@@ -250,6 +250,62 @@ def _public_action(action: Any, hand: Sequence[Any]) -> dict[str, Any]:
     }
 
 
+def _usable_potion_slots(
+    legal_actions: Sequence[Any], hand: Sequence[Any]
+) -> set[int]:
+    """Return potion slots exposed by the complete current native legal-action list."""
+
+    slots: set[int] = set()
+    for action in legal_actions:
+        if _action_type(action) != "POTION":
+            continue
+        public_action = _public_action(action, hand)
+        slot = public_action.get("potion_index")
+        if (
+            public_action.get("kind") == "use_potion"
+            and isinstance(slot, int)
+            and not isinstance(slot, bool)
+        ):
+            slots.add(slot)
+    return slots
+
+
+def _apply_last_potion_reserve(
+    recommended_action: Any,
+    legal_actions: Sequence[Any],
+    *,
+    hand: Sequence[Any],
+    floor: int,
+    reserve_until_floor: int,
+    player_hp: int | None,
+    player_block: int | None,
+    incoming_damage: int | None,
+) -> tuple[Any, bool]:
+    """Keep the final usable potion before a floor threshold unless the visible
+    current intent is lethal. If MCTS recommends that potion, use a deterministic
+    legal non-potion action when one exists; do not replace the potion with an
+    empty end turn.
+    """
+
+    if (
+        floor >= reserve_until_floor
+        or _action_type(recommended_action) != "POTION"
+        or _public_action(recommended_action, hand).get("kind") != "use_potion"
+        or len(_usable_potion_slots(legal_actions, hand)) != 1
+        or player_hp is None
+        or player_block is None
+        or incoming_damage is None
+        or incoming_damage >= player_hp + player_block
+    ):
+        return recommended_action, False
+
+    for preferred_type in ("CARD", "SINGLE_CARD_SELECT", "MULTI_CARD_SELECT"):
+        for action in legal_actions:
+            if _action_type(action) == preferred_type:
+                return action, True
+    return recommended_action, False
+
+
 def _safe_targetless_card_alias(first: Any, second: Any, hand: Sequence[Any]) -> bool:
     """Accept only the pinned simulator's proven target-index alias for targetless cards."""
 
@@ -384,7 +440,7 @@ class SimulatorCombatAdapter:
             "turn": _value(battle, "turn"),
             "combat_active": _enum_name(_value(battle, "outcome", "UNDECIDED")).upper() == "UNDECIDED",
             "relics": list(run.get("relics", [])),
-            "potions": list(run.get("potions", [])),
+            "potions": list(run.get("potions") or []),
             "gold": run.get("gold"),
             "floor": run.get("floor"),
             "act": run.get("act"),
@@ -439,6 +495,7 @@ def _diagnostic_run_snapshot(gc: Any, armg_policy: Any = None) -> dict[str, Any]
 
     state = public_run_state(gc)
     screen = _enum_name(_value(gc, "screen_state"))
+    potion_inventory = _value(gc, "potions", None)
     state.update({
         "screen_state": screen,
         "room": screen,
@@ -454,7 +511,12 @@ def _diagnostic_run_snapshot(gc: Any, armg_policy: Any = None) -> dict[str, Any]
             else [_card(card) for card in _sequence(_value(gc, "deck", []))]
         ),
         "relics": [_diagnostic_label(item) for item in _sequence(_value(gc, "relics", []))],
-        "potions": [_diagnostic_label(item) for item in _sequence(_value(gc, "potions", []))],
+        "potions": (
+            [_diagnostic_label(item) for item in _sequence(potion_inventory)]
+            if potion_inventory is not None
+            else None
+        ),
+        "potion_inventory_complete": potion_inventory is not None,
     })
     return state
 
@@ -1042,6 +1104,7 @@ def run_simulator_game(
     combat_mcts_boss_sims: int | None = None,
     combat_mcts_boss_floors: Sequence[int] = (16, 33, 50),
     combat_mcts_exploration: float | None = None,
+    reserve_last_potion_until_floor: int | None = None,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
@@ -1096,6 +1159,24 @@ def run_simulator_game(
         raise SimulatorRunError("combat MCTS exploration parameter must be positive")
     if combat_mcts_exploration is not None and consensus_budgets:
         raise SimulatorRunError("tuned exploration cannot be combined with consensus budgets")
+    if reserve_last_potion_until_floor is not None:
+        if (
+            not isinstance(reserve_last_potion_until_floor, int)
+            or isinstance(reserve_last_potion_until_floor, bool)
+            or reserve_last_potion_until_floor < 1
+        ):
+            raise SimulatorRunError("potion reserve floor must be a positive integer")
+        if (
+            combat_mcts_sims is None
+            or consensus_budgets
+            or hybrid_budgets
+            or combat_mcts_late_sims is not None
+            or combat_mcts_boss_sims is not None
+            or combat_mcts_exploration is not None
+        ):
+            raise SimulatorRunError(
+                "last-potion reserve requires one fixed, untuned combat MCTS budget"
+            )
     if any(value < 1 for value in consensus_budgets):
         raise SimulatorRunError("all MCTS consensus budgets must be positive")
     if hybrid_budgets and (len(hybrid_budgets) < 2 or any(value < 1 for value in hybrid_budgets)):
@@ -1119,6 +1200,7 @@ def run_simulator_game(
     fallback_count = 0
     armg_action_count = 0
     mcts_action_count = 0
+    potion_reserve_override_count = 0
     hybrid_student_vote_count = 0
     hybrid_student_tiebreak_count = 0
     illegal_actions = 0
@@ -1147,6 +1229,14 @@ def run_simulator_game(
         "ui_seed": ui_seed,
         "simulator_seed_long": simulator_seed,
         "seed_contract": seed_contract,
+        "combat_policy_intervention": (
+            {
+                "kind": "reserve_last_usable_potion_before_floor",
+                "until_floor": reserve_last_potion_until_floor,
+            }
+            if reserve_last_potion_until_floor is not None
+            else None
+        ),
         "run_metadata": dict(diagnostic_metadata or {}),
     })
 
@@ -1431,6 +1521,57 @@ def run_simulator_game(
                             chosen = tuned(battle, active_mcts_sims, combat_mcts_exploration)
                         if chosen is None:
                             chosen = native_actions[0]
+                    mcts_recommended_action = chosen
+                    potion_reserve_override = False
+                    if reserve_last_potion_until_floor is not None:
+                        player = _value(battle, "player")
+                        player_hp_raw = _value(player, "cur_hp", None)
+                        player_block_raw = _value(player, "block", None)
+                        player_hp = (
+                            int(player_hp_raw)
+                            if isinstance(player_hp_raw, (int, float))
+                            and not isinstance(player_hp_raw, bool)
+                            else None
+                        )
+                        player_block = (
+                            int(player_block_raw)
+                            if isinstance(player_block_raw, (int, float))
+                            and not isinstance(player_block_raw, bool)
+                            else None
+                        )
+                        incoming_damage: int | None = 0
+                        for enemy_index, enemy in enumerate(
+                            _sequence(_value(battle, "monsters", []))
+                        ):
+                            enemy_state = _enemy(enemy, index=enemy_index, battle=battle)
+                            enemy_hp = enemy_state.get("hp")
+                            if enemy_state.get("is_gone") is True or (
+                                isinstance(enemy_hp, (int, float)) and enemy_hp <= 0
+                            ):
+                                continue
+                            damage = enemy_state.get("intent_damage")
+                            hits = enemy_state.get("intent_hits")
+                            if (
+                                not isinstance(damage, (int, float))
+                                or isinstance(damage, bool)
+                                or not isinstance(hits, (int, float))
+                                or isinstance(hits, bool)
+                            ):
+                                incoming_damage = None
+                                break
+                            incoming_damage += max(0, int(damage)) * max(1, int(hits))
+                        chosen, potion_reserve_override = _apply_last_potion_reserve(
+                            mcts_recommended_action,
+                            native_actions,
+                            hand=hand_raw,
+                            floor=floor_now,
+                            reserve_until_floor=reserve_last_potion_until_floor,
+                            player_hp=player_hp,
+                            player_block=player_block,
+                            incoming_damage=incoming_damage,
+                        )
+                        if potion_reserve_override:
+                            potion_reserve_override_count += 1
                     latency_ms = (time.perf_counter() - started) * 1000.0
                     latencies_ms.append(latency_ms)
                     chosen_bits = _value(chosen, "bits")
@@ -1484,6 +1625,18 @@ def run_simulator_game(
                             run_state=diagnostic_run_state,
                             projected_legal_actions=public_actions,
                         )
+                        diagnostic_state["usable_potion_slots"] = sorted(
+                            _usable_potion_slots(native_actions, hand_raw)
+                        )
+                        diagnostic_state["usable_potion_slots_complete"] = True
+                        diagnostic_state["usable_potion_slots_source"] = (
+                            "canonical_native_legal_actions"
+                        )
+                        diagnostic_state["potion_inventory_complete"] = bool(
+                            diagnostic_run_state.get("potion_inventory_complete", False)
+                        )
+                        if not diagnostic_state["potion_inventory_complete"]:
+                            diagnostic_state["potions"] = None
                         selected_public_matches = [
                             index
                             for index, action in enumerate(public_actions)
@@ -1521,6 +1674,10 @@ def run_simulator_game(
                             "policy_legal_actions": public_actions,
                             "legal_actions_complete": True,
                             "legal_action_alias_count": alias_count,
+                            "mcts_recommended_action": _public_action(
+                                mcts_recommended_action, hand_raw
+                            ),
+                            "potion_reserve_override": potion_reserve_override,
                             "selected_action": trace_action,
                             "selected_public_action_index": (
                                 selected_public_matches[0] if len(selected_public_matches) == 1 else None
@@ -1537,6 +1694,10 @@ def run_simulator_game(
                         "block_before": _value(trace_player, "block"),
                         "energy_before": _value(trace_player, "energy"),
                         "action": trace_action,
+                        "mcts_recommended_action": _public_action(
+                            mcts_recommended_action, hand_raw
+                        ),
+                        "potion_reserve_override": potion_reserve_override,
                         "action_type": _action_type(chosen),
                         "card": trace_card,
                         "target_index": _value(chosen, "target_idx", -1),
@@ -1546,6 +1707,7 @@ def run_simulator_game(
                             for i, enemy in enumerate(_sequence(_value(battle, "monsters", [])))
                         ],
                         "mcts_sims": active_mcts_sims,
+                        "potion_reserve_override": potion_reserve_override,
                     })
                     chosen.execute(battle)
                     mcts_action_count += 1
@@ -1703,6 +1865,9 @@ def run_simulator_game(
             )
         ),
         "noncombat_policy": "armg" if armg_policy is not None else "legacy_fallback",
+        "potion_inventory_snapshot_complete": _value(gc, "potions", None) is not None,
+        "potion_reserve_until_floor": reserve_last_potion_until_floor,
+        "potion_reserve_override_count": potion_reserve_override_count,
         "fallback_rate": fallback_count / max(1, student_actions + fallback_count + armg_action_count),
         "equivalent_action_alias_count": equivalent_action_alias_count,
         "illegal_action_count": illegal_actions,
@@ -1725,6 +1890,9 @@ def run_simulator_game(
         "illegal_action_count": illegal_actions,
         "timeout_count": timeout_count,
         "crash_count": crash_count,
+        "potion_inventory_snapshot_complete": summary[
+            "potion_inventory_snapshot_complete"
+        ],
         "final_floor": summary["final_floor"],
         "final_act": int(_value(gc, "act", 0) or 0),
         "final_hp": summary["final_hp"],

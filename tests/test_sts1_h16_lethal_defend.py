@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import sys
+from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "sts1"))
+
+import sts1_g7_h16_lethal_defend_eval as h16_runner
 from roguelike_ai.sts1_phase3.simulator import _apply_lethal_intent_defend_rescue
 
 
@@ -142,3 +150,134 @@ def test_h16_fails_closed_when_visible_intent_is_unavailable() -> None:
     assert selected is recommended
     assert overridden is False
     assert reason == "unknown_attack_intent"
+
+
+def test_h17_uses_registered_hypothesis_three_pool_and_manifest() -> None:
+    assert h16_runner.TRIAL_POOL_ROLE["h16"]["train"] == "train_hypothesis_2"
+    assert h16_runner.TRIAL_POOL_ROLE["h17"]["train"] == "train_hypothesis_3"
+    assert h16_runner.EXPECTED_TRIAL_POOL_MANIFESTS["h17"]["train"] == (
+        "fe8f0bc33ba50bac941ddb40278775cb0f36934df027b9e2c1df595b7b3d4b7d"
+    )
+    assert h16_runner.EXPECTED_TRIAL_POOL_MANIFESTS["h17"]["probe"] == (
+        "56de6fce082c49227c24652ab152ba331aa0730fc087366d068ba5c33902e5d0"
+    )
+    assert h16_runner.EXPECTED_TRIAL_POOL_MANIFESTS["h17"]["dev"] == (
+        "8636a6121e8123e2f8746dfeb57c6422ee15cf425c403ab4f276ca10aaf29d14"
+    )
+
+
+def test_h17_private_paths_are_separate_from_h16_and_repo(tmp_path) -> None:
+    pools_dir = tmp_path / "round-008-seeds" / "pools"
+    h17_output = tmp_path / "round-008-h17-train-20261009"
+    h17_usage = pools_dir.parent / "h17-usage-private.jsonl"
+
+    h16_runner._validate_private_paths(pools_dir, "h17", "train", h17_output, h17_usage)
+
+    with pytest.raises(h16_runner.EvaluationIntegrityError):
+        h16_runner._validate_private_paths(
+            pools_dir,
+            "h17",
+            "train",
+            tmp_path / "round-008-h16-train-20261009",
+            h17_usage,
+        )
+
+
+def test_h17_train_transition_requires_exact_pool_allocation_history() -> None:
+    allocation = deepcopy(h16_runner.EXPECTED_H17_ALLOCATION)
+    candidate_commit = "a" * 40
+    identities = {key: f"{key}-sha256" for key in (
+        "simulator_policy_source_sha256",
+        "candidate_evaluator_sha256",
+        "simulator_binding_sha256",
+        "armg_source_sha256",
+        "armg_vocab_sha256",
+        "g7_checkpoint_sha256",
+    )}
+
+    h16_runner._validate_transition(
+        trial_id="h17",
+        stage="train",
+        events=[allocation],
+        candidate_commit=candidate_commit,
+        identities=identities,
+    )
+
+    altered = deepcopy(allocation)
+    altered["prior_h16"]["probe"]["status"] = "COMPLETE"
+    with pytest.raises(h16_runner.EvaluationIntegrityError):
+        h16_runner._validate_transition(
+            trial_id="h17",
+            stage="train",
+            events=[altered],
+            candidate_commit=candidate_commit,
+            identities=identities,
+        )
+
+
+def test_h17_probe_requires_its_own_eligible_train_summary() -> None:
+    candidate_commit = "b" * 40
+    identities = {key: f"{key}-sha256" for key in (
+        "simulator_policy_source_sha256",
+        "candidate_evaluator_sha256",
+        "simulator_binding_sha256",
+        "armg_source_sha256",
+        "armg_vocab_sha256",
+        "g7_checkpoint_sha256",
+    )}
+    summary = {
+        "record_type": "h17_stage_summary",
+        "trial_id": "h17",
+        "stage": "train",
+        "status": "COMPLETE",
+        "candidate_commit": candidate_commit,
+        "advance_eligible": True,
+        **identities,
+    }
+
+    h16_runner._validate_transition(
+        trial_id="h17",
+        stage="probe",
+        events=[deepcopy(h16_runner.EXPECTED_H17_ALLOCATION), summary],
+        candidate_commit=candidate_commit,
+        identities=identities,
+    )
+
+    wrong_trial = {**summary, "trial_id": "h16"}
+    with pytest.raises(h16_runner.EvaluationIntegrityError):
+        h16_runner._validate_transition(
+            trial_id="h17",
+            stage="probe",
+            events=[deepcopy(h16_runner.EXPECTED_H17_ALLOCATION), wrong_trial],
+            candidate_commit=candidate_commit,
+            identities=identities,
+        )
+
+
+def test_h16_legacy_stage_summary_remains_usable_without_trial_id() -> None:
+    candidate_commit = "c" * 40
+    identities = {key: f"{key}-sha256" for key in (
+        "simulator_policy_source_sha256",
+        "candidate_evaluator_sha256",
+        "simulator_binding_sha256",
+        "armg_source_sha256",
+        "armg_vocab_sha256",
+        "g7_checkpoint_sha256",
+    )}
+    legacy_summary = {
+        "record_type": "h16_stage_summary",
+        "stage": "train",
+        "status": "COMPLETE",
+        "candidate_commit": candidate_commit,
+        "advance_eligible": True,
+        **identities,
+    }
+
+    assert h16_runner._stage_summary([legacy_summary], "train", "h16") == legacy_summary
+    h16_runner._validate_transition(
+        trial_id="h16",
+        stage="probe",
+        events=[legacy_summary],
+        candidate_commit=candidate_commit,
+        identities=identities,
+    )

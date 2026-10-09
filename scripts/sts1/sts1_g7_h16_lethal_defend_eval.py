@@ -1,4 +1,4 @@
-"""Run the preregistered Round008 H16 paired lethal-intent Defend evaluation.
+"""Run the preregistered Round008 H16/H17 paired lethal-intent Defend evaluation.
 
 Raw seed IDs, episodes, traces, and usage records must remain in the private
 Temp evaluation directory. This runner never tunes the registered rule.
@@ -33,10 +33,58 @@ import sts1_g7_h15_train_trace_audit as h15  # noqa: E402
 
 EvaluationIntegrityError = h2.EvaluationIntegrityError
 ROUND_ID = "round-008-20261009"
-POOL_ROLE = {"train": "train_hypothesis_2", "probe": "probe", "dev": "dev"}
+TRIAL_POOL_ROLE = {
+    "h16": {"train": "train_hypothesis_2", "probe": "probe", "dev": "dev"},
+    "h17": {"train": "train_hypothesis_3", "probe": "probe", "dev": "dev"},
+}
 POOL_COUNTS = {"train": 10, "probe": 10, "dev": 30}
-POOL_FILES = {"train": "train_hypothesis_2.json", "probe": "probe.json", "dev": "dev.json"}
-EXPECTED_H16_POOL_SHA256 = "a71b491d582dfd358c9fc48c0a3f3e9f2a907e3623a447aff598f19417eb2190"
+POOL_FILES = {
+    "train_hypothesis_2": "train_hypothesis_2.json",
+    "train_hypothesis_3": "train_hypothesis_3.json",
+    "probe": "probe.json",
+    "dev": "dev.json",
+}
+EXPECTED_TRAIN_POOL_SHA256 = {
+    "h16": "a71b491d582dfd358c9fc48c0a3f3e9f2a907e3623a447aff598f19417eb2190",
+    "h17": "fe8f0bc33ba50bac941ddb40278775cb0f36934df027b9e2c1df595b7b3d4b7d",
+}
+EXPECTED_TRIAL_POOL_MANIFESTS = {
+    "h16": {
+        "train": EXPECTED_TRAIN_POOL_SHA256["h16"],
+        "probe": "56de6fce082c49227c24652ab152ba331aa0730fc087366d068ba5c33902e5d0",
+        "dev": "8636a6121e8123e2f8746dfeb57c6422ee15cf425c403ab4f276ca10aaf29d14",
+    },
+    "h17": {
+        "train": EXPECTED_TRAIN_POOL_SHA256["h17"],
+        "probe": "56de6fce082c49227c24652ab152ba331aa0730fc087366d068ba5c33902e5d0",
+        "dev": "8636a6121e8123e2f8746dfeb57c6422ee15cf425c403ab4f276ca10aaf29d14",
+    },
+}
+EXPECTED_H17_ALLOCATION = {
+    "record_type": "h17_pool_allocation",
+    "trial_id": "h17",
+    "round_id": ROUND_ID,
+    "prior_h16": {
+        "train": {"pool_id": "round-008-20261009-train_hypothesis_2", "status": "COMPLETE"},
+        "probe": {"pool_id": "round-008-20261009-probe", "status": "NOT_RUN"},
+        "dev": {"pool_id": "round-008-20261009-dev", "status": "NOT_RUN"},
+    },
+    "h16_private_summary_sha256": "fca4e539b5507f5fa31f1c41bbdfa182c77008c0ad3bc2d04c3c6150a8c96bc6",
+    "assigned_h17": {
+        "train": {
+            "pool_id": "round-008-20261009-train_hypothesis_3",
+            "manifest_sha256": "fe8f0bc33ba50bac941ddb40278775cb0f36934df027b9e2c1df595b7b3d4b7d",
+        },
+        "probe": {
+            "pool_id": "round-008-20261009-probe",
+            "manifest_sha256": "56de6fce082c49227c24652ab152ba331aa0730fc087366d068ba5c33902e5d0",
+        },
+        "dev": {
+            "pool_id": "round-008-20261009-dev",
+            "manifest_sha256": "8636a6121e8123e2f8746dfeb57c6422ee15cf425c403ab4f276ca10aaf29d14",
+        },
+    },
+}
 G7_SHA256 = "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0"
 PINNED_BINDING_SHA256 = "bc2a3d272c5dc1f51f66619604fb1b202e0915f29dddd719837e5ca0b8cfc89e"
 ARMG_SHA256 = "7b4417484ade4320996f4ce0f2154944e6bd75e90500ab8f209bc84ab67d7f3b"
@@ -85,29 +133,29 @@ def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
 
 
 def _round008_assets(
-    *, stage: str, pool_file: Path, pools_dir: Path, inventory_path: Path
+    *, trial_id: str, stage: str, pool_file: Path, pools_dir: Path, inventory_path: Path
 ) -> tuple[dict[str, Any], tuple[int, ...], dict[str, Any]]:
-    role = POOL_ROLE[stage]
-    expected_pool = (pools_dir / POOL_FILES[stage]).resolve()
+    if trial_id not in TRIAL_POOL_ROLE or stage not in POOL_COUNTS:
+        raise EvaluationIntegrityError("H16/H17 trial or stage is not registered")
+    role = TRIAL_POOL_ROLE[trial_id][stage]
+    expected_pool = (pools_dir / POOL_FILES[role]).resolve()
     if pool_file.resolve() != expected_pool:
-        raise EvaluationIntegrityError("selected H16 pool path does not match the registered stage")
+        raise EvaluationIntegrityError("selected H16/H17 pool path does not match the registered stage")
 
     # H15's audited loader validates the full Round008 ledger, all five pool
     # manifests, the ID-only exclusion inventory, and pairwise disjointness.
-    # It requires the H1 path as its anchor; H16 selects only H2 below and
-    # never executes H1.
+    # It requires the H1 path as its anchor; the active trial selects H2 or H3
+    # and never executes H1 for this validation step.
     _, validated_pools, round_preflight = h15._validate_round008_assets(
         pools_dir / "train_hypothesis_1.json", pools_dir, inventory_path
     )
     pool = h15._read_json(expected_pool)
-    expected_pool_sha = (
-        EXPECTED_H16_POOL_SHA256 if stage == "train" else pool.get("manifest_sha256")
-    )
+    expected_pool_sha = EXPECTED_TRIAL_POOL_MANIFESTS[trial_id][stage]
     if pool.get("manifest_sha256") != expected_pool_sha:
-        raise EvaluationIntegrityError("selected H16 pool manifest hash is not registered")
+        raise EvaluationIntegrityError("selected H16/H17 pool manifest hash is not registered")
     seeds = validated_pools.get(role)
     if not isinstance(seeds, tuple) or len(seeds) != POOL_COUNTS[stage]:
-        raise EvaluationIntegrityError("selected H16 pool count or validation is invalid")
+        raise EvaluationIntegrityError("selected H16/H17 pool count or validation is invalid")
     preflight = {
         **round_preflight,
         "pool_id": pool.get("pool_id"),
@@ -118,18 +166,22 @@ def _round008_assets(
     return pool, seeds, preflight
 
 
-def _validate_private_paths(pools_dir: Path, stage: str, output_dir: Path, usage_path: Path) -> None:
+def _validate_private_paths(
+    pools_dir: Path, trial_id: str, stage: str, output_dir: Path, usage_path: Path
+) -> None:
+    if trial_id not in TRIAL_POOL_ROLE or stage not in POOL_COUNTS:
+        raise EvaluationIntegrityError("H16/H17 trial or stage is not registered")
     pools_dir = pools_dir.resolve()
-    expected_output = pools_dir.parent.parent / f"round-008-h16-{stage}-20261009"
-    expected_usage = pools_dir.parent / "h16-usage-private.jsonl"
+    expected_output = pools_dir.parent.parent / f"round-008-{trial_id}-{stage}-20261009"
+    expected_usage = pools_dir.parent / f"{trial_id}-usage-private.jsonl"
     if output_dir.resolve() != expected_output.resolve() or usage_path.resolve() != expected_usage.resolve():
-        raise EvaluationIntegrityError("H16 requires its canonical private output and usage paths")
+        raise EvaluationIntegrityError("H16/H17 requires canonical private output and usage paths")
     repo = REPO_ROOT.resolve()
     for path in (output_dir.resolve(), usage_path.resolve()):
         if path == repo or repo in path.parents:
-            raise EvaluationIntegrityError("raw H16 records must remain outside the repository")
+            raise EvaluationIntegrityError("raw H16/H17 records must remain outside the repository")
     if output_dir.exists():
-        raise EvaluationIntegrityError("H16 stage output already exists; refusing to reuse it")
+        raise EvaluationIntegrityError("H16/H17 stage output already exists; refusing to reuse it")
 
 
 def _validate_identity(module_dir: Path, armg_root: Path, checkpoint: Path) -> dict[str, str]:
@@ -171,31 +223,60 @@ def _git_head() -> str:
         raise EvaluationIntegrityError("local H16 candidate commit could not be verified") from exc
 
 
-def _stage_summary(events: list[dict[str, Any]], stage: str) -> dict[str, Any] | None:
+def _stage_summary(
+    events: list[dict[str, Any]], stage: str, trial_id: str
+) -> dict[str, Any] | None:
     rows = [
         event
         for event in events
-        if event.get("record_type") == "h16_stage_summary" and event.get("stage") == stage
+        if event.get("record_type") == f"{trial_id}_stage_summary"
+        and event.get("stage") == stage
+        and event.get("trial_id", "h16" if trial_id == "h16" else None) == trial_id
     ]
     return rows[-1] if rows else None
 
 
 def _validate_transition(
-    *, stage: str, events: list[dict[str, Any]], candidate_commit: str, identities: dict[str, str]
+    *, trial_id: str, stage: str, events: list[dict[str, Any]], candidate_commit: str, identities: dict[str, str]
 ) -> None:
-    if any(event.get("record_type") == "h16_stage_start" and event.get("stage") == stage for event in events):
-        raise EvaluationIntegrityError("H16 stage has already been attempted; its pool cannot be rerun")
+    if trial_id not in TRIAL_POOL_ROLE or stage not in POOL_COUNTS:
+        raise EvaluationIntegrityError("H16/H17 trial or stage is not registered")
+
+    allocation_rows = [
+        event for event in events if event.get("record_type") == "h17_pool_allocation"
+    ]
+    if trial_id == "h17":
+        if (
+            len(allocation_rows) != 1
+            or not events
+            or events[0] != EXPECTED_H17_ALLOCATION
+        ):
+            raise EvaluationIntegrityError("H17 usage ledger lacks its exact first allocation record")
+    elif allocation_rows:
+        raise EvaluationIntegrityError("H16 usage ledger contains an H17 allocation record")
+
+    stage_start_type = f"{trial_id}_stage_start"
+    if any(
+        event.get("record_type") == stage_start_type
+        and event.get("trial_id", "h16" if trial_id == "h16" else None) == trial_id
+        and event.get("stage") == stage
+        for event in events
+    ):
+        raise EvaluationIntegrityError("H16/H17 stage has already been attempted; its pool cannot be rerun")
     if stage == "train":
-        if events:
-            raise EvaluationIntegrityError("H16 train stage requires a new private usage ledger")
+        expected_train_events = [EXPECTED_H17_ALLOCATION] if trial_id == "h17" else []
+        if events != expected_train_events:
+            raise EvaluationIntegrityError("H16/H17 train stage requires a new private usage ledger")
         return
 
     predecessor = "train" if stage == "probe" else "probe"
-    prior = _stage_summary(events, predecessor)
+    prior = _stage_summary(events, predecessor, trial_id)
     if not isinstance(prior, dict) or prior.get("status") != "COMPLETE":
-        raise EvaluationIntegrityError("required preceding H16 stage is not complete")
+        raise EvaluationIntegrityError("required preceding H16/H17 stage is not complete")
+    if prior.get("trial_id", "h16" if trial_id == "h16" else None) != trial_id:
+        raise EvaluationIntegrityError("H16/H17 usage ledger belongs to a different trial")
     if prior.get("candidate_commit") != candidate_commit:
-        raise EvaluationIntegrityError("H16 candidate commit changed between stages")
+        raise EvaluationIntegrityError("H16/H17 candidate commit changed between stages")
     for key in (
         "simulator_policy_source_sha256",
         "candidate_evaluator_sha256",
@@ -205,9 +286,9 @@ def _validate_transition(
         "g7_checkpoint_sha256",
     ):
         if prior.get(key) != identities.get(key):
-            raise EvaluationIntegrityError("H16 policy, evaluator, simulator, or parent changed between stages")
+            raise EvaluationIntegrityError("H16/H17 policy, evaluator, simulator, or parent changed between stages")
     if prior.get("advance_eligible") is not True:
-        raise EvaluationIntegrityError("preceding H16 paired result did not pass its preregistered gate")
+        raise EvaluationIntegrityError("preceding H16/H17 paired result did not pass its preregistered gate")
 
 
 def _check_pair_integrity(path: Path, result: dict[str, Any]) -> None:
@@ -345,6 +426,7 @@ def _artifact_manifest(output_dir: Path) -> tuple[list[dict[str, Any]], int]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--trial-id", choices=tuple(TRIAL_POOL_ROLE), default="h16")
     parser.add_argument("--stage", choices=("train", "probe", "dev"), default="train")
     parser.add_argument("--pool-file", type=Path, required=True)
     parser.add_argument("--pools-dir", type=Path, required=True)
@@ -361,17 +443,19 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    trial_id = args.trial_id
     stage = args.stage
     output_dir = args.private_output_dir.resolve()
     usage_path = args.private_usage_ledger.resolve()
     try:
         pool, seeds, pool_preflight = _round008_assets(
+            trial_id=trial_id,
             stage=stage,
             pool_file=args.pool_file.resolve(),
             pools_dir=args.pools_dir.resolve(),
             inventory_path=args.exclusion_inventory.resolve(),
         )
-        _validate_private_paths(args.pools_dir.resolve(), stage, output_dir, usage_path)
+        _validate_private_paths(args.pools_dir.resolve(), trial_id, stage, output_dir, usage_path)
         if len(args.candidate_commit) != 40 or args.candidate_commit != _git_head():
             raise EvaluationIntegrityError("candidate commit does not match the frozen local HEAD")
         identities = _validate_identity(
@@ -379,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         events = _read_jsonl(usage_path)
         _validate_transition(
+            trial_id=trial_id,
             stage=stage,
             events=events,
             candidate_commit=args.candidate_commit,
@@ -394,7 +479,8 @@ def main(argv: list[str] | None = None) -> int:
 
     identity = {
         "round_id": ROUND_ID,
-        "hypothesis": "h16",
+        "hypothesis": trial_id,
+        "trial_id": trial_id,
         "stage": stage,
         "pool_id": pool["pool_id"],
         "pool_manifest_sha256": pool["manifest_sha256"],
@@ -412,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
     started_at = datetime.now(timezone.utc).isoformat()
     expected_episodes = 2 * len(seeds)
     _append_jsonl(usage_path, {
-        "record_type": "h16_stage_start",
+        "record_type": f"{trial_id}_stage_start",
         **identity,
         "status": "RUNNING",
         "started_at_utc": started_at,
@@ -434,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for index, seed in enumerate(seeds):
             pair_index = index + 1
-            print(f"H16 {stage} pair {pair_index}/{len(seeds)}: parent")
+            print(f"{trial_id.upper()} {stage} pair {pair_index}/{len(seeds)}: parent")
             parent, parent_path, parent_stats, parent_overrides, parent_reasons = _run_episode(
                 sts=sts,
                 policy=policy,
@@ -449,9 +535,9 @@ def main(argv: list[str] | None = None) -> int:
             episodes_attempted += 1
             _accumulate_coverage(parent_trace_totals, parent_stats)
             if parent_overrides != 0 or parent.get("lethal_intent_defend_override_count") != 0:
-                raise EvaluationIntegrityError("G7 parent arm had a registered H16 action override")
+                raise EvaluationIntegrityError("G7 parent arm had a registered H16/H17 action override")
 
-            print(f"H16 {stage} pair {pair_index}/{len(seeds)}: candidate")
+            print(f"{trial_id.upper()} {stage} pair {pair_index}/{len(seeds)}: candidate")
             candidate, candidate_path, candidate_stats, overrides, reasons = _run_episode(
                 sts=sts,
                 policy=policy,
@@ -492,7 +578,8 @@ def main(argv: list[str] | None = None) -> int:
                 "candidate_evidence": str(candidate_path),
             })
             _append_jsonl(usage_path, {
-                "record_type": "h16_stage_progress",
+                "record_type": f"{trial_id}_stage_progress",
+                "trial_id": trial_id,
                 "stage": stage,
                 "candidate_commit": args.candidate_commit,
                 "completed_pairs": pair_index,
@@ -529,7 +616,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         artifact_entries, artifact_bytes = _artifact_manifest(output_dir)
         summary = {
-            "record_type": "h16_stage_summary",
+            "record_type": f"{trial_id}_stage_summary",
             **identity,
             "status": "COMPLETE",
             "started_at_utc": started_at,
@@ -577,7 +664,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:
         _append_jsonl(usage_path, {
-            "record_type": "h16_stage_failure",
+            "record_type": f"{trial_id}_stage_failure",
             **identity,
             "status": "NOT_VERIFIED",
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),

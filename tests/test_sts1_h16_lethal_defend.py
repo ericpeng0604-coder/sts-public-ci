@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -173,132 +174,245 @@ def test_h16_fails_closed_when_visible_intent_is_unavailable() -> None:
     assert reason == "unknown_attack_intent"
 
 
-def test_h17_uses_registered_hypothesis_three_pool_and_manifest() -> None:
-    assert h16_runner.TRIAL_POOL_ROLE["h16"]["train"] == "train_hypothesis_2"
-    assert h16_runner.TRIAL_POOL_ROLE["h17"]["train"] == "train_hypothesis_3"
-    assert h16_runner._without_private_hashes(
-        {
-            "manifest_sha256": "private",
-            "nested": {"sha256": "private", "count": 10},
-        }
-    ) == {"nested": {"count": 10}}
+def _h19_allocation() -> dict[str, object]:
+    return {
+        "record_type": "h19_pool_allocation",
+        "schema_version": "sts1-g7-pool-allocation-v1",
+        "trial_id": "h19",
+        "round_id": h16_runner.ROUND_ID,
+        "exclusion_inventory": {
+            "inventory_id": "fixture-inventory",
+            "sha256": "a" * 64,
+            "source_count": 3,
+            "unique_excluded_seed_count": 12,
+        },
+        "seed_ledger_sha256": "b" * 64,
+        "pools": {
+            name: {"pool_id": f"fixture-{name}", "manifest_sha256": "c" * 64}
+            for name in h16_runner.POOL_FILES
+        },
+    }
 
 
-def test_h17_private_paths_are_separate_from_h16_and_repo(tmp_path) -> None:
-    pools_dir = tmp_path / "round-008-seeds" / "pools"
-    h17_output = tmp_path / "round-008-h17-train-20261009"
-    h17_usage = pools_dir.parent / "h17-usage-private.jsonl"
+def _h19_identities() -> dict[str, str]:
+    return {
+        "simulator_policy_source_sha256": "policy",
+        "candidate_evaluator_sha256": "evaluator",
+        "simulator_binding_sha256": "binding",
+        "armg_source_sha256": "armg",
+        "armg_vocab_sha256": "vocab",
+        "g7_checkpoint_sha256": "parent",
+        "simulator_gameplay_commit": h16_runner.PINNED_GAMEPLAY_COMMIT,
+        "identity_lock_sha256": "lock",
+        "stage_gate_protocol_version": h16_runner.STAGE_GATE_PROTOCOL_VERSION,
+    }
 
-    h16_runner._validate_private_paths(pools_dir, "h17", "train", h17_output, h17_usage)
 
+def test_h19_private_paths_and_legacy_trials_fail_closed(tmp_path) -> None:
+    pools_dir = tmp_path / "round-010-seeds" / "pools"
+    output = tmp_path / "round-010-h19-train-20261010"
+    usage = pools_dir.parent / "h19-usage-private.jsonl"
+    inventory = pools_dir.parent / "exclusion-inventory.json"
+    identity_lock = pools_dir.parent / "h19-identity-private.json"
+
+    h16_runner._validate_private_paths(
+        pools_dir, "h19", "train", output, usage, inventory, identity_lock
+    )
     with pytest.raises(h16_runner.EvaluationIntegrityError):
         h16_runner._validate_private_paths(
-            pools_dir,
-            "h17",
-            "train",
-            tmp_path / "round-008-h16-train-20261009",
-            h17_usage,
+            pools_dir, "h18", "train", output, usage, inventory, identity_lock
+        )
+    with pytest.raises(h16_runner.EvaluationIntegrityError):
+        h16_runner._validate_private_paths(
+            pools_dir, "h19", "train", h16_runner.REPO_ROOT / "private-output",
+            usage, inventory, identity_lock
         )
 
 
-def test_h17_train_transition_requires_exact_pool_allocation_history() -> None:
-    allocation = deepcopy(h16_runner.EXPECTED_H17_ALLOCATION)
+def test_h19_train_transition_requires_exact_private_allocation() -> None:
+    allocation = _h19_allocation()
     candidate_commit = "a" * 40
-    identities = {key: f"{key}-sha256" for key in (
-        "simulator_policy_source_sha256",
-        "candidate_evaluator_sha256",
-        "simulator_binding_sha256",
-        "armg_source_sha256",
-        "armg_vocab_sha256",
-        "g7_checkpoint_sha256",
-    )}
+    identities = _h19_identities()
 
     h16_runner._validate_transition(
-        trial_id="h17",
+        trial_id="h19",
         stage="train",
         events=[allocation],
+        allocation_event=allocation,
         candidate_commit=candidate_commit,
         identities=identities,
     )
 
     altered = deepcopy(allocation)
-    altered["prior_h16"]["probe"]["status"] = "COMPLETE"
+    altered["round_id"] = "wrong-round"
     with pytest.raises(h16_runner.EvaluationIntegrityError):
         h16_runner._validate_transition(
-            trial_id="h17",
+            trial_id="h19",
             stage="train",
             events=[altered],
+            allocation_event=allocation,
             candidate_commit=candidate_commit,
             identities=identities,
         )
 
 
-def test_h17_probe_requires_its_own_eligible_train_summary() -> None:
+def test_h19_probe_requires_eligible_train_summary_and_same_identity() -> None:
     candidate_commit = "b" * 40
-    identities = {key: f"{key}-sha256" for key in (
-        "simulator_policy_source_sha256",
-        "candidate_evaluator_sha256",
-        "simulator_binding_sha256",
-        "armg_source_sha256",
-        "armg_vocab_sha256",
-        "g7_checkpoint_sha256",
-    )}
+    allocation = _h19_allocation()
+    identities = _h19_identities()
     summary = {
-        "record_type": "h17_stage_summary",
-        "trial_id": "h17",
+        "record_type": "h19_stage_summary",
+        "trial_id": "h19",
         "stage": "train",
         "status": "COMPLETE",
         "candidate_commit": candidate_commit,
         "advance_eligible": True,
         **identities,
     }
-
     h16_runner._validate_transition(
-        trial_id="h17",
+        trial_id="h19",
         stage="probe",
-        events=[deepcopy(h16_runner.EXPECTED_H17_ALLOCATION), summary],
+        events=[allocation, summary],
+        allocation_event=allocation,
         candidate_commit=candidate_commit,
         identities=identities,
     )
 
-    wrong_trial = {**summary, "trial_id": "h16"}
+    changed = {**summary, "identity_lock_sha256": "different-lock"}
     with pytest.raises(h16_runner.EvaluationIntegrityError):
         h16_runner._validate_transition(
-            trial_id="h17",
+            trial_id="h19",
             stage="probe",
-            events=[deepcopy(h16_runner.EXPECTED_H17_ALLOCATION), wrong_trial],
+            events=[allocation, changed],
+            allocation_event=allocation,
             candidate_commit=candidate_commit,
             identities=identities,
         )
 
 
-def test_h16_legacy_stage_summary_remains_usable_without_trial_id() -> None:
-    candidate_commit = "c" * 40
-    identities = {key: f"{key}-sha256" for key in (
-        "simulator_policy_source_sha256",
-        "candidate_evaluator_sha256",
-        "simulator_binding_sha256",
-        "armg_source_sha256",
-        "armg_vocab_sha256",
-        "g7_checkpoint_sha256",
-    )}
-    legacy_summary = {
-        "record_type": "h16_stage_summary",
-        "stage": "train",
-        "status": "COMPLETE",
-        "candidate_commit": candidate_commit,
-        "advance_eligible": True,
-        **identities,
-    }
+def test_h19_identity_lock_is_mandatory_and_public_source_has_no_private_pins(tmp_path) -> None:
+    lock = tmp_path / "private-identity.json"
+    lock.write_text("{}", encoding="utf-8")
+    with pytest.raises(h16_runner.EvaluationIntegrityError):
+        h16_runner._validate_identity(
+            tmp_path, tmp_path, tmp_path / "g7.pt", lock, "h19", "a" * 40
+        )
 
-    assert h16_runner._stage_summary([legacy_summary], "train", "h16") == legacy_summary
-    h16_runner._validate_transition(
-        trial_id="h16",
-        stage="probe",
-        events=[legacy_summary],
-        candidate_commit=candidate_commit,
-        identities=identities,
+    source = Path(h16_runner.__file__).read_text(encoding="utf-8")
+    assert re.search(r"\b[0-9a-f]{64}\b", source) is None
+    assert "EXPECTED_H17_ALLOCATION" not in source
+    assert "EXPECTED_H18_ALLOCATION" not in source
+    parser = h16_runner._parser()
+    trial_action = next(action for action in parser._actions if action.dest == "trial_id")
+    assert trial_action.choices == ("h19",)
+
+
+def test_h19_identity_lock_pins_all_runtime_inputs(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    module_dir = tmp_path / "module"
+    armg_root = tmp_path / "armg"
+    checkpoint = tmp_path / "g7.pt"
+    source = repo / "src" / "roguelike_ai" / "sts1_phase3" / "simulator.py"
+    upstream = repo / "external" / "sts_lightspeed" / "UPSTREAM.json"
+    binding = module_dir / "slaythespire.cp312-win_amd64.pyd"
+    armg_source = armg_root / "armG_train.py"
+    armg_vocab = armg_root / "armS_card_vocab.json"
+    for path, content in (
+        (source, b"simulator"),
+        (upstream, json.dumps({
+            "repository": h16_runner.PINNED_GAMEPLAY_REPOSITORY_URL,
+            "commit": h16_runner.PINNED_GAMEPLAY_COMMIT,
+        }).encode()),
+        (binding, b"binding"),
+        (armg_source, b"armg-source"),
+        (armg_vocab, b"armg-vocab"),
+        (checkpoint, b"frozen-g7"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    monkeypatch.setattr(h16_runner, "REPO_ROOT", repo)
+    candidate_commit = "d" * 40
+    paths = {
+        "simulator_binding_sha256": binding,
+        "armg_source_sha256": armg_source,
+        "armg_vocab_sha256": armg_vocab,
+        "g7_checkpoint_sha256": checkpoint,
+        "simulator_policy_source_sha256": source,
+        "candidate_evaluator_sha256": Path(h16_runner.__file__).resolve(),
+    }
+    lock = {
+        "schema_version": h16_runner.PRIVATE_IDENTITY_SCHEMA_VERSION,
+        "trial_id": "h19",
+        "candidate_commit": candidate_commit,
+        "simulator_gameplay_commit": h16_runner.PINNED_GAMEPLAY_COMMIT,
+        "mcts_sims": 2000,
+        "expected_sha256": {key: h16_runner._sha256(path) for key, path in paths.items()},
+    }
+    lock_path = tmp_path / "private-identity.json"
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+    identities = h16_runner._validate_identity(
+        module_dir, armg_root, checkpoint, lock_path, "h19", candidate_commit
     )
+    assert identities["simulator_gameplay_commit"] == h16_runner.PINNED_GAMEPLAY_COMMIT
+    assert identities["identity_lock_sha256"] == h16_runner._sha256(lock_path)
+    assert set(h16_runner.PRIVATE_IDENTITY_KEYS) <= set(identities)
+
+
+def test_round010_assets_validate_generated_pools_and_private_allocation(tmp_path) -> None:
+    ledger_module = h16_runner.seed_ledger
+    inventory = {
+        "schema_version": ledger_module.INVENTORY_SCHEMA_VERSION,
+        "inventory_id": "synthetic-inventory",
+        "complete": True,
+        "source_manifests": [
+            {
+                "category": category,
+                "source_ref": f"fixture:{category}",
+                "sha256": f"{index:064x}",
+                "seed_ids": [],
+            }
+            for index, category in enumerate(ledger_module.REQUIRED_SOURCE_CATEGORIES, 1)
+        ],
+    }
+    seed_dir = tmp_path / "round-010-seeds"
+    pools_dir = seed_dir / "pools"
+    pools_dir.mkdir(parents=True)
+    inventory_path = seed_dir / "exclusion-inventory.json"
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    ledger = ledger_module.generate_exploration_round(
+        inventory,
+        inventory_sha256=h16_runner._sha256(inventory_path),
+        round_id=h16_runner.ROUND_ID,
+        generation_key="unit-test-only",
+    )
+    (pools_dir / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
+    for role, manifest in ledger["pools"].items():
+        (pools_dir / h16_runner.POOL_FILES[role]).write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
+    pool, seeds, preflight, allocation = h16_runner._round010_assets(
+        trial_id="h19",
+        stage="train",
+        pool_file=pools_dir / "train_hypothesis_1.json",
+        pools_dir=pools_dir,
+        inventory_path=inventory_path,
+        allocation_event=None,
+    )
+    assert len(seeds) == 10
+    assert pool["pool_id"] == allocation["pools"]["train_hypothesis_1"]["pool_id"]
+    assert preflight["seed_disjointness_verified"] is True
+
+    with pytest.raises(h16_runner.EvaluationIntegrityError):
+        h16_runner._round010_assets(
+            trial_id="h19",
+            stage="train",
+            pool_file=pools_dir / "train_hypothesis_1.json",
+            pools_dir=pools_dir,
+            inventory_path=inventory_path,
+            allocation_event={"record_type": "wrong"},
+        )
 
 
 def _shop_choice(item_type: str | None, *, leave: bool = False) -> dict[str, object]:
@@ -455,35 +569,90 @@ def test_shared_paired_summary_uses_exact_one_sided_sign_test() -> None:
     assert candidate_positive["exact_one_sided_sign_p_candidate_positive"] == pytest.approx(0.125)
 
 
+def _registered_pair_summary(
+    stage: str, *, candidate_only: int = 0, parent_only: int = 0, both_victories: int = 0
+) -> dict[str, int | float]:
+    count = h16_runner.STAGE_CONFIG[stage]["paired_seed_count"]
+    both_defeats = count - candidate_only - parent_only - both_victories
+    assert min(candidate_only, parent_only, both_victories, both_defeats) >= 0
+    parent = (
+        ["victory"] * both_victories
+        + ["victory"] * parent_only
+        + ["defeat"] * candidate_only
+        + ["defeat"] * both_defeats
+    )
+    candidate = (
+        ["victory"] * both_victories
+        + ["defeat"] * parent_only
+        + ["victory"] * candidate_only
+        + ["defeat"] * both_defeats
+    )
+    return h16_runner.h3._paired_summary_for_stage(parent, candidate)
+
+
+def test_stage_gate_protocol_version_and_registered_denominators_are_reported() -> None:
+    assert {
+        stage: config["paired_seed_count"]
+        for stage, config in h16_runner.STAGE_CONFIG.items()
+    } == {
+        "train": 10,
+        "probe": 10,
+        "dev": 30,
+        "confirmation_a": 100,
+        "confirmation_b": 100,
+    }
+    assert h16_runner._stage_episode_counts("h19", "train", 10) == {
+        "paired_episode_count": 20,
+        "trace_invariance_replay_count": 1,
+        "expected_episodes": 21,
+    }
+    with pytest.raises(h16_runner.EvaluationIntegrityError):
+        h16_runner._stage_episode_counts("h18", "train", 10)
+    gate = h16_runner._stage_gate("train", _registered_pair_summary("train"), 3, True)
+    assert gate["stage_gate_protocol_version"] == h16_runner.STAGE_GATE_PROTOCOL_VERSION
+
+
 def test_train_probe_gates_use_distinct_effective_override_seed_coverage() -> None:
-    nonnegative_train = {"net_wins": 0}
+    nonnegative_train = _registered_pair_summary("train")
     assert h16_runner._stage_gate("train", nonnegative_train, 2, True)["advance_eligible"] is False
     assert h16_runner._stage_gate("train", nonnegative_train, 3, True)["advance_eligible"] is True
     assert h16_runner._stage_gate("probe", nonnegative_train, 3, False)["advance_eligible"] is False
+    assert h16_runner._stage_gate(
+        "train", _registered_pair_summary("train", parent_only=1), 3, True
+    )["advance_eligible"] is False
+
+
+def test_stage_gate_rejects_missing_or_inconsistent_pair_counters() -> None:
+    with pytest.raises(h16_runner.EvaluationIntegrityError, match="canonical integer counters"):
+        h16_runner._stage_gate("dev", {"net_wins": 4}, 0, True)
+    inconsistent = _registered_pair_summary("dev", candidate_only=4)
+    inconsistent["net_wins"] = 3
+    with pytest.raises(h16_runner.EvaluationIntegrityError, match="disagree"):
+        h16_runner._stage_gate("dev", inconsistent, 0, True)
 
 
 def test_dev_positive_net_is_candidate_selection_signal_without_p_threshold() -> None:
     assert h16_runner._stage_gate(
         "dev",
-        {"net_wins": 4, "exact_one_sided_sign_p_candidate_positive": 0.0625},
+        _registered_pair_summary("dev", candidate_only=4),
         0,
         True,
     )["advance_eligible"] is True
     assert h16_runner._stage_gate(
         "dev",
-        {"net_wins": 0, "exact_one_sided_sign_p_candidate_positive": 1.0},
+        _registered_pair_summary("dev"),
         0,
         True,
     )["advance_eligible"] is False
     assert h16_runner._stage_gate(
-        "dev", {"net_wins": -1}, 0, True
+        "dev", _registered_pair_summary("dev", parent_only=1), 0, True
     )["advance_eligible"] is False
 
 
 def test_dev_hard_safety_or_integrity_failure_still_blocks_confirmation() -> None:
     assert h16_runner._stage_gate(
         "dev",
-        {"net_wins": 4, "exact_one_sided_sign_p_candidate_positive": 0.0625},
+        _registered_pair_summary("dev", candidate_only=4),
         0,
         False,
     )["advance_eligible"] is False
@@ -518,11 +687,14 @@ def test_floor_hp_regressions_are_reported_but_do_not_block_exploration() -> Non
     assert diagnostic["by_paired_outcome"]["both_victory"]["pair_count"] == 1
     assert diagnostic["by_paired_outcome"]["candidate_only"]["pair_count"] == 1
     assert diagnostic["by_paired_outcome"]["parent_only"]["pair_count"] == 1
-    assert h16_runner._stage_gate("train", {"net_wins": 0}, 3, True)["advance_eligible"] is True
+    assert h16_runner._stage_gate(
+        "train", _registered_pair_summary("train", candidate_only=1), 3, True
+    )["advance_eligible"] is True
 
 
 def _synthetic_confirmation_batch(stage: str, candidate_only: int, parent_only: int) -> dict[str, object]:
     pairs = []
+    diagnostic_pairs = []
     for index in range(100):
         if index < candidate_only:
             parent_outcome, candidate_outcome = "defeat", "victory"
@@ -534,8 +706,17 @@ def _synthetic_confirmation_batch(stage: str, candidate_only: int, parent_only: 
             "parent": {"outcome": parent_outcome},
             "candidate": {"outcome": candidate_outcome},
         })
+        diagnostic_pairs.append({
+            "parent_outcome": parent_outcome,
+            "candidate_outcome": candidate_outcome,
+            "parent_floor": 50,
+            "candidate_floor": 49 if index < 5 else 50,
+            "parent_hp": 50,
+            "candidate_hp": 49 if index < 5 else 50,
+        })
     return {
         "stage": stage,
+        "stage_gate_protocol_version": h16_runner.STAGE_GATE_PROTOCOL_VERSION,
         "status": "COMPLETE",
         "seed_count": 100,
         "hard_guards_passed": True,
@@ -550,6 +731,7 @@ def _synthetic_confirmation_batch(stage: str, candidate_only: int, parent_only: 
         "armg_vocab_sha256": "2" * 64,
         "g7_checkpoint_sha256": "3" * 64,
         "pairs": pairs,
+        "terminal_floor_hp_diagnostic": h16_runner._terminal_floor_hp_diagnostic(diagnostic_pairs),
     }
 
 
@@ -571,6 +753,9 @@ def test_confirmation_gate_preserves_two_batch_net_and_trial_alpha() -> None:
     assert first["combined"]["candidate_only_wins"] == 12
     assert first["combined"]["parent_only_wins"] == 0
     assert first["accepted"] is True
+    assert first["terminal_floor_hp_diagnostics"]["confirmation_a"][
+        "candidate_relation_counts"]["terminal_floor"]["lower"] == 5
+    assert first["stage_gate_protocol_version"] == h16_runner.STAGE_GATE_PROTOCOL_VERSION
     assert second["accepted"] is True
     with pytest.raises(h16_runner.EvaluationIntegrityError, match="reset"):
         h16_runner._confirmation_gate(
@@ -597,6 +782,40 @@ def test_confirmation_gate_rejects_nonpositive_batch_or_less_than_ten_net() -> N
     assert rejected["batch_b_net"] == 0
     assert rejected["both_batches_positive_net"] is False
     assert rejected["accepted"] is False
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "missing_arm",
+        "unknown_outcome",
+        "hard_guard",
+        "seed_provenance",
+        "identity",
+        "floor_hp",
+        "floor_hp_count",
+    ),
+)
+def test_confirmation_gate_fails_closed_on_incomplete_or_mismatched_evidence(failure: str) -> None:
+    batch_a = _synthetic_confirmation_batch("confirmation_a", candidate_only=6, parent_only=0)
+    batch_b = _synthetic_confirmation_batch("confirmation_b", candidate_only=6, parent_only=0)
+    if failure == "missing_arm":
+        del batch_a["pairs"][0]["candidate"]
+    elif failure == "unknown_outcome":
+        batch_a["pairs"][0]["candidate"]["outcome"] = "unknown"
+    elif failure == "hard_guard":
+        batch_b["hard_guards_passed"] = False
+    elif failure == "seed_provenance":
+        batch_b["seed_disjointness_verified"] = False
+    elif failure == "identity":
+        batch_b["candidate_evaluator_sha256"] = "9" * 64
+    elif failure == "floor_hp":
+        batch_b["terminal_floor_hp_diagnostic"] = None
+    elif failure == "floor_hp_count":
+        batch_b["terminal_floor_hp_diagnostic"]["paired_delta_summary"]["final_hp"]["count"] = 99
+
+    with pytest.raises(h16_runner.EvaluationIntegrityError):
+        h16_runner._confirmation_gate(batch_a, batch_b, trial_k=1, prior_trial_ks=[])
 
 
 def test_selected_pool_requires_exact_count_and_unique_integer_ids() -> None:

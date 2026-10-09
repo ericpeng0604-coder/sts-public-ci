@@ -1,4 +1,4 @@
-"""Run the preregistered H16/H17 Round008 and H18 Round009 Defend evaluations.
+"""Run the preregistered H19 Defend evaluation on fresh Round010 pools.
 
 Raw seed IDs, episodes, traces, and usage records must remain in the private
 Temp evaluation directory. This runner never tunes the registered rule.
@@ -9,11 +9,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import statistics
 import subprocess
 import sys
-from copy import deepcopy
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,14 +35,10 @@ import sts1_g7_h15_train_trace_audit as h15  # noqa: E402
 import sts1_g7_seed_ledger as seed_ledger  # noqa: E402
 
 EvaluationIntegrityError = h2.EvaluationIntegrityError
-ROUND_ID = "round-008-20261009"
-ROUND009_ID = "round-009-20261009"
-TRIAL_ROUND_IDS = {"h16": ROUND_ID, "h17": ROUND_ID, "h18": ROUND009_ID}
-TRIAL_POOL_ROLE = {
-    "h16": {"train": "train_hypothesis_2", "probe": "probe", "dev": "dev"},
-    "h17": {"train": "train_hypothesis_3", "probe": "probe", "dev": "dev"},
-    "h18": {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"},
-}
+ROUND_ID = "round-010-20261010"
+TRIAL_ROUND_IDS = {"h19": ROUND_ID}
+TRIAL_POOL_ROLE = {"h19": {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"}}
+ACTIVE_TRIAL_IDS = tuple(TRIAL_POOL_ROLE)
 STAGE_CONFIG = {
     "train": {"paired_seed_count": 10, "minimum_override_seed_coverage": 3},
     "probe": {"paired_seed_count": 10, "minimum_override_seed_coverage": 3},
@@ -50,9 +46,28 @@ STAGE_CONFIG = {
     "confirmation_a": {"paired_seed_count": 100, "minimum_override_seed_coverage": 0},
     "confirmation_b": {"paired_seed_count": 100, "minimum_override_seed_coverage": 0},
 }
-POOL_COUNTS = {
-    stage: config["paired_seed_count"] for stage, config in STAGE_CONFIG.items()
-}
+STAGE_GATE_PROTOCOL_VERSION = "sts1-g7-stage-gate-v2-2026-10-10"
+PRIVATE_IDENTITY_SCHEMA_VERSION = "sts1-g7-private-identity-lock-v1"
+PRIVATE_IDENTITY_KEYS = (
+    "simulator_binding_sha256", "armg_source_sha256", "armg_vocab_sha256",
+    "g7_checkpoint_sha256", "simulator_policy_source_sha256", "candidate_evaluator_sha256",
+)
+POOL_COUNTS = {stage: config["paired_seed_count"] for stage, config in STAGE_CONFIG.items()}
+
+
+def _stage_episode_counts(trial_id: str, stage: str, seed_count: int) -> dict[str, int]:
+    config = STAGE_CONFIG.get(stage)
+    if trial_id != "h19" or not isinstance(config, dict) or seed_count != config["paired_seed_count"]:
+        raise EvaluationIntegrityError("episode count does not match the registered stage denominator")
+    paired_episode_count = 2 * seed_count
+    replay_count = int(stage == "train")
+    return {
+        "paired_episode_count": paired_episode_count,
+        "trace_invariance_replay_count": replay_count,
+        "expected_episodes": paired_episode_count + replay_count,
+    }
+
+
 POOL_FILES = {
     "train_hypothesis_1": "train_hypothesis_1.json",
     "train_hypothesis_2": "train_hypothesis_2.json",
@@ -60,74 +75,8 @@ POOL_FILES = {
     "probe": "probe.json",
     "dev": "dev.json",
 }
-# Private seed-pool and historical summary pins are stored only in the local usage ledger.
-EXPECTED_H17_ALLOCATION = {
-    "record_type": "h17_pool_allocation",
-    "trial_id": "h17",
-    "round_id": ROUND_ID,
-    "prior_h16": {
-        "train": {"pool_id": "round-008-20261009-train_hypothesis_2", "status": "COMPLETE"},
-        "probe": {"pool_id": "round-008-20261009-probe", "status": "NOT_RUN"},
-        "dev": {"pool_id": "round-008-20261009-dev", "status": "NOT_RUN"},
-    },
-    "assigned_h17": {
-        "train": {"pool_id": "round-008-20261009-train_hypothesis_3"},
-        "probe": {"pool_id": "round-008-20261009-probe"},
-        "dev": {"pool_id": "round-008-20261009-dev"},
-    },
-}
-EXPECTED_H18_ALLOCATION = {
-    "record_type": "h18_pool_allocation",
-    "trial_id": "h18",
-    "round_id": ROUND009_ID,
-    "prior_h16": {
-        "train": {
-            "pool_id": "round-008-20261009-train_hypothesis_2",
-            "status": "NOT_VERIFIED_IMPLEMENTATION_COVERAGE",
-        },
-        "probe": {"pool_id": "round-008-20261009-probe", "status": "NOT_RUN"},
-        "dev": {"pool_id": "round-008-20261009-dev", "status": "NOT_RUN"},
-    },
-    "prior_h17": {
-        "train": {
-            "pool_id": "round-008-20261009-train_hypothesis_3",
-            "status": "NOT_VERIFIED_IMPLEMENTATION_COVERAGE",
-        },
-        "probe": {"pool_id": "round-008-20261009-probe", "status": "NOT_RUN"},
-        "dev": {"pool_id": "round-008-20261009-dev", "status": "NOT_RUN"},
-    },
-    "exclusion_inventory": {
-        "inventory_id": "round-009-20261009-extended-exclusion",
-        "source_count": 86,
-        "unique_id_count": 23106,
-    },
-    "assigned_h18": {
-        "train": {"pool_id": "round-009-20261009-train_hypothesis_1"},
-        "probe": {"pool_id": "round-009-20261009-probe"},
-        "dev": {"pool_id": "round-009-20261009-dev"},
-    },
-    "reserved_unused_train_pools": [
-        {"pool_id": "round-009-20261009-train_hypothesis_2"},
-        {"pool_id": "round-009-20261009-train_hypothesis_3"},
-    ],
-}
-
-def _without_private_hashes(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _without_private_hashes(item)
-            for key, item in value.items()
-            if key != "sha256" and not key.lower().endswith("_sha256")
-        }
-    if isinstance(value, list):
-        return [_without_private_hashes(item) for item in value]
-    return value
-G7_SHA256 = "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0"
 PINNED_GAMEPLAY_COMMIT = "7476a81954020087da31d41d16fddf475746ec2d"
 PINNED_GAMEPLAY_REPOSITORY_URL = "https://github.com/gamerpuppy/sts_lightspeed"
-PINNED_BINDING_SHA256 = "bc2a3d272c5dc1f51f66619604fb1b202e0915f29dddd719837e5ca0b8cfc89e"
-ARMG_SHA256 = "7b4417484ade4320996f4ce0f2154944e6bd75e90500ab8f209bc84ab67d7f3b"
-ARMG_VOCAB_SHA256 = "832e199c359af8408ea430ffa3f9fcdc68f32533f7292bb102848d3fb558eb6a"
 MCTS_SIMS = h7.MCTS_SIMS
 MAX_EPISODE_BYTES = h7.MAX_EPISODE_ARTIFACT_BYTES
 MAX_TOTAL_BYTES = h7.MAX_TOTAL_ARTIFACT_BYTES
@@ -158,7 +107,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
                 continue
             value = json.loads(line)
             if not isinstance(value, dict):
-                raise EvaluationIntegrityError("private H16 usage record is not an object")
+                raise EvaluationIntegrityError("private H19 usage record is not an object")
             rows.append(value)
     return rows
 
@@ -194,179 +143,118 @@ def _stage_seed_roles(stage: str, stage_seeds: tuple[int, ...]) -> tuple[tuple[i
     raise EvaluationIntegrityError("stage has no registered seed role")
 
 
-def _round008_assets(
-    *, trial_id: str, stage: str, pool_file: Path, pools_dir: Path, inventory_path: Path
-) -> tuple[dict[str, Any], tuple[int, ...], dict[str, Any]]:
-    if trial_id not in TRIAL_POOL_ROLE or stage not in TRIAL_POOL_ROLE[trial_id]:
-        raise EvaluationIntegrityError("H16/H17 trial or stage is not registered")
-    role = TRIAL_POOL_ROLE[trial_id][stage]
-    expected_pool = (pools_dir / POOL_FILES[role]).resolve()
-    if pool_file.resolve() != expected_pool:
-        raise EvaluationIntegrityError("selected H16/H17 pool path does not match the registered stage")
-
-    # H15's audited loader validates the full Round008 ledger, all five pool
-    # manifests, the ID-only exclusion inventory, and pairwise disjointness.
-    # It requires the H1 path as its anchor; the active trial selects H2 or H3
-    # and never executes H1 for this validation step.
-    _, validated_pools, round_preflight = h15._validate_round008_assets(
-        pools_dir / "train_hypothesis_1.json", pools_dir, inventory_path
-    )
-    pool = h15._read_json(expected_pool)
-    seeds = validated_pools.get(role)
-    if not isinstance(seeds, tuple):
-        raise EvaluationIntegrityError("selected H16/H17 pool count or validation is invalid")
-    _validate_selected_seeds(stage, seeds)
-    preflight = {
-        **round_preflight,
-        "pool_id": pool.get("pool_id"),
-        "pool_manifest_sha256": pool.get("manifest_sha256"),
-        "stage": stage,
-        "seed_count": len(seeds),
-        "seed_disjointness_verified": True,
-    }
-    return pool, seeds, preflight
-
-
-def _round009_assets(
-    *,
-    trial_id: str,
-    stage: str,
-    pool_file: Path,
-    pools_dir: Path,
-    inventory_path: Path,
-    allocation_event: dict[str, Any] | None,
+def _round010_assets(
+    *, trial_id: str, stage: str, pool_file: Path, pools_dir: Path,
+    inventory_path: Path, allocation_event: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], tuple[int, ...], dict[str, Any], dict[str, Any]]:
-    if trial_id != "h18" or stage not in TRIAL_POOL_ROLE["h18"]:
-        raise EvaluationIntegrityError("Round009 assets are registered only for H18")
+    if trial_id != "h19" or stage not in TRIAL_POOL_ROLE["h19"]:
+        raise EvaluationIntegrityError("Round010 assets are registered only for H19")
     if allocation_event is None and stage != "train":
-        raise EvaluationIntegrityError("H18 held-out stages require a pre-existing private allocation record")
+        raise EvaluationIntegrityError("H19 held-out stages require the existing private allocation record")
     role = TRIAL_POOL_ROLE[trial_id][stage]
-    expected_pool = (pools_dir / POOL_FILES[role]).resolve()
-    if pool_file.resolve() != expected_pool:
-        raise EvaluationIntegrityError("selected H18 pool path does not match the registered stage")
-
+    if pool_file.resolve() != (pools_dir / POOL_FILES[role]).resolve():
+        raise EvaluationIntegrityError("selected H19 pool path does not match its registered stage")
     inventory = h15._read_json(inventory_path)
-    excluded, source_audit = seed_ledger.validate_inventory(inventory)
+    try:
+        excluded, source_audit = seed_ledger.validate_inventory(inventory)
+    except seed_ledger.SeedLedgerError as exc:
+        raise EvaluationIntegrityError("Round010 exclusion inventory validation failed") from exc
     inventory_sha256 = _sha256(inventory_path)
-    if (
-        inventory.get("inventory_id") != EXPECTED_H18_ALLOCATION["exclusion_inventory"]["inventory_id"]
-        or len(source_audit) != 86
-        or len(excluded) != 23106
-    ):
-        raise EvaluationIntegrityError("Round009 exclusion inventory identity or coverage mismatch")
-
-    ledger_path = pools_dir / "ledger.json"
-    ledger = h15._read_json(ledger_path)
+    ledger = h15._read_json(pools_dir / "ledger.json")
     ledger_payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
     if (
         ledger.get("schema_version") != seed_ledger.SCHEMA_VERSION
-        or ledger.get("round_id") != ROUND009_ID
+        or ledger.get("round_id") != ROUND_ID
         or ledger.get("inventory_id") != inventory.get("inventory_id")
         or ledger.get("inventory_sha256") != inventory_sha256
         or ledger.get("source_audit_sha256") != seed_ledger.sha256_json(source_audit)
         or ledger.get("status") != "GENERATED_NOT_RUN"
         or ledger.get("ledger_sha256") != seed_ledger.sha256_json(ledger_payload)
         or set(ledger.get("pools", {})) != set(POOL_FILES)
+        or set(seed_ledger.EXPLORATION_POOL_SIZES) != set(POOL_FILES)
     ):
-        raise EvaluationIntegrityError("Round009 seed-ledger identity or provenance mismatch")
-
+        raise EvaluationIntegrityError("Round010 seed-ledger identity or provenance mismatch")
+    if {path.name for path in pools_dir.glob("*.json")} != {"ledger.json", *POOL_FILES.values()}:
+        raise EvaluationIntegrityError("Round010 pool directory has unexpected or missing JSON files")
     pool_manifests: dict[str, dict[str, Any]] = {}
     for pool_name, expected_count in seed_ledger.EXPLORATION_POOL_SIZES.items():
         manifest = h15._read_json(pools_dir / POOL_FILES[pool_name])
-        manifest_payload = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+        payload = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+        purpose = "train" if pool_name.startswith("train_") else pool_name
         if (
             manifest != ledger["pools"].get(pool_name)
-            or manifest.get("manifest_sha256") != seed_ledger.sha256_json(manifest_payload)
-            or manifest.get("purpose") != ("train" if pool_name.startswith("train_") else pool_name)
+            or manifest.get("schema_version") != "sts1-g7-seed-pool-v1"
+            or manifest.get("pool_id") != f"{ROUND_ID}-{pool_name}"
+            or manifest.get("round_id") != ROUND_ID
+            or manifest.get("generation_key") != ledger.get("generation_key")
+            or manifest.get("inventory_id") != inventory.get("inventory_id")
+            or manifest.get("inventory_sha256") != inventory_sha256
+            or manifest.get("source_audit_sha256") != seed_ledger.sha256_json(source_audit)
+            or manifest.get("source_audit") != source_audit
+            or manifest.get("status") != "GENERATED_NOT_RUN"
+            or manifest.get("purpose") != purpose
+            or manifest.get("manifest_sha256") != seed_ledger.sha256_json(payload)
             or len(manifest.get("seed_ids", [])) != expected_count
         ):
-            raise EvaluationIntegrityError("Round009 pool manifest does not match its ledger entry")
+            raise EvaluationIntegrityError("Round010 pool manifest does not match its ledger entry")
         pool_manifests[pool_name] = manifest
-    seed_ledger._verify_generated(ledger, excluded)
-
-    if allocation_event is None:
-        allocation_event = deepcopy(EXPECTED_H18_ALLOCATION)
-        allocation_event["exclusion_inventory"]["sha256"] = inventory_sha256
-        allocation_event["round009_ledger_sha256"] = ledger["ledger_sha256"]
-        allocation_event["assigned_h18"]["train"]["manifest_sha256"] = pool_manifests[
-            "train_hypothesis_1"
-        ]["manifest_sha256"]
-        allocation_event["assigned_h18"]["probe"]["manifest_sha256"] = pool_manifests["probe"][
-            "manifest_sha256"
-        ]
-        allocation_event["assigned_h18"]["dev"]["manifest_sha256"] = pool_manifests["dev"][
-            "manifest_sha256"
-        ]
-        for reserved, pool_name in zip(
-            allocation_event["reserved_unused_train_pools"],
-            ("train_hypothesis_2", "train_hypothesis_3"),
-            strict=True,
-        ):
-            reserved["manifest_sha256"] = pool_manifests[pool_name]["manifest_sha256"]
-    if _without_private_hashes(allocation_event) != EXPECTED_H18_ALLOCATION:
-        raise EvaluationIntegrityError("H18 private allocation does not match the registered safe structure")
-    if (
-        not _valid_sha256(allocation_event["exclusion_inventory"].get("sha256"))
-        or allocation_event["exclusion_inventory"]["sha256"] != inventory_sha256
-        or not _valid_sha256(allocation_event.get("round009_ledger_sha256"))
-        or allocation_event["round009_ledger_sha256"] != ledger.get("ledger_sha256")
-        or len(allocation_event.get("reserved_unused_train_pools", [])) != 2
-    ):
-        raise EvaluationIntegrityError("H18 private allocation pins do not match the generated seed ledger")
-    allocated_pools = {
-        "train_hypothesis_1": allocation_event["assigned_h18"]["train"],
-        "probe": allocation_event["assigned_h18"]["probe"],
-        "dev": allocation_event["assigned_h18"]["dev"],
-        "train_hypothesis_2": allocation_event["reserved_unused_train_pools"][0],
-        "train_hypothesis_3": allocation_event["reserved_unused_train_pools"][1],
+    try:
+        seed_ledger._verify_generated(ledger, excluded)
+    except (KeyError, TypeError, seed_ledger.SeedLedgerError) as exc:
+        raise EvaluationIntegrityError("Round010 pools are not disjoint from exclusions") from exc
+    expected_allocation = {
+        "record_type": "h19_pool_allocation",
+        "schema_version": "sts1-g7-pool-allocation-v1",
+        "trial_id": "h19",
+        "round_id": ROUND_ID,
+        "exclusion_inventory": {
+            "inventory_id": inventory.get("inventory_id"),
+            "sha256": inventory_sha256,
+            "source_count": len(source_audit),
+            "unique_excluded_seed_count": len(excluded),
+        },
+        "seed_ledger_sha256": ledger.get("ledger_sha256"),
+        "pools": {
+            name: {"pool_id": item["pool_id"], "manifest_sha256": item["manifest_sha256"]}
+            for name, item in pool_manifests.items()
+        },
     }
-    for pool_name, manifest in pool_manifests.items():
-        pin = allocated_pools[pool_name]
-        if (
-            pin.get("pool_id") != manifest.get("pool_id")
-            or not _valid_sha256(pin.get("manifest_sha256"))
-            or pin["manifest_sha256"] != manifest.get("manifest_sha256")
-        ):
-            raise EvaluationIntegrityError("H18 private pool allocation pin differs from its manifest")
-
-    pool = h15._read_json(expected_pool)
-    raw_seeds = pool.get("seed_ids")
-    if not isinstance(raw_seeds, list):
-        raise EvaluationIntegrityError("selected H18 pool seed IDs are unavailable")
-    seeds = tuple(raw_seeds)
+    if allocation_event is None:
+        allocation_event = expected_allocation
+    elif allocation_event != expected_allocation:
+        raise EvaluationIntegrityError("H19 allocation does not match its private pool ledger")
+    pool = pool_manifests[role]
+    seeds = tuple(pool.get("seed_ids", []))
     _validate_selected_seeds(stage, seeds)
     preflight = {
-        "round_id": ROUND009_ID,
-        "pool_id": pool.get("pool_id"),
+        "round_id": ROUND_ID, "pool_id": pool.get("pool_id"),
         "pool_manifest_sha256": pool.get("manifest_sha256"),
-        "inventory_sha256": inventory_sha256,
-        "ledger_sha256": ledger.get("ledger_sha256"),
-        "source_count": len(source_audit),
-        "unique_excluded_seed_count": len(excluded),
-        "stage": stage,
-        "seed_count": len(seeds),
+        "inventory_id": inventory.get("inventory_id"), "inventory_sha256": inventory_sha256,
+        "ledger_sha256": ledger.get("ledger_sha256"), "source_count": len(source_audit),
+        "unique_excluded_seed_count": len(excluded), "stage": stage, "seed_count": len(seeds),
         "seed_disjointness_verified": True,
     }
     return pool, seeds, preflight, allocation_event
 
 
 def _validate_private_paths(
-    pools_dir: Path, trial_id: str, stage: str, output_dir: Path, usage_path: Path
+    pools_dir: Path, trial_id: str, stage: str, output_dir: Path, usage_path: Path,
+    inventory_path: Path, identity_lock_path: Path,
 ) -> None:
-    if trial_id not in TRIAL_POOL_ROLE or stage not in TRIAL_POOL_ROLE[trial_id]:
-        raise EvaluationIntegrityError("H16/H17 trial or stage is not registered")
+    if trial_id != "h19" or stage not in TRIAL_POOL_ROLE["h19"]:
+        raise EvaluationIntegrityError("only newly registered H19 stages may execute")
     pools_dir = pools_dir.resolve()
-    round_parts = TRIAL_ROUND_IDS[trial_id].split("-")
-    round_prefix = "-".join(round_parts[:2])
-    round_date = round_parts[2]
+    parts = ROUND_ID.split("-")
+    round_prefix = "-".join(parts[:2])
+    round_date = parts[2]
     expected_output = pools_dir.parent.parent / f"{round_prefix}-{trial_id}-{stage}-{round_date}"
     expected_usage = pools_dir.parent / f"{trial_id}-usage-private.jsonl"
     if output_dir.resolve() != expected_output.resolve() or usage_path.resolve() != expected_usage.resolve():
-        raise EvaluationIntegrityError("trial requires canonical private output and usage paths")
+        raise EvaluationIntegrityError("H19 requires canonical private output and usage paths")
     repo = REPO_ROOT.resolve()
-    for path in (output_dir.resolve(), usage_path.resolve()):
+    for path in (pools_dir, output_dir.resolve(), usage_path.resolve(), inventory_path.resolve(), identity_lock_path.resolve()):
         if path == repo or repo in path.parents:
-            raise EvaluationIntegrityError("raw trial records must remain outside the repository")
+            raise EvaluationIntegrityError("raw trial data and identity locks must remain outside the repository")
     if output_dir.exists():
         raise EvaluationIntegrityError("stage output already exists; refusing to reuse it")
 
@@ -385,34 +273,53 @@ def _validate_pinned_gameplay_manifest(path: Path) -> str:
     return PINNED_GAMEPLAY_COMMIT
 
 
-def _validate_identity(module_dir: Path, armg_root: Path, checkpoint: Path) -> dict[str, str]:
+def _validate_identity(
+    module_dir: Path, armg_root: Path, checkpoint: Path, identity_lock_path: Path,
+    trial_id: str, candidate_commit: str,
+) -> dict[str, str]:
+    try:
+        lock = h15._read_json(identity_lock_path)
+    except Exception as exc:
+        raise EvaluationIntegrityError("private H19 identity lock could not be read") from exc
+    if not isinstance(lock, dict):
+        raise EvaluationIntegrityError("private H19 identity lock must be an object")
+    expected_hashes = lock.get("expected_sha256")
+    if (
+        lock.get("schema_version") != PRIVATE_IDENTITY_SCHEMA_VERSION
+        or lock.get("trial_id") != trial_id
+        or trial_id != "h19"
+        or lock.get("candidate_commit") != candidate_commit
+        or lock.get("simulator_gameplay_commit") != PINNED_GAMEPLAY_COMMIT
+        or lock.get("mcts_sims") != 2000
+        or MCTS_SIMS != 2000
+        or not isinstance(expected_hashes, dict)
+        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS)
+        or any(not _valid_sha256(value) for value in expected_hashes.values())
+    ):
+        raise EvaluationIntegrityError("private H19 identity lock does not match the preregistered identity")
     simulator_source = REPO_ROOT / "src" / "roguelike_ai" / "sts1_phase3" / "simulator.py"
-    simulator_upstream_manifest = REPO_ROOT / "external" / "sts_lightspeed" / "UPSTREAM.json"
-    binding = module_dir / "slaythespire.cp312-win_amd64.pyd"
-    armg_source = armg_root / "armG_train.py"
-    armg_vocab = armg_root / "armS_card_vocab.json"
-    expected = {
-        "simulator_binding_sha256": (binding, PINNED_BINDING_SHA256),
-        "armg_source_sha256": (armg_source, ARMG_SHA256),
-        "armg_vocab_sha256": (armg_vocab, ARMG_VOCAB_SHA256),
-        "g7_checkpoint_sha256": (checkpoint, G7_SHA256),
+    upstream = REPO_ROOT / "external" / "sts_lightspeed" / "UPSTREAM.json"
+    actual_paths = {
+        "simulator_binding_sha256": module_dir / "slaythespire.cp312-win_amd64.pyd",
+        "armg_source_sha256": armg_root / "armG_train.py",
+        "armg_vocab_sha256": armg_root / "armS_card_vocab.json",
+        "g7_checkpoint_sha256": checkpoint,
+        "simulator_policy_source_sha256": simulator_source,
+        "candidate_evaluator_sha256": Path(__file__).resolve(),
     }
     identities: dict[str, str] = {}
-    for name, (path, digest) in expected.items():
-        if not path.is_file() or _sha256(path) != digest:
+    for name in PRIVATE_IDENTITY_KEYS:
+        path = actual_paths[name]
+        digest = _sha256(path) if path.is_file() else None
+        if digest != expected_hashes[name]:
             raise EvaluationIntegrityError(f"pinned {name} identity mismatch")
         identities[name] = digest
     if Path(str(checkpoint) + ".adapter.pt").exists():
         raise EvaluationIntegrityError("pinned G7 checkpoint has an adapter sidecar")
-    if not simulator_source.is_file():
-        raise EvaluationIntegrityError("H16 simulator policy hook source is missing")
     if os.environ.get("STS1_TEACHER_V2_CONTEXTUAL_RERANK", "0") == "1":
         raise EvaluationIntegrityError("contextual Teacher reranking must be disabled")
-    identities["simulator_gameplay_commit"] = _validate_pinned_gameplay_manifest(
-        simulator_upstream_manifest
-    )
-    identities["simulator_policy_source_sha256"] = _sha256(simulator_source)
-    identities["candidate_evaluator_sha256"] = _sha256(Path(__file__).resolve())
+    identities["simulator_gameplay_commit"] = _validate_pinned_gameplay_manifest(upstream)
+    identities["identity_lock_sha256"] = _sha256(identity_lock_path)
     return identities
 
 
@@ -425,83 +332,55 @@ def _git_head() -> str:
             stderr=subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise EvaluationIntegrityError("local H16 candidate commit could not be verified") from exc
+        raise EvaluationIntegrityError("local H19 candidate commit could not be verified") from exc
 
 
-def _stage_summary(
-    events: list[dict[str, Any]], stage: str, trial_id: str
-) -> dict[str, Any] | None:
+def _stage_summary(events: list[dict[str, Any]], stage: str, trial_id: str) -> dict[str, Any] | None:
     rows = [
-        event
-        for event in events
+        event for event in events
         if event.get("record_type") == f"{trial_id}_stage_summary"
-        and event.get("stage") == stage
-        and event.get("trial_id", "h16" if trial_id == "h16" else None) == trial_id
+        and event.get("stage") == stage and event.get("trial_id") == trial_id
     ]
     return rows[-1] if rows else None
 
 
 def _validate_transition(
-    *, trial_id: str, stage: str, events: list[dict[str, Any]], candidate_commit: str, identities: dict[str, str]
+    *, trial_id: str, stage: str, events: list[dict[str, Any]],
+    allocation_event: dict[str, Any], candidate_commit: str, identities: dict[str, str],
 ) -> None:
-    if trial_id not in TRIAL_POOL_ROLE or stage not in TRIAL_POOL_ROLE[trial_id]:
-        raise EvaluationIntegrityError("trial or stage is not registered")
-
-    allocation_rows = [
-        event
-        for event in events
-        if event.get("record_type") in {"h17_pool_allocation", "h18_pool_allocation"}
-    ]
-    if trial_id == "h17":
-        if (
-            len(allocation_rows) != 1
-            or not events
-            or _without_private_hashes(events[0]) != EXPECTED_H17_ALLOCATION
-        ):
-            raise EvaluationIntegrityError("H17 usage ledger lacks its exact first allocation record")
-    elif trial_id == "h18":
-        if (
-            len(allocation_rows) != 1
-            or not events
-            or _without_private_hashes(events[0]) != EXPECTED_H18_ALLOCATION
-        ):
-            raise EvaluationIntegrityError("H18 usage ledger lacks its exact first allocation record")
-    elif allocation_rows:
-        raise EvaluationIntegrityError("H16 usage ledger contains a later-trial allocation record")
-
+    if trial_id != "h19" or stage not in TRIAL_POOL_ROLE["h19"]:
+        raise EvaluationIntegrityError("trial or stage is not registered for this evaluator")
+    allocation_rows = [event for event in events if event.get("record_type") == "h19_pool_allocation"]
+    if (
+        len(allocation_rows) != 1 or not events or events[0] != allocation_event
+        or allocation_event.get("trial_id") != trial_id or allocation_event.get("round_id") != ROUND_ID
+    ):
+        raise EvaluationIntegrityError("H19 usage ledger lacks its exact private pool allocation record")
     stage_start_type = f"{trial_id}_stage_start"
     if any(
-        event.get("record_type") == stage_start_type
-        and event.get("trial_id", "h16" if trial_id == "h16" else None) == trial_id
-        and event.get("stage") == stage
-        for event in events
+        event.get("record_type") == stage_start_type and event.get("trial_id") == trial_id
+        and event.get("stage") == stage for event in events
     ):
         raise EvaluationIntegrityError("stage has already been attempted; its pool cannot be rerun")
     if stage == "train":
-        if trial_id in {"h17", "h18"}:
-            expected_allocation = EXPECTED_H17_ALLOCATION if trial_id == "h17" else EXPECTED_H18_ALLOCATION
-            if len(events) != 1 or _without_private_hashes(events[0]) != expected_allocation:
-                raise EvaluationIntegrityError("train stage requires its exact first private allocation record")
-        elif events:
-            raise EvaluationIntegrityError("train stage requires its exact new private allocation record")
+        if len(events) != 1:
+            raise EvaluationIntegrityError("H19 train stage requires only its new pool allocation record")
         return
-
-    predecessor = "train" if stage == "probe" else "probe"
+    predecessor = {"probe": "train", "dev": "probe"}.get(stage)
+    if predecessor is None:
+        raise EvaluationIntegrityError("stage is not registered for H19 exploration")
     prior = _stage_summary(events, predecessor, trial_id)
     if not isinstance(prior, dict) or prior.get("status") != "COMPLETE":
         raise EvaluationIntegrityError("required preceding stage is not complete")
-    if prior.get("trial_id", "h16" if trial_id == "h16" else None) != trial_id:
+    if prior.get("trial_id") != trial_id:
         raise EvaluationIntegrityError("usage ledger belongs to a different trial")
     if prior.get("candidate_commit") != candidate_commit:
         raise EvaluationIntegrityError("candidate commit changed between stages")
     for key in (
-        "simulator_policy_source_sha256",
-        "candidate_evaluator_sha256",
-        "simulator_binding_sha256",
-        "armg_source_sha256",
-        "armg_vocab_sha256",
-        "g7_checkpoint_sha256",
-        "simulator_gameplay_commit",
+        "simulator_policy_source_sha256", "candidate_evaluator_sha256",
+        "simulator_binding_sha256", "armg_source_sha256", "armg_vocab_sha256",
+        "g7_checkpoint_sha256", "simulator_gameplay_commit", "identity_lock_sha256",
+        "stage_gate_protocol_version",
     ):
         if prior.get(key) != identities.get(key):
             raise EvaluationIntegrityError("policy, evaluator, simulator, or parent changed between stages")
@@ -512,13 +391,13 @@ def _validate_transition(
 def _check_pair_integrity(path: Path, result: dict[str, Any]) -> None:
     h2._check_evidence(path, result, candidate=False)
     if result.get("outcome") not in {"victory", "defeat"} or result.get("error") is not None:
-        raise EvaluationIntegrityError("H16 episode has no complete terminal outcome")
+        raise EvaluationIntegrityError("H19 episode has no complete terminal outcome")
     for key in ("illegal_action_count", "timeout_count", "crash_count", "communication_error_count"):
         value = result.get(key)
         if not isinstance(value, int) or isinstance(value, bool) or value != 0:
             raise EvaluationIntegrityError("canonical safety counter was nonzero or unavailable")
     if result.get("potion_inventory_snapshot_complete") is not True:
-        raise EvaluationIntegrityError("H16 complete potion inventory was not recorded")
+        raise EvaluationIntegrityError("H19 complete potion inventory was not recorded")
 
 
 SAFETY_COUNTERS = (
@@ -543,10 +422,10 @@ def _empty_coverage() -> dict[str, int]:
 
 def _accumulate_coverage(total: dict[str, int], stats: dict[str, int]) -> None:
     if set(stats) != set(TRACE_COVERAGE_FIELDS):
-        raise EvaluationIntegrityError("H16 trace coverage fields are incomplete")
+        raise EvaluationIntegrityError("H19 trace coverage fields are incomplete")
     for key, value in stats.items():
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise EvaluationIntegrityError("H16 trace coverage counter is invalid")
+            raise EvaluationIntegrityError("H19 trace coverage counter is invalid")
         total[key] += value
 
 
@@ -713,6 +592,15 @@ def _stage_gate(
         raise EvaluationIntegrityError("stage has no registered advancement configuration")
     if not isinstance(hard_guards_passed, bool):
         raise EvaluationIntegrityError("hard safety and integrity gate is unavailable")
+    _validate_stage_paired_summary(stage, paired)
+    expected_count = config["paired_seed_count"]
+    if (
+        not isinstance(effective_override_seed_count, int)
+        or isinstance(effective_override_seed_count, bool)
+        or effective_override_seed_count < 0
+        or effective_override_seed_count > expected_count
+    ):
+        raise EvaluationIntegrityError("effective override seed coverage is unavailable or invalid")
     coverage_required = config["minimum_override_seed_coverage"]
     coverage_passed = effective_override_seed_count >= coverage_required
     if stage in {"train", "probe"}:
@@ -727,6 +615,7 @@ def _stage_gate(
         "stage_signal_passed": stage_signal,
         "hard_guards_passed": hard_guards_passed,
         "advance_eligible": bool(stage_signal and hard_guards_passed),
+        "stage_gate_protocol_version": STAGE_GATE_PROTOCOL_VERSION,
     }
 
 
@@ -802,6 +691,130 @@ def _terminal_floor_hp_diagnostic(pairs: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+def _validate_terminal_floor_hp_diagnostic(
+    diagnostic: Any, expected_pair_count: int
+) -> None:
+    if (
+        not isinstance(diagnostic, dict)
+        or diagnostic.get("purpose") != "secondary_diagnostic_only"
+        or diagnostic.get("blocking") is not False
+    ):
+        raise EvaluationIntegrityError("terminal floor/HP diagnostics are unavailable or misclassified")
+    relations = diagnostic.get("candidate_relation_counts")
+    deltas = diagnostic.get("paired_delta_summary")
+    by_outcome = diagnostic.get("by_paired_outcome")
+    groups = ("both_defeat", "both_victory", "candidate_only", "parent_only")
+
+    def validate_delta_summary(summary: Any, expected_count: int) -> bool:
+        if (
+            not isinstance(summary, dict)
+            or not isinstance(summary.get("count"), int)
+            or isinstance(summary.get("count"), bool)
+            or summary["count"] != expected_count
+        ):
+            return False
+        values = (summary.get("min"), summary.get("median"), summary.get("mean"), summary.get("max"))
+        if expected_count == 0:
+            return all(value is None for value in values)
+        return all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            for value in values
+        )
+
+    for metric in ("terminal_floor", "final_hp"):
+        metric_relations = relations.get(metric) if isinstance(relations, dict) else None
+        if (
+            not isinstance(metric_relations, dict)
+            or any(
+                not isinstance(metric_relations.get(relation), int)
+                or isinstance(metric_relations.get(relation), bool)
+                or metric_relations[relation] < 0
+                for relation in ("lower", "equal", "higher")
+            )
+            or sum(metric_relations[relation] for relation in ("lower", "equal", "higher"))
+            != expected_pair_count
+        ):
+            raise EvaluationIntegrityError("terminal floor/HP relation counts are incomplete")
+        metric_delta = deltas.get(metric) if isinstance(deltas, dict) else None
+        if not validate_delta_summary(metric_delta, expected_pair_count):
+            raise EvaluationIntegrityError("terminal floor/HP paired-delta summary is incomplete")
+    if not isinstance(by_outcome, dict) or set(by_outcome) != set(groups):
+        raise EvaluationIntegrityError("terminal floor/HP outcome strata are incomplete")
+    stratum_total = 0
+    for group in groups:
+        stratum = by_outcome[group]
+        if not isinstance(stratum, dict):
+            raise EvaluationIntegrityError("terminal floor/HP outcome stratum is invalid")
+        pair_count = stratum.get("pair_count")
+        if not isinstance(pair_count, int) or isinstance(pair_count, bool) or pair_count < 0:
+            raise EvaluationIntegrityError("terminal floor/HP outcome stratum count is invalid")
+        stratum_total += pair_count
+        for key in ("terminal_floor_delta", "final_hp_delta"):
+            summary = stratum.get(key)
+            if not validate_delta_summary(summary, pair_count):
+                raise EvaluationIntegrityError("terminal floor/HP outcome-stratified deltas are incomplete")
+    if stratum_total != expected_pair_count:
+        raise EvaluationIntegrityError("terminal floor/HP outcome strata do not cover every pair")
+
+
+def _validate_stage_paired_summary(stage: str, paired: Any) -> None:
+    config = STAGE_CONFIG.get(stage)
+    if not isinstance(config, dict) or not isinstance(paired, dict):
+        raise EvaluationIntegrityError("paired outcome summary is unavailable for the registered stage")
+    count = config["paired_seed_count"]
+    int_keys = (
+        "parent_wins",
+        "candidate_wins",
+        "candidate_only_wins",
+        "parent_only_wins",
+        "net_wins",
+        "discordant_pairs",
+    )
+    if any(
+        not isinstance(paired.get(key), int) or isinstance(paired.get(key), bool)
+        for key in int_keys
+    ):
+        raise EvaluationIntegrityError("paired outcome summary lacks canonical integer counters")
+    bounded_keys = (
+        "parent_wins",
+        "candidate_wins",
+        "candidate_only_wins",
+        "parent_only_wins",
+        "discordant_pairs",
+    )
+    if any(paired[key] < 0 or paired[key] > count for key in bounded_keys):
+        raise EvaluationIntegrityError("paired outcome counters are outside the registered denominator")
+    p_value = paired.get("exact_one_sided_sign_p_candidate_positive")
+    if not isinstance(p_value, (int, float)) or isinstance(p_value, bool) or not math.isfinite(p_value):
+        raise EvaluationIntegrityError("paired outcome summary lacks a finite exact sign-test value")
+    candidate_only = paired["candidate_only_wins"]
+    parent_only = paired["parent_only_wins"]
+    both_wins = paired["parent_wins"] - parent_only
+    both_losses = count - both_wins - candidate_only - parent_only
+    if both_wins < 0 or both_losses < 0:
+        raise EvaluationIntegrityError("paired outcome summary is internally inconsistent")
+    parent_outcomes = (
+        ["victory"] * both_wins
+        + ["victory"] * parent_only
+        + ["defeat"] * candidate_only
+        + ["defeat"] * both_losses
+    )
+    candidate_outcomes = (
+        ["victory"] * both_wins
+        + ["defeat"] * parent_only
+        + ["victory"] * candidate_only
+        + ["defeat"] * both_losses
+    )
+    expected = h3._paired_summary_for_stage(parent_outcomes, candidate_outcomes)
+    if any(
+        paired.get(key) != expected[key]
+        for key in (*int_keys, "exact_one_sided_sign_p_candidate_positive")
+    ):
+        raise EvaluationIntegrityError("paired outcome summary counters or sign-test value disagree")
+
+
 def _confirmation_alpha(trial_k: int, prior_trial_ks: list[int]) -> float:
     if (
         not isinstance(trial_k, int) or isinstance(trial_k, bool) or trial_k < 1
@@ -833,6 +846,7 @@ def _confirmation_gate(
     if (
         batch_a.get("stage") != "confirmation_a"
         or batch_b.get("stage") != "confirmation_b"
+        or any(batch.get("stage_gate_protocol_version") != STAGE_GATE_PROTOCOL_VERSION for batch in batches)
         or any(batch.get("status") != "COMPLETE" for batch in batches)
         or any(batch.get("hard_guards_passed") is not True for batch in batches)
         or any(batch.get("seed_disjointness_verified") is not True for batch in batches)
@@ -842,6 +856,9 @@ def _confirmation_gate(
         or any(batch_a.get(key) != batch_b.get(key) for key in identity_keys)
     ):
         raise EvaluationIntegrityError("confirmation batches are incomplete, unsafe, overlapping, or unfrozen")
+
+    for batch in batches:
+        _validate_terminal_floor_hp_diagnostic(batch.get("terminal_floor_hp_diagnostic"), 100)
 
     parent_outcomes: list[str] = []
     candidate_outcomes: list[str] = []
@@ -879,6 +896,11 @@ def _confirmation_gate(
         "both_batches_positive_net": all(net > 0 for net in batch_nets),
         "minimum_combined_net_passed": paired["net_wins"] >= 10,
         "sign_test_passed": alpha_passed,
+        "stage_gate_protocol_version": STAGE_GATE_PROTOCOL_VERSION,
+        "terminal_floor_hp_diagnostics": {
+            "confirmation_a": batch_a["terminal_floor_hp_diagnostic"],
+            "confirmation_b": batch_b["terminal_floor_hp_diagnostic"],
+        },
         "accepted": (
             all(net > 0 for net in batch_nets)
             and paired["net_wins"] >= 10
@@ -910,7 +932,7 @@ def _run_episode(
     evidence_path = output_dir / f"{stem}.evidence.ndjson"
     trace_path = output_dir / f"{stem}.trace.ndjson"
     if evidence_path.exists() or (trace_mode == "on" and trace_path.exists()):
-        raise EvaluationIntegrityError("H16 episode output already exists; refusing to reuse a seed")
+        raise EvaluationIntegrityError("H19 episode output already exists; refusing to reuse a seed")
     training_seeds, heldout_seeds = _stage_seed_roles(identity["stage"], stage_seeds)
     metadata = {
         **identity,
@@ -944,7 +966,7 @@ def _run_episode(
     )
     _check_pair_integrity(evidence_path, result)
     if result.get("lethal_intent_defend_rescue_enabled") is not candidate:
-        raise EvaluationIntegrityError("H16 policy activation flag differs from the requested arm")
+        raise EvaluationIntegrityError("H19 policy activation flag differs from the requested arm")
     if trace_mode == "on":
         trace_stats = h7._validate_trace(trace_path, result, metadata)
         events = list(h7._read_jsonl(trace_path))
@@ -958,9 +980,9 @@ def _run_episode(
     ]
     override_events = [event for event in combat_events if event.get("lethal_intent_defend_override") is True]
     if trace_mode == "on" and len(override_events) != result.get("lethal_intent_defend_override_count"):
-        raise EvaluationIntegrityError("H16 trace and result override counts differ")
+        raise EvaluationIntegrityError("H19 trace and result override counts differ")
     if not candidate and override_events:
-        raise EvaluationIntegrityError("unchanged G7 parent unexpectedly recorded an H16 override")
+        raise EvaluationIntegrityError("unchanged G7 parent unexpectedly recorded an H19 override")
     for event in override_events:
         detail = event.get("lethal_intent_defend_detail")
         selected = event.get("selected_action")
@@ -981,15 +1003,15 @@ def _run_episode(
             or detail.get("incoming_damage", -1) < detail.get("player_hp", 0) + detail.get("player_block", 0)
             or detail.get("selected_defend_base_block", -1) < detail.get("projected_deficit", 0)
         ):
-            raise EvaluationIntegrityError("H16 override did not select a legal registered Defend action")
+            raise EvaluationIntegrityError("H19 override did not select a legal registered Defend action")
     reasons = Counter(
         str(event.get("lethal_intent_defend_reason", "missing")) for event in combat_events
     )
     if candidate and sum(reasons.values()) != len(combat_events):
-        raise EvaluationIntegrityError("H16 candidate trace lacks per-decision reasons")
+        raise EvaluationIntegrityError("H19 candidate trace lacks per-decision reasons")
     for artifact in (evidence_path, trace_path) if trace_mode == "on" else (evidence_path,):
         if artifact.stat().st_size > MAX_EPISODE_BYTES:
-            raise EvaluationIntegrityError("H16 private episode artifact exceeded its bound")
+            raise EvaluationIntegrityError("H19 private episode artifact exceeded its bound")
     action_signature, action_count = _evidence_action_signature(evidence_path)
     return (
         result,
@@ -1011,18 +1033,18 @@ def _artifact_manifest(output_dir: Path) -> tuple[list[dict[str, Any]], int]:
             continue
         size = path.stat().st_size
         if size > MAX_EPISODE_BYTES:
-            raise EvaluationIntegrityError("an H16 raw artifact exceeds the per-file limit")
+            raise EvaluationIntegrityError("an H19 raw artifact exceeds the per-file limit")
         total += size
         if total > MAX_TOTAL_BYTES:
-            raise EvaluationIntegrityError("H16 raw artifacts exceed the total-size limit")
+            raise EvaluationIntegrityError("H19 raw artifacts exceed the total-size limit")
         entries.append({"name": path.relative_to(output_dir).as_posix(), "bytes": size, "sha256": _sha256(path)})
     return entries, total
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--trial-id", choices=tuple(TRIAL_POOL_ROLE), default="h16")
-    parser.add_argument("--stage", choices=tuple(STAGE_CONFIG), default="train")
+    parser.add_argument("--trial-id", choices=ACTIVE_TRIAL_IDS, default="h19")
+    parser.add_argument("--stage", choices=("train", "probe", "dev"), default="train")
     parser.add_argument("--pool-file", type=Path, required=True)
     parser.add_argument("--pools-dir", type=Path, required=True)
     parser.add_argument("--exclusion-inventory", type=Path, required=True)
@@ -1031,6 +1053,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--g7-checkpoint", type=Path, required=True)
     parser.add_argument("--private-output-dir", type=Path, required=True)
     parser.add_argument("--private-usage-ledger", type=Path, required=True)
+    parser.add_argument("--private-identity-lock", type=Path, required=True)
     parser.add_argument("--candidate-commit", required=True)
     parser.add_argument("--preflight-only", action="store_true")
     return parser
@@ -1043,40 +1066,30 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = args.private_output_dir.resolve()
     usage_path = args.private_usage_ledger.resolve()
     try:
-        _validate_private_paths(args.pools_dir.resolve(), trial_id, stage, output_dir, usage_path)
+        _validate_private_paths(
+            args.pools_dir.resolve(), trial_id, stage, output_dir, usage_path,
+            args.exclusion_inventory.resolve(), args.private_identity_lock.resolve(),
+        )
         if len(args.candidate_commit) != 40 or args.candidate_commit != _git_head():
             raise EvaluationIntegrityError("candidate commit does not match the frozen local HEAD")
         identities = _validate_identity(
-            args.module_dir.resolve(), args.armg_root.resolve(), args.g7_checkpoint.resolve()
+            args.module_dir.resolve(), args.armg_root.resolve(), args.g7_checkpoint.resolve(),
+            args.private_identity_lock.resolve(), trial_id, args.candidate_commit,
         )
+        identities["stage_gate_protocol_version"] = STAGE_GATE_PROTOCOL_VERSION
         events = _read_jsonl(usage_path)
-        if trial_id == "h18":
-            allocation_event = events[0] if events else None
-            pool, seeds, pool_preflight, allocation_event = _round009_assets(
-                trial_id=trial_id,
-                stage=stage,
-                pool_file=args.pool_file.resolve(),
-                pools_dir=args.pools_dir.resolve(),
-                inventory_path=args.exclusion_inventory.resolve(),
-                allocation_event=allocation_event,
-            )
-            if not events:
-                _append_jsonl(usage_path, allocation_event)
-                events = [allocation_event]
-        else:
-            pool, seeds, pool_preflight = _round008_assets(
-                trial_id=trial_id,
-                stage=stage,
-                pool_file=args.pool_file.resolve(),
-                pools_dir=args.pools_dir.resolve(),
-                inventory_path=args.exclusion_inventory.resolve(),
-            )
+        allocation_event = events[0] if events else None
+        pool, seeds, pool_preflight, allocation_event = _round010_assets(
+            trial_id=trial_id, stage=stage, pool_file=args.pool_file.resolve(),
+            pools_dir=args.pools_dir.resolve(), inventory_path=args.exclusion_inventory.resolve(),
+            allocation_event=allocation_event,
+        )
+        if not events:
+            _append_jsonl(usage_path, allocation_event)
+            events = [allocation_event]
         _validate_transition(
-            trial_id=trial_id,
-            stage=stage,
-            events=events,
-            candidate_commit=args.candidate_commit,
-            identities=identities,
+            trial_id=trial_id, stage=stage, events=events, allocation_event=allocation_event,
+            candidate_commit=args.candidate_commit, identities=identities,
         )
         sts = _load_sts(args.module_dir.resolve())
         policy = ArmGNoncombatPolicy(
@@ -1096,35 +1109,38 @@ def main(argv: list[str] | None = None) -> int:
         "paired_seed_count": STAGE_CONFIG[stage]["paired_seed_count"],
         "candidate_commit": args.candidate_commit,
         "mcts_sims": MCTS_SIMS,
-        "g7_checkpoint_sha256": G7_SHA256,
+        "g7_checkpoint_sha256": identities["g7_checkpoint_sha256"],
+        "stage_gate_protocol_version": STAGE_GATE_PROTOCOL_VERSION,
         **identities,
         **pool_preflight,
     }
     if args.preflight_only:
+        episode_counts = _stage_episode_counts(trial_id, stage, len(seeds))
         print(json.dumps({
             "status": "PREFLIGHT_PASS",
             "trial_id": trial_id,
             "stage": stage,
             "seed_count": len(seeds),
-            "paired_episode_count": 2 * len(seeds),
-            "trace_invariance_replay_count": int(trial_id == "h18" and stage == "train"),
+            **episode_counts,
             "candidate_commit": args.candidate_commit,
             "simulator_gameplay_commit": identities["simulator_gameplay_commit"],
+            "stage_gate_protocol_version": STAGE_GATE_PROTOCOL_VERSION,
             "simulator_policy_source_sha256": identities["simulator_policy_source_sha256"],
             "candidate_evaluator_sha256": identities["candidate_evaluator_sha256"],
             "simulator_binding_sha256": identities["simulator_binding_sha256"],
             "armg_source_sha256": identities["armg_source_sha256"],
             "armg_vocab_sha256": identities["armg_vocab_sha256"],
-            "g7_checkpoint_sha256": G7_SHA256,
+            "g7_checkpoint_sha256": identities["g7_checkpoint_sha256"],
             "seed_disjointness_verified": pool_preflight.get("seed_disjointness_verified") is True,
         }, sort_keys=True))
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=False)
     started_at = datetime.now(timezone.utc).isoformat()
-    replay_count = int(trial_id == "h18" and stage == "train")
-    paired_episode_count = 2 * len(seeds)
-    expected_episodes = paired_episode_count + replay_count
+    episode_counts = _stage_episode_counts(trial_id, stage, len(seeds))
+    replay_count = episode_counts["trace_invariance_replay_count"]
+    paired_episode_count = episode_counts["paired_episode_count"]
+    expected_episodes = episode_counts["expected_episodes"]
     _append_jsonl(usage_path, {
         "record_type": f"{trial_id}_stage_start",
         **identity,
@@ -1174,7 +1190,7 @@ def main(argv: list[str] | None = None) -> int:
             legal_trace_episodes += 1
             _accumulate_coverage(parent_trace_totals, parent_stats)
             if parent_overrides != 0 or parent.get("lethal_intent_defend_override_count") != 0:
-                raise EvaluationIntegrityError("G7 parent arm had a registered H16/H17 action override")
+                raise EvaluationIntegrityError("G7 parent arm had a registered H19 action override")
 
             print(f"{trial_id.upper()} {stage} pair {pair_index}/{len(seeds)}: candidate")
             episodes_attempted += 1
@@ -1202,8 +1218,8 @@ def main(argv: list[str] | None = None) -> int:
                 effective_override_seed_count += 1
             candidate_reasons.update(reasons)
 
-            if trial_id == "h18" and stage == "train" and pair_index == 1:
-                print("H18 train trace-invariance replay (candidate, trace off)")
+            if trial_id == "h19" and stage == "train" and pair_index == 1:
+                print("H19 train trace-invariance replay (candidate, trace off)")
                 episodes_attempted += 1
                 (
                     replay, replay_path, _, replay_overrides, replay_reasons,
@@ -1360,6 +1376,7 @@ def main(argv: list[str] | None = None) -> int:
             "candidate_trace_coverage": candidate_trace_totals,
             "hard_guards_passed": hard_guards_passed,
             "terminal_floor_hp_diagnostic": terminal_diagnostic,
+            "stage_gate_protocol_version": STAGE_GATE_PROTOCOL_VERSION,
             "safety": safety,
             "advance_eligible": advance_eligible,
             "pairs": rows,
@@ -1406,6 +1423,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "hard_guards_passed": hard_guards_passed,
             "terminal_floor_hp_diagnostic": terminal_diagnostic,
+            "stage_gate_protocol_version": STAGE_GATE_PROTOCOL_VERSION,
             "advance_eligible": advance_eligible,
             "safety": safety,
             "candidate_commit": args.candidate_commit,
@@ -1438,3 +1456,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

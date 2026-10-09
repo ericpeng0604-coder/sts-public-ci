@@ -9,35 +9,69 @@
       "manifest_sha256": "b8eb7b9c625a5d9cc0c3ab8f6a53479546b171a5a7ff00a511489b5771ffaa78",
       "pool_id": "round-001-20261008-dev",
       "purpose": "dev",
-      "status": "GENERATED_NOT_RUN"
+      "status": "COMPLETED",
+      "paired_results": {
+        "g7_wins": 4,
+        "candidate_wins": 2,
+        "candidate_only": 0,
+        "g7_only": 2,
+        "net": -2,
+        "exact_one_sided_sign_p": 1
+      }
     },
     "probe": {
       "count": 10,
       "manifest_sha256": "f97ce28a2063c37ea93c24397703133598344971249b35d8fa05f6e6dfc2ceb1",
       "pool_id": "round-001-20261008-probe",
       "purpose": "probe",
-      "status": "GENERATED_NOT_RUN"
+      "status": "COMPLETED",
+      "paired_results": {
+        "g7_wins": 1,
+        "candidate_wins": 2,
+        "candidate_only": 2,
+        "g7_only": 1,
+        "net": 1,
+        "exact_one_sided_sign_p": 0.5
+      }
     },
     "train_hypothesis_1": {
       "count": 10,
       "manifest_sha256": "eff9960687e4757eb95900227a631a8e57980a3cf29dc809c06cccc6f59dfec3",
       "pool_id": "round-001-20261008-train_hypothesis_1",
       "purpose": "train",
-      "status": "GENERATED_NOT_RUN"
+      "status": "COMPLETED_TRAIN_ITERATIONS",
+      "paired_results": {
+        "initial_policy": {
+          "g7_wins": 1,
+          "candidate_wins": 0,
+          "candidate_only": 0,
+          "g7_only": 1,
+          "net": -1,
+          "exact_one_sided_sign_p": 1
+        },
+        "refined_policy": {
+          "g7_wins": 1,
+          "candidate_wins": 1,
+          "candidate_only": 0,
+          "g7_only": 0,
+          "net": 0,
+          "exact_one_sided_sign_p": 1
+        }
+      }
     },
     "train_hypothesis_2": {
       "count": 10,
       "manifest_sha256": "a963c61eed86233dd39972d4955718f7cd2ed3bfb3a6903327122145fe57aa47",
       "pool_id": "round-001-20261008-train_hypothesis_2",
       "purpose": "train",
-      "status": "GENERATED_NOT_RUN"
+      "status": "NOT_RUN_STALE_INVENTORY"
     },
     "train_hypothesis_3": {
       "count": 10,
       "manifest_sha256": "061c2c60113387f03ca65f4e3c93f346393c6bcb57d1d184f52960b5e09002c2",
       "pool_id": "round-001-20261008-train_hypothesis_3",
       "purpose": "train",
-      "status": "GENERATED_NOT_RUN"
+      "status": "NOT_RUN"
     }
   },
   "raw_manifests": "PRIVATE_LOCAL_STORAGE_ONLY",
@@ -45,5 +79,8 @@
   "round_id": "round-001-20261008",
   "schema_version": "sts1-g7-seed-public-summary-v1",
   "source_audit_sha256": "80c33341bd6740e6c6ea2ecbae99a81206cdaf1b9369f561dd242f11a460e044",
-  "status": "GENERATED_NOT_RUN"
+  "status": "PARTIALLY_COMPLETED",
+  "status_as_of_generation": "GENERATED_NOT_RUN",
+  "status_updated_at": "2026-10-09",
+  "h1_report": "evidence/sts1/g7-improvement/seeds/round-001/potion-reserve-round-report.md"
 }

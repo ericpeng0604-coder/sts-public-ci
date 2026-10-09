@@ -618,6 +618,138 @@ def _diagnostic_map_route(
     return trace
 
 
+def _apply_low_hp_elite_route_avoidance(
+    recommended_index: int,
+    scores: Sequence[Any],
+    route: Mapping[str, Any] | None,
+    *,
+    current_hp: Any,
+    max_hp: Any,
+    known_room_names: set[str],
+) -> tuple[int, dict[str, Any]]:
+    """Avoid an immediate Elite below half HP, using only current legal choices.
+
+    The fallback is fail-closed: incomplete route, room, HP, or score data leaves
+    the original ArmG recommendation untouched.
+    """
+
+    detail: dict[str, Any] = {
+        "kind": "avoid_elite_below_half_hp",
+        "threshold_ratio": 0.5,
+        "hp_before": current_hp if isinstance(current_hp, (int, float)) and not isinstance(current_hp, bool) else None,
+        "max_hp_before": max_hp if isinstance(max_hp, (int, float)) and not isinstance(max_hp, bool) else None,
+        "hp_ratio": None,
+        "recommended_index": recommended_index,
+        "actual_index": recommended_index,
+        "recommended_room": None,
+        "actual_room": None,
+        "recommended_score": None,
+        "actual_score": None,
+        "status": "unchanged",
+        "reason": None,
+        "overridden": False,
+    }
+
+    def fail_closed(reason: str) -> tuple[int, dict[str, Any]]:
+        detail["status"] = "fail_closed"
+        detail["reason"] = reason
+        return recommended_index, detail
+
+    if (
+        not isinstance(current_hp, (int, float))
+        or isinstance(current_hp, bool)
+        or not math.isfinite(float(current_hp))
+        or not isinstance(max_hp, (int, float))
+        or isinstance(max_hp, bool)
+        or not math.isfinite(float(max_hp))
+        or float(current_hp) < 0
+        or float(max_hp) <= 0
+    ):
+        return fail_closed("player_hp_unavailable_or_invalid")
+
+    hp_ratio = float(current_hp) / float(max_hp)
+    detail["hp_ratio"] = hp_ratio
+    if hp_ratio >= 0.5:
+        detail["reason"] = "hp_not_below_half"
+        return recommended_index, detail
+
+    if not isinstance(route, Mapping) or route.get("choices_complete") is not True:
+        return fail_closed("map_route_incomplete")
+    choices = route.get("choices")
+    if (
+        not isinstance(choices, Sequence)
+        or isinstance(choices, (str, bytes))
+        or not choices
+        or len(choices) != route.get("choice_count")
+        or not isinstance(recommended_index, int)
+        or isinstance(recommended_index, bool)
+        or not 0 <= recommended_index < len(choices)
+    ):
+        return fail_closed("map_choice_count_or_index_invalid")
+    if not isinstance(scores, Sequence) or isinstance(scores, (str, bytes)) or len(scores) != len(choices):
+        return fail_closed("armg_scores_incomplete")
+
+    normalized_known_rooms = {
+        value.upper()
+        for value in known_room_names
+        if isinstance(value, str) and value
+    }
+    if not normalized_known_rooms or "ELITE" not in normalized_known_rooms:
+        return fail_closed("known_room_vocabulary_unavailable")
+
+    room_names: list[str] = []
+    normalized_scores: list[float] = []
+    for index, (choice, score) in enumerate(zip(choices, scores, strict=True)):
+        if not isinstance(choice, Mapping) or choice.get("legal_action_index") != index:
+            return fail_closed("map_legal_action_order_mismatch")
+        room = choice.get("target_room")
+        target = choice.get("target_node")
+        if (
+            not isinstance(room, str)
+            or not room
+            or room.upper() not in normalized_known_rooms
+            or not isinstance(target, Mapping)
+            or not isinstance(target.get("x"), int)
+            or isinstance(target.get("x"), bool)
+            or not isinstance(target.get("y"), int)
+            or isinstance(target.get("y"), bool)
+        ):
+            return fail_closed("map_room_or_target_unknown")
+        if not isinstance(score, (int, float)) or isinstance(score, bool):
+            return fail_closed("armg_score_invalid")
+        score_value = float(score)
+        if not math.isfinite(score_value):
+            return fail_closed("armg_score_non_finite")
+        room_names.append(room.upper())
+        normalized_scores.append(score_value)
+
+    detail["recommended_room"] = room_names[recommended_index]
+    detail["recommended_score"] = normalized_scores[recommended_index]
+    if room_names[recommended_index] != "ELITE":
+        detail["actual_room"] = room_names[recommended_index]
+        detail["actual_score"] = normalized_scores[recommended_index]
+        detail["reason"] = "recommended_route_not_elite"
+        return recommended_index, detail
+
+    non_elite_indices = [index for index, room in enumerate(room_names) if room != "ELITE"]
+    if not non_elite_indices:
+        return fail_closed("no_known_non_elite_route")
+
+    # Highest ArmG score wins; a tie deterministically chooses the lowest index.
+    actual_index = max(non_elite_indices, key=lambda index: (normalized_scores[index], -index))
+    detail.update(
+        {
+            "actual_index": actual_index,
+            "actual_room": room_names[actual_index],
+            "actual_score": normalized_scores[actual_index],
+            "status": "overridden",
+            "reason": "low_hp_elite_replaced_by_highest_scored_non_elite",
+            "overridden": True,
+        }
+    )
+    return actual_index, detail
+
+
 def deterministic_noncombat_step(gc: Any, sts: Any) -> str:
     if gc.screen_state == sts.ScreenState.REWARDS:
         offered = list(gc.get_card_reward())
@@ -1105,6 +1237,7 @@ def run_simulator_game(
     combat_mcts_boss_floors: Sequence[int] = (16, 33, 50),
     combat_mcts_exploration: float | None = None,
     reserve_last_potion_until_floor: int | None = None,
+    avoid_low_hp_elite_routes: bool = False,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
@@ -1177,6 +1310,12 @@ def run_simulator_game(
             raise SimulatorRunError(
                 "last-potion reserve requires one fixed, untuned combat MCTS budget"
             )
+    if not isinstance(avoid_low_hp_elite_routes, bool):
+        raise SimulatorRunError("low-HP Elite route intervention must be a boolean")
+    if avoid_low_hp_elite_routes and armg_policy is None:
+        raise SimulatorRunError("low-HP Elite route intervention requires the ArmG map policy")
+    if avoid_low_hp_elite_routes and reserve_last_potion_until_floor is not None:
+        raise SimulatorRunError("enable only one primary policy intervention per run")
     if any(value < 1 for value in consensus_budgets):
         raise SimulatorRunError("all MCTS consensus budgets must be positive")
     if hybrid_budgets and (len(hybrid_budgets) < 2 or any(value < 1 for value in hybrid_budgets)):
@@ -1201,6 +1340,8 @@ def run_simulator_game(
     armg_action_count = 0
     mcts_action_count = 0
     potion_reserve_override_count = 0
+    map_elite_avoidance_override_count = 0
+    map_elite_avoidance_fail_closed_count = 0
     hybrid_student_vote_count = 0
     hybrid_student_tiebreak_count = 0
     illegal_actions = 0
@@ -1237,6 +1378,15 @@ def run_simulator_game(
             if reserve_last_potion_until_floor is not None
             else None
         ),
+        "map_policy_intervention": (
+            {
+                "kind": "avoid_elite_below_half_hp",
+                "hp_ratio_threshold": 0.5,
+                "fallback": "keep_armg_recommendation_if_required_data_incomplete",
+            }
+            if avoid_low_hp_elite_routes
+            else None
+        ),
         "run_metadata": dict(diagnostic_metadata or {}),
     })
 
@@ -1259,6 +1409,8 @@ def run_simulator_game(
                 diagnostic_choices: list[dict[str, Any]] | None = None
                 diagnostic_route: dict[str, Any] | None = None
                 diagnostic_selected_index: int | None = None
+                diagnostic_recommended_index: int | None = None
+                map_policy_intervention: dict[str, Any] | None = None
                 if armg_policy is None:
                     if diagnostic_trace_path is not None:
                         (
@@ -1283,21 +1435,67 @@ def run_simulator_game(
                             )
                             if not diagnostic_route["choices_complete"]:
                                 diagnostic_legal_actions_complete = False
+                        diagnostic_recommended_index = diagnostic_selected_index
                     choice = deterministic_noncombat_step(gc, sts)
                     fallback_count += 1
                     policy_name = "legacy_fallback"
                 else:
                     kind, selected_index, descs, execs, scores = armg_policy.decide(gc, sts)
-                    diagnostic_selected_index = selected_index
-                    if diagnostic_trace_path is not None and kind == "map":
+                    recommended_index = selected_index
+                    diagnostic_recommended_index = recommended_index
+                    if kind == "map" and (
+                        diagnostic_trace_path is not None or avoid_low_hp_elite_routes
+                    ):
                         diagnostic_route = _diagnostic_map_route(
                             gc,
                             sts,
                             choice_count=len(descs),
-                            selected_index=selected_index,
+                            selected_index=recommended_index,
                         )
-                        if not diagnostic_route["choices_complete"]:
+                        if (
+                            diagnostic_trace_path is not None
+                            and not diagnostic_route["choices_complete"]
+                        ):
                             diagnostic_legal_actions_complete = False
+                    if avoid_low_hp_elite_routes and kind == "map":
+                        module = getattr(armg_policy, "module", None)
+                        room_vocabulary = getattr(module, "ROOM_IDX", {})
+                        known_room_names = {
+                            str(getattr(room, "name", room)).upper()
+                            for room in room_vocabulary
+                        }
+                        selected_index, map_policy_intervention = (
+                            _apply_low_hp_elite_route_avoidance(
+                                recommended_index,
+                                scores,
+                                diagnostic_route,
+                                current_hp=_value(gc, "cur_hp", None),
+                                max_hp=_value(gc, "max_hp", None),
+                                known_room_names=known_room_names,
+                            )
+                        )
+                        if map_policy_intervention["status"] == "overridden":
+                            map_elite_avoidance_override_count += 1
+                        elif map_policy_intervention["status"] == "fail_closed":
+                            map_elite_avoidance_fail_closed_count += 1
+                        if diagnostic_route is not None:
+                            diagnostic_route["recommended_selected_index"] = recommended_index
+                            diagnostic_route["actual_selected_index"] = selected_index
+                            diagnostic_route["recommended_route"] = diagnostic_route.get(
+                                "selected_route"
+                            )
+                            if (
+                                diagnostic_route.get("choices_complete") is True
+                                and 0 <= selected_index < len(diagnostic_route["choices"])
+                            ):
+                                actual_route = diagnostic_route["choices"][selected_index]
+                                diagnostic_route["selected_route"] = {
+                                    "from": diagnostic_route.get("source_node"),
+                                    "to": actual_route.get("target_node"),
+                                    "room": actual_route.get("target_room"),
+                                    "legal_action_index": selected_index,
+                                }
+                    diagnostic_selected_index = selected_index
                     before = public_run_state(gc)
                     choice_descriptions = [repr(value) for value in descs]
                     choice_semantics = [armg_policy.describe_choice(kind, value) for value in descs]
@@ -1329,6 +1527,8 @@ def run_simulator_game(
                         "screen": screen_before,
                         "kind": kind,
                         "selected_index": selected_index,
+                        "recommended_index": recommended_index,
+                        "map_policy_intervention": map_policy_intervention,
                         "choice_count": len(descs),
                         "choice_descriptions": choice_descriptions,
                         "choice_semantics": choice_semantics,
@@ -1375,6 +1575,8 @@ def run_simulator_game(
                         "legal_choices_complete": diagnostic_choices is not None,
                         "legal_choices": diagnostic_choices,
                         "selected_legal_action_index": diagnostic_selected_index,
+                        "recommended_legal_action_index": diagnostic_recommended_index,
+                        "map_policy_intervention": map_policy_intervention,
                         "route": diagnostic_route,
                         "selected_choice": choice,
                         "state_before": diagnostic_run_before,
@@ -1868,6 +2070,9 @@ def run_simulator_game(
         "potion_inventory_snapshot_complete": _value(gc, "potions", None) is not None,
         "potion_reserve_until_floor": reserve_last_potion_until_floor,
         "potion_reserve_override_count": potion_reserve_override_count,
+        "avoid_low_hp_elite_routes": avoid_low_hp_elite_routes,
+        "map_elite_avoidance_override_count": map_elite_avoidance_override_count,
+        "map_elite_avoidance_fail_closed_count": map_elite_avoidance_fail_closed_count,
         "fallback_rate": fallback_count / max(1, student_actions + fallback_count + armg_action_count),
         "equivalent_action_alias_count": equivalent_action_alias_count,
         "illegal_action_count": illegal_actions,

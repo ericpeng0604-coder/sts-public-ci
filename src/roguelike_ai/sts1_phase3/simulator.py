@@ -583,6 +583,119 @@ def _apply_last_potion_reserve(
     return recommended_action, False
 
 
+_DEFEND_CARD_IDS = {"DEFEND_R", "DEFEND_G", "DEFEND_B", "DEFEND_P"}
+
+
+def _defend_base_block(card: Any) -> tuple[bool, int | None]:
+    card_id = _value(card, "id", None)
+    if card_id is None or _enum_name(card_id).upper() not in _DEFEND_CARD_IDS:
+        return False, None
+    upgraded = _value(card, "upgraded", None)
+    if not isinstance(upgraded, bool):
+        return True, None
+    return True, 8 if upgraded else 5
+
+
+def _apply_lethal_intent_defend_rescue(
+    recommended_action: Any,
+    legal_actions: Sequence[Any],
+    *,
+    hand: Sequence[Any],
+    battle: Any,
+) -> tuple[Any, bool, str, dict[str, Any]]:
+    """Use a legal Defend only for a visible lethal intent it can cover.
+
+    The rule uses current player HP/block, each living enemy's current
+    ``intent_damage`` and hit count, and Defend's fixed 5/8 base block. Unknown
+    state, card identity, or upgrade status fails closed to the MCTS choice.
+    """
+
+    detail: dict[str, Any] = {}
+    recommended_kind = _action_type(recommended_action)
+    if recommended_kind == "CARD":
+        source_idx = _strict_integer(_value(recommended_action, "source_idx", None))
+        if source_idx is None or not 0 <= source_idx < len(hand):
+            return recommended_action, False, "recommended_card_identity_unknown", detail
+        card_id = _value(hand[source_idx], "id", None)
+        if card_id is None:
+            return recommended_action, False, "recommended_card_identity_unknown", detail
+        if _enum_name(card_id).upper() in _DEFEND_CARD_IDS:
+            return recommended_action, False, "g7_already_selected_defend", detail
+
+    player = _value(battle, "player", None)
+    player_hp = _strict_integer(_value(player, "cur_hp", None))
+    player_block = _strict_integer(_value(player, "block", None))
+    if player is None or player_hp is None or player_hp <= 0 or player_block is None or player_block < 0:
+        return recommended_action, False, "incomplete_player_state", detail
+
+    raw_monsters = _value(battle, "monsters", None)
+    if raw_monsters is None:
+        return recommended_action, False, "incomplete_monster_state", detail
+    monsters = _sequence(raw_monsters)
+    incoming_damage = 0
+    living_count = 0
+    for enemy in monsters:
+        enemy_hp = _strict_integer(_value(enemy, "cur_hp", None))
+        alive = _value(enemy, "alive", None)
+        if enemy_hp is None or (alive is not None and not isinstance(alive, bool)):
+            return recommended_action, False, "incomplete_monster_state", detail
+        if enemy_hp <= 0 or alive is False:
+            continue
+        living_count += 1
+        intent_damage_api = getattr(enemy, "intent_damage", None)
+        if not callable(intent_damage_api):
+            return recommended_action, False, "unknown_attack_intent", detail
+        try:
+            damage_info = intent_damage_api(battle)
+        except Exception:
+            return recommended_action, False, "unknown_attack_intent", detail
+        damage = _strict_integer(_value(damage_info, "damage", None))
+        hits = _strict_integer(_value(damage_info, "attack_count", None))
+        if damage is None or hits is None:
+            return recommended_action, False, "unknown_attack_intent", detail
+        incoming_damage += max(0, damage) * max(1, hits)
+    if living_count == 0:
+        return recommended_action, False, "no_living_enemy", detail
+
+    detail = {
+        "incoming_damage": incoming_damage,
+        "player_hp": player_hp,
+        "player_block": player_block,
+        "projected_deficit": incoming_damage - player_hp - player_block,
+    }
+    if incoming_damage < player_hp + player_block:
+        return recommended_action, False, "visible_intent_not_lethal", detail
+
+    defend_actions: list[tuple[int, int, int, Any]] = []
+    for action_index, action in enumerate(legal_actions):
+        if _action_type(action) != "CARD":
+            continue
+        source_idx = _strict_integer(_value(action, "source_idx", None))
+        if source_idx is None or not 0 <= source_idx < len(hand):
+            return recommended_action, False, "legal_card_identity_unknown", detail
+        is_defend, base_block = _defend_base_block(hand[source_idx])
+        if not is_defend:
+            continue
+        if base_block is None:
+            return recommended_action, False, "defend_upgrade_status_unknown", detail
+        defend_actions.append((base_block, source_idx, action_index, action))
+    if not defend_actions:
+        return recommended_action, False, "no_legal_defend", detail
+
+    projected_deficit = int(detail["projected_deficit"])
+    best_block = max(item[0] for item in defend_actions)
+    if best_block < projected_deficit:
+        detail["best_legal_defend_base_block"] = best_block
+        return recommended_action, False, "defend_block_does_not_close_deficit", detail
+    selected = min(
+        (item for item in defend_actions if item[0] == best_block),
+        key=lambda item: (item[1], item[2]),
+    )
+    detail["selected_defend_base_block"] = selected[0]
+    detail["selected_defend_hand_index"] = selected[1] + 1
+    return selected[3], True, "legal_defend_closes_visible_lethal_deficit", detail
+
+
 def _safe_targetless_card_alias(first: Any, second: Any, hand: Sequence[Any]) -> bool:
     """Accept only the pinned simulator's proven target-index alias for targetless cards."""
 
@@ -1853,6 +1966,7 @@ def run_simulator_game(
     reserve_last_potion_until_floor: int | None = None,
     use_potion_below_hp_fraction: float | None = None,
     lethal_potion_rescue: bool = False,
+    lethal_intent_defend_rescue: bool = False,
     avoid_low_hp_elite_routes: bool = False,
     prefer_smith_when_rest_overheals: bool = False,
     prefer_smith_when_overheal_exceeds_effective_rest_heal: bool = False,
@@ -1992,6 +2106,19 @@ def run_simulator_game(
         raise SimulatorRunError(
             "lethal potion rescue requires one fixed, untuned combat MCTS budget"
         )
+    if not isinstance(lethal_intent_defend_rescue, bool):
+        raise SimulatorRunError("lethal-intent Defend rescue must be a boolean")
+    if lethal_intent_defend_rescue and (
+        combat_mcts_sims is None
+        or consensus_budgets
+        or hybrid_budgets
+        or combat_mcts_late_sims is not None
+        or combat_mcts_boss_sims is not None
+        or combat_mcts_exploration is not None
+    ):
+        raise SimulatorRunError(
+            "lethal-intent Defend rescue requires one fixed, untuned combat MCTS budget"
+        )
     if not isinstance(avoid_low_hp_elite_routes, bool):
         raise SimulatorRunError("low-HP Elite route intervention must be a boolean")
     if avoid_low_hp_elite_routes and armg_policy is None:
@@ -2003,6 +2130,7 @@ def run_simulator_game(
             reserve_last_potion_until_floor is not None,
             use_potion_below_hp_fraction is not None,
             lethal_potion_rescue,
+            lethal_intent_defend_rescue,
             skip_card_reward_when_deck_size_at_least is not None,
             skip_duplicate_card_reward_when_deck_size_at_least is not None,
         )
@@ -2035,6 +2163,8 @@ def run_simulator_game(
     emergency_potion_override_count = 0
     lethal_potion_rescue_override_count = 0
     lethal_potion_rescue_reason_counts: dict[str, int] = {}
+    lethal_intent_defend_override_count = 0
+    lethal_intent_defend_reason_counts: dict[str, int] = {}
     card_reward_skip_override_count = 0
     card_reward_skip_eligible_count = 0
     card_reward_skip_reason_counts: dict[str, int] = {}
@@ -2085,6 +2215,17 @@ def run_simulator_game(
                 "fallback": "keep_mcts_recommendation_if_required_data_or_legal_action_missing",
             }
             if use_potion_below_hp_fraction is not None
+            else None
+        ),
+        "lethal_intent_defend_policy_intervention": (
+            {
+                "kind": "legal_defend_for_visible_lethal_intent",
+                "lethal_condition": "incoming_damage >= current_hp + current_block",
+                "defend_block": {"base": 5, "upgraded": 8},
+                "selection": "greatest_block_then_lowest_hand_index",
+                "fallback": "keep_mcts_recommendation_if_state_or_legal_defend_is_incomplete",
+            }
+            if lethal_intent_defend_rescue
             else None
         ),
         "campfire_policy_intervention": (
@@ -2515,6 +2656,9 @@ def run_simulator_game(
                     emergency_potion_override = False
                     lethal_potion_rescue_override = False
                     lethal_potion_rescue_reason = "disabled"
+                    lethal_intent_defend_override = False
+                    lethal_intent_defend_reason = "disabled"
+                    lethal_intent_defend_detail: dict[str, Any] = {}
                     if reserve_last_potion_until_floor is not None:
                         player = _value(battle, "player")
                         player_hp_raw = _value(player, "cur_hp", None)
@@ -2612,6 +2756,25 @@ def run_simulator_game(
                         ) + 1
                         if lethal_potion_rescue_override:
                             lethal_potion_rescue_override_count += 1
+                    if lethal_intent_defend_rescue:
+                        (
+                            chosen,
+                            lethal_intent_defend_override,
+                            lethal_intent_defend_reason,
+                            lethal_intent_defend_detail,
+                        ) = _apply_lethal_intent_defend_rescue(
+                            mcts_recommended_action,
+                            native_actions,
+                            hand=hand_raw,
+                            battle=battle,
+                        )
+                        lethal_intent_defend_reason_counts[
+                            lethal_intent_defend_reason
+                        ] = lethal_intent_defend_reason_counts.get(
+                            lethal_intent_defend_reason, 0
+                        ) + 1
+                        if lethal_intent_defend_override:
+                            lethal_intent_defend_override_count += 1
                     latency_ms = (time.perf_counter() - started) * 1000.0
                     latencies_ms.append(latency_ms)
                     chosen_bits = _value(chosen, "bits")
@@ -2726,6 +2889,9 @@ def run_simulator_game(
                             "emergency_potion_override": emergency_potion_override,
                             "lethal_potion_rescue_override": lethal_potion_rescue_override,
                             "lethal_potion_rescue_reason": lethal_potion_rescue_reason,
+                            "lethal_intent_defend_override": lethal_intent_defend_override,
+                            "lethal_intent_defend_reason": lethal_intent_defend_reason,
+                            "lethal_intent_defend_detail": lethal_intent_defend_detail,
                             "selected_action": trace_action,
                             "selected_public_action_index": (
                                 selected_public_matches[0] if len(selected_public_matches) == 1 else None
@@ -2749,6 +2915,9 @@ def run_simulator_game(
                         "emergency_potion_override": emergency_potion_override,
                         "lethal_potion_rescue_override": lethal_potion_rescue_override,
                         "lethal_potion_rescue_reason": lethal_potion_rescue_reason,
+                        "lethal_intent_defend_override": lethal_intent_defend_override,
+                        "lethal_intent_defend_reason": lethal_intent_defend_reason,
+                        "lethal_intent_defend_detail": lethal_intent_defend_detail,
                         "action_type": _action_type(chosen),
                         "card": trace_card,
                         "target_index": _value(chosen, "target_idx", -1),
@@ -2930,6 +3099,9 @@ def run_simulator_game(
         "lethal_potion_rescue_enabled": lethal_potion_rescue,
         "lethal_potion_rescue_override_count": lethal_potion_rescue_override_count,
         "lethal_potion_rescue_reason_counts": lethal_potion_rescue_reason_counts,
+        "lethal_intent_defend_rescue_enabled": lethal_intent_defend_rescue,
+        "lethal_intent_defend_override_count": lethal_intent_defend_override_count,
+        "lethal_intent_defend_reason_counts": lethal_intent_defend_reason_counts,
         "skip_card_reward_when_deck_size_at_least": (
             skip_card_reward_when_deck_size_at_least
         ),
@@ -2980,6 +3152,9 @@ def run_simulator_game(
         "lethal_potion_rescue_enabled": lethal_potion_rescue,
         "lethal_potion_rescue_override_count": lethal_potion_rescue_override_count,
         "lethal_potion_rescue_reason_counts": lethal_potion_rescue_reason_counts,
+        "lethal_intent_defend_rescue_enabled": lethal_intent_defend_rescue,
+        "lethal_intent_defend_override_count": lethal_intent_defend_override_count,
+        "lethal_intent_defend_reason_counts": lethal_intent_defend_reason_counts,
         "final_floor": summary["final_floor"],
         "final_act": int(_value(gc, "act", 0) or 0),
         "final_hp": summary["final_hp"],

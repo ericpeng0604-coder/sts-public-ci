@@ -583,7 +583,7 @@ def _apply_last_potion_reserve(
     return recommended_action, False
 
 
-_DEFEND_CARD_IDS = {"DEFEND_R", "DEFEND_G", "DEFEND_B", "DEFEND_P"}
+_DEFEND_CARD_IDS = {"DEFEND_R", "DEFEND_G", "DEFEND_B", "DEFEND_P", "DEFEND_RED"}
 
 
 def _defend_base_block(card: Any) -> tuple[bool, int | None]:

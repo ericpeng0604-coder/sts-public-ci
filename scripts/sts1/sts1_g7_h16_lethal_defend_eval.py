@@ -1,4 +1,4 @@
-"""Run the preregistered Round008 H16/H17 paired lethal-intent Defend evaluation.
+"""Run the preregistered H16/H17 Round008 and H18 Round009 Defend evaluations.
 
 Raw seed IDs, episodes, traces, and usage records must remain in the private
 Temp evaluation directory. This runner never tunes the registered rule.
@@ -30,25 +30,36 @@ import sts1_g7_h2_elite_route_eval as h2  # noqa: E402
 import sts1_g7_h3_emergency_potion_eval as h3  # noqa: E402
 import sts1_g7_h7_potion_trace_audit as h7  # noqa: E402
 import sts1_g7_h15_train_trace_audit as h15  # noqa: E402
+import sts1_g7_seed_ledger as seed_ledger  # noqa: E402
 
 EvaluationIntegrityError = h2.EvaluationIntegrityError
 ROUND_ID = "round-008-20261009"
+ROUND009_ID = "round-009-20261009"
+TRIAL_ROUND_IDS = {"h16": ROUND_ID, "h17": ROUND_ID, "h18": ROUND009_ID}
 TRIAL_POOL_ROLE = {
     "h16": {"train": "train_hypothesis_2", "probe": "probe", "dev": "dev"},
     "h17": {"train": "train_hypothesis_3", "probe": "probe", "dev": "dev"},
+    "h18": {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"},
 }
 POOL_COUNTS = {"train": 10, "probe": 10, "dev": 30}
 POOL_FILES = {
+    "train_hypothesis_1": "train_hypothesis_1.json",
     "train_hypothesis_2": "train_hypothesis_2.json",
     "train_hypothesis_3": "train_hypothesis_3.json",
     "probe": "probe.json",
     "dev": "dev.json",
 }
 EXPECTED_TRAIN_POOL_SHA256 = {
+    "h18": "52c27ddf636a3834db6b286432fed1492fe4563e27b9f910ab0b21550f7605c4",
     "h16": "a71b491d582dfd358c9fc48c0a3f3e9f2a907e3623a447aff598f19417eb2190",
     "h17": "fe8f0bc33ba50bac941ddb40278775cb0f36934df027b9e2c1df595b7b3d4b7d",
 }
 EXPECTED_TRIAL_POOL_MANIFESTS = {
+    "h18": {
+        "train": EXPECTED_TRAIN_POOL_SHA256["h18"],
+        "probe": "7d0f43b63e06f2bfec94c26892c2a4d3cd1b424fb8657c3832f7296408f85541",
+        "dev": "50c9c94fbefe5df3fd948379779a5cdf059d64741bd9f71c80fb8ce75e0176c8",
+    },
     "h16": {
         "train": EXPECTED_TRAIN_POOL_SHA256["h16"],
         "probe": "56de6fce082c49227c24652ab152ba331aa0730fc087366d068ba5c33902e5d0",
@@ -60,6 +71,8 @@ EXPECTED_TRIAL_POOL_MANIFESTS = {
         "dev": "8636a6121e8123e2f8746dfeb57c6422ee15cf425c403ab4f276ca10aaf29d14",
     },
 }
+EXPECTED_ROUND009_INVENTORY_SHA256 = "916f93771eed948dab2dc8160101cc03feea6927514dcb348a215793d5fb55cd"
+EXPECTED_ROUND009_LEDGER_SHA256 = "211b2bf5e1b217fac883f5ee4ce018fbdf5bc4b5b54428a6de66d406d191df1f"
 EXPECTED_H17_ALLOCATION = {
     "record_type": "h17_pool_allocation",
     "trial_id": "h17",
@@ -84,6 +97,62 @@ EXPECTED_H17_ALLOCATION = {
             "manifest_sha256": "8636a6121e8123e2f8746dfeb57c6422ee15cf425c403ab4f276ca10aaf29d14",
         },
     },
+}
+EXPECTED_H18_ALLOCATION = {
+    "record_type": "h18_pool_allocation",
+    "trial_id": "h18",
+    "round_id": ROUND009_ID,
+    "prior_h16": {
+        "train": {
+            "pool_id": "round-008-20261009-train_hypothesis_2",
+            "manifest_sha256": "a71b491d582dfd358c9fc48c0a3f3e9f2a907e3623a447aff598f19417eb2190",
+            "status": "NOT_VERIFIED_IMPLEMENTATION_COVERAGE",
+        },
+        "probe": {"pool_id": "round-008-20261009-probe", "status": "NOT_RUN"},
+        "dev": {"pool_id": "round-008-20261009-dev", "status": "NOT_RUN"},
+        "private_summary_sha256": "fca4e539b5507f5fa31f1c41bbdfa182c77008c0ad3bc2d04c3c6150a8c96bc6",
+    },
+    "prior_h17": {
+        "train": {
+            "pool_id": "round-008-20261009-train_hypothesis_3",
+            "manifest_sha256": "fe8f0bc33ba50bac941ddb40278775cb0f36934df027b9e2c1df595b7b3d4b7d",
+            "status": "NOT_VERIFIED_IMPLEMENTATION_COVERAGE",
+        },
+        "probe": {"pool_id": "round-008-20261009-probe", "status": "NOT_RUN"},
+        "dev": {"pool_id": "round-008-20261009-dev", "status": "NOT_RUN"},
+        "private_summary_sha256": "9fc6c8c588411d980b5fab18110c28e8d73a0b646b46920e240c89b71170d7ff",
+    },
+    "exclusion_inventory": {
+        "inventory_id": "round-009-20261009-extended-exclusion",
+        "sha256": EXPECTED_ROUND009_INVENTORY_SHA256,
+        "source_count": 86,
+        "unique_id_count": 23106,
+    },
+    "round009_ledger_sha256": EXPECTED_ROUND009_LEDGER_SHA256,
+    "assigned_h18": {
+        "train": {
+            "pool_id": "round-009-20261009-train_hypothesis_1",
+            "manifest_sha256": "52c27ddf636a3834db6b286432fed1492fe4563e27b9f910ab0b21550f7605c4",
+        },
+        "probe": {
+            "pool_id": "round-009-20261009-probe",
+            "manifest_sha256": "7d0f43b63e06f2bfec94c26892c2a4d3cd1b424fb8657c3832f7296408f85541",
+        },
+        "dev": {
+            "pool_id": "round-009-20261009-dev",
+            "manifest_sha256": "50c9c94fbefe5df3fd948379779a5cdf059d64741bd9f71c80fb8ce75e0176c8",
+        },
+    },
+    "reserved_unused_train_pools": [
+        {
+            "pool_id": "round-009-20261009-train_hypothesis_2",
+            "manifest_sha256": "23e15e894efa7f92c47b4dc39be7a91121910aca3a826963bba15c3c24b7eb67",
+        },
+        {
+            "pool_id": "round-009-20261009-train_hypothesis_3",
+            "manifest_sha256": "69fbc11fad92d697caa67d3823801755885c8e9169077b8107e111e1a3f4f5ea",
+        },
+    ],
 }
 G7_SHA256 = "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0"
 PINNED_BINDING_SHA256 = "bc2a3d272c5dc1f51f66619604fb1b202e0915f29dddd719837e5ca0b8cfc89e"
@@ -166,22 +235,94 @@ def _round008_assets(
     return pool, seeds, preflight
 
 
+def _round009_assets(
+    *, trial_id: str, stage: str, pool_file: Path, pools_dir: Path, inventory_path: Path
+) -> tuple[dict[str, Any], tuple[int, ...], dict[str, Any]]:
+    if trial_id != "h18" or stage not in POOL_COUNTS:
+        raise EvaluationIntegrityError("Round009 assets are registered only for H18")
+    role = TRIAL_POOL_ROLE[trial_id][stage]
+    expected_pool = (pools_dir / POOL_FILES[role]).resolve()
+    if pool_file.resolve() != expected_pool:
+        raise EvaluationIntegrityError("selected H18 pool path does not match the registered stage")
+
+    inventory = h15._read_json(inventory_path)
+    excluded, source_audit = seed_ledger.validate_inventory(inventory)
+    inventory_sha256 = _sha256(inventory_path)
+    if (
+        inventory_sha256 != EXPECTED_ROUND009_INVENTORY_SHA256
+        or len(source_audit) != 86
+        or len(excluded) != 23106
+    ):
+        raise EvaluationIntegrityError("Round009 exclusion inventory identity or coverage mismatch")
+
+    ledger_path = pools_dir / "ledger.json"
+    ledger = h15._read_json(ledger_path)
+    ledger_payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
+    if (
+        ledger.get("schema_version") != seed_ledger.SCHEMA_VERSION
+        or ledger.get("round_id") != ROUND009_ID
+        or ledger.get("inventory_id") != inventory.get("inventory_id")
+        or ledger.get("inventory_sha256") != inventory_sha256
+        or ledger.get("source_audit_sha256") != seed_ledger.sha256_json(source_audit)
+        or ledger.get("status") != "GENERATED_NOT_RUN"
+        or ledger.get("ledger_sha256") != seed_ledger.sha256_json(ledger_payload)
+        or ledger.get("ledger_sha256") != EXPECTED_ROUND009_LEDGER_SHA256
+        or set(ledger.get("pools", {})) != set(POOL_FILES)
+    ):
+        raise EvaluationIntegrityError("Round009 seed-ledger identity or provenance mismatch")
+
+    for pool_name, expected_count in seed_ledger.EXPLORATION_POOL_SIZES.items():
+        manifest = h15._read_json(pools_dir / POOL_FILES[pool_name])
+        manifest_payload = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+        if (
+            manifest != ledger["pools"].get(pool_name)
+            or manifest.get("manifest_sha256") != seed_ledger.sha256_json(manifest_payload)
+            or manifest.get("purpose") != ("train" if pool_name.startswith("train_") else pool_name)
+            or len(manifest.get("seed_ids", [])) != expected_count
+        ):
+            raise EvaluationIntegrityError("Round009 pool manifest does not match its ledger entry")
+    seed_ledger._verify_generated(ledger, excluded)
+
+    pool = h15._read_json(expected_pool)
+    expected_pool_sha = EXPECTED_TRIAL_POOL_MANIFESTS[trial_id][stage]
+    if pool.get("manifest_sha256") != expected_pool_sha:
+        raise EvaluationIntegrityError("selected H18 pool manifest hash is not registered")
+    seeds = tuple(int(seed) for seed in pool["seed_ids"])
+    if len(seeds) != POOL_COUNTS[stage]:
+        raise EvaluationIntegrityError("selected H18 pool count is invalid")
+    preflight = {
+        "round_id": ROUND009_ID,
+        "pool_id": pool.get("pool_id"),
+        "pool_manifest_sha256": pool.get("manifest_sha256"),
+        "inventory_sha256": inventory_sha256,
+        "ledger_sha256": ledger.get("ledger_sha256"),
+        "source_count": len(source_audit),
+        "unique_excluded_seed_count": len(excluded),
+        "stage": stage,
+        "seed_count": len(seeds),
+    }
+    return pool, seeds, preflight
+
+
 def _validate_private_paths(
     pools_dir: Path, trial_id: str, stage: str, output_dir: Path, usage_path: Path
 ) -> None:
     if trial_id not in TRIAL_POOL_ROLE or stage not in POOL_COUNTS:
         raise EvaluationIntegrityError("H16/H17 trial or stage is not registered")
     pools_dir = pools_dir.resolve()
-    expected_output = pools_dir.parent.parent / f"round-008-{trial_id}-{stage}-20261009"
+    round_parts = TRIAL_ROUND_IDS[trial_id].split("-")
+    round_prefix = "-".join(round_parts[:2])
+    round_date = round_parts[2]
+    expected_output = pools_dir.parent.parent / f"{round_prefix}-{trial_id}-{stage}-{round_date}"
     expected_usage = pools_dir.parent / f"{trial_id}-usage-private.jsonl"
     if output_dir.resolve() != expected_output.resolve() or usage_path.resolve() != expected_usage.resolve():
-        raise EvaluationIntegrityError("H16/H17 requires canonical private output and usage paths")
+        raise EvaluationIntegrityError("trial requires canonical private output and usage paths")
     repo = REPO_ROOT.resolve()
     for path in (output_dir.resolve(), usage_path.resolve()):
         if path == repo or repo in path.parents:
-            raise EvaluationIntegrityError("raw H16/H17 records must remain outside the repository")
+            raise EvaluationIntegrityError("raw trial records must remain outside the repository")
     if output_dir.exists():
-        raise EvaluationIntegrityError("H16/H17 stage output already exists; refusing to reuse it")
+        raise EvaluationIntegrityError("stage output already exists; refusing to reuse it")
 
 
 def _validate_identity(module_dir: Path, armg_root: Path, checkpoint: Path) -> dict[str, str]:
@@ -240,10 +381,12 @@ def _validate_transition(
     *, trial_id: str, stage: str, events: list[dict[str, Any]], candidate_commit: str, identities: dict[str, str]
 ) -> None:
     if trial_id not in TRIAL_POOL_ROLE or stage not in POOL_COUNTS:
-        raise EvaluationIntegrityError("H16/H17 trial or stage is not registered")
+        raise EvaluationIntegrityError("trial or stage is not registered")
 
     allocation_rows = [
-        event for event in events if event.get("record_type") == "h17_pool_allocation"
+        event
+        for event in events
+        if event.get("record_type") in {"h17_pool_allocation", "h18_pool_allocation"}
     ]
     if trial_id == "h17":
         if (
@@ -252,8 +395,15 @@ def _validate_transition(
             or events[0] != EXPECTED_H17_ALLOCATION
         ):
             raise EvaluationIntegrityError("H17 usage ledger lacks its exact first allocation record")
+    elif trial_id == "h18":
+        if (
+            len(allocation_rows) != 1
+            or not events
+            or events[0] != EXPECTED_H18_ALLOCATION
+        ):
+            raise EvaluationIntegrityError("H18 usage ledger lacks its exact first allocation record")
     elif allocation_rows:
-        raise EvaluationIntegrityError("H16 usage ledger contains an H17 allocation record")
+        raise EvaluationIntegrityError("H16 usage ledger contains a later-trial allocation record")
 
     stage_start_type = f"{trial_id}_stage_start"
     if any(
@@ -262,21 +412,27 @@ def _validate_transition(
         and event.get("stage") == stage
         for event in events
     ):
-        raise EvaluationIntegrityError("H16/H17 stage has already been attempted; its pool cannot be rerun")
+        raise EvaluationIntegrityError("stage has already been attempted; its pool cannot be rerun")
     if stage == "train":
-        expected_train_events = [EXPECTED_H17_ALLOCATION] if trial_id == "h17" else []
+        expected_train_events = (
+            [EXPECTED_H17_ALLOCATION]
+            if trial_id == "h17"
+            else [EXPECTED_H18_ALLOCATION]
+            if trial_id == "h18"
+            else []
+        )
         if events != expected_train_events:
-            raise EvaluationIntegrityError("H16/H17 train stage requires a new private usage ledger")
+            raise EvaluationIntegrityError("train stage requires its exact new private allocation record")
         return
 
     predecessor = "train" if stage == "probe" else "probe"
     prior = _stage_summary(events, predecessor, trial_id)
     if not isinstance(prior, dict) or prior.get("status") != "COMPLETE":
-        raise EvaluationIntegrityError("required preceding H16/H17 stage is not complete")
+        raise EvaluationIntegrityError("required preceding stage is not complete")
     if prior.get("trial_id", "h16" if trial_id == "h16" else None) != trial_id:
-        raise EvaluationIntegrityError("H16/H17 usage ledger belongs to a different trial")
+        raise EvaluationIntegrityError("usage ledger belongs to a different trial")
     if prior.get("candidate_commit") != candidate_commit:
-        raise EvaluationIntegrityError("H16/H17 candidate commit changed between stages")
+        raise EvaluationIntegrityError("candidate commit changed between stages")
     for key in (
         "simulator_policy_source_sha256",
         "candidate_evaluator_sha256",
@@ -286,9 +442,9 @@ def _validate_transition(
         "g7_checkpoint_sha256",
     ):
         if prior.get(key) != identities.get(key):
-            raise EvaluationIntegrityError("H16/H17 policy, evaluator, simulator, or parent changed between stages")
+            raise EvaluationIntegrityError("policy, evaluator, simulator, or parent changed between stages")
     if prior.get("advance_eligible") is not True:
-        raise EvaluationIntegrityError("preceding H16/H17 paired result did not pass its preregistered gate")
+        raise EvaluationIntegrityError("preceding paired result did not pass its preregistered gate")
 
 
 def _check_pair_integrity(path: Path, result: dict[str, Any]) -> None:
@@ -448,7 +604,8 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = args.private_output_dir.resolve()
     usage_path = args.private_usage_ledger.resolve()
     try:
-        pool, seeds, pool_preflight = _round008_assets(
+        asset_loader = _round009_assets if trial_id == "h18" else _round008_assets
+        pool, seeds, pool_preflight = asset_loader(
             trial_id=trial_id,
             stage=stage,
             pool_file=args.pool_file.resolve(),
@@ -478,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     identity = {
-        "round_id": ROUND_ID,
+        "round_id": TRIAL_ROUND_IDS[trial_id],
         "hypothesis": trial_id,
         "trial_id": trial_id,
         "stage": stage,

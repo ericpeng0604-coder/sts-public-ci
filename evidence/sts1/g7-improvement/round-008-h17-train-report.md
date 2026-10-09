@@ -2,9 +2,11 @@
 
 ## Result
 
-`COMPLETE_NULL_NO_PROBE`. H17 independently replicated the frozen H16 lethal-intent Defend rule on the previously unused `train_hypothesis_3` pool: G7 and H17 each won 0/10. Candidate-only / Parent-only / net were 0/0/0, there were no discordant pairs, and the one-sided exact sign-test p-value was 1.0.
+`NOT_VERIFIED_IMPLEMENTATION_COVERAGE`. H17's paired simulator execution completed on the registered `train_hypothesis_3` pool: G7 and the recorded H17 candidate each won 0/10; Candidate-only / Parent-only / net were 0/0/0, there were no discordant pairs, and the one-sided exact sign-test p-value was 1.0. A card-ID mismatch discovered after the run means these are not a valid estimate of the intended strategy intervention.
 
-H17 recorded no legal action overrides. Across candidate traces, 2,644 decisions had nonlethal visible intent and 52 had no legal Defend. The preregistered train gate requires at least one legal override, so H17 did not advance to Probe10. This is a null coverage replication, not a win-rate improvement claim.
+Across candidate traces, 2,644 decisions had nonlethal visible intent and 52 were labeled `no_legal_defend`. The helper recognized abbreviated IDs such as `DEFEND_R`, while the simulator emits native Ironclad ID `DEFEND_RED`, so the 52 labels do not establish that no legal Defend existed. A retrospective train-only counterfactual found `DEFEND_RED` in hand on 21 decisions and legal on 18; six legal red Defends closed the projected deficit, and five nonselected choices across three pairs were potential overrides under the registered rule. This is a post-run hypothesis audit only, not a win-rate effect or a replacement evaluation. H17 did not advance to Probe10, and its consumed train pool will not be rerun.
+
+H16 used the same faulty ID map. Its trace classification is also invalid; retrospective analysis found no legal red Defend that closed the projected deficit in that consumed train pool. H16 and H17 remain preserved as `NOT_VERIFIED_IMPLEMENTATION_COVERAGE`, not null strategy tests.
 
 ## Frozen identities and seed provenance
 
@@ -33,4 +35,4 @@ Raw traces, per-episode evidence, and seed IDs remain in private Temp storage an
 
 ## Next step and boundaries
 
-H17 Train10 is consumed. H17 Probe10 and Dev30 were not run, and their pools remain unexecuted. H16 remains a completed null/coverage result; neither H16 nor H17 provides a positive strategy signal. Choose a different evidence-backed factor and a new, disjoint train pool for the next round. No confirmation, Gate/Fresh execution, or real-game run occurred. G7 remains Champion; there was no promotion or deployment.
+H17 Train10 is consumed. H17 Probe10 and Dev30 were not run; they remain excluded and will not return to training. H18 applies the same registered lethal-intent rule with only the simulator-native `DEFEND_RED` identifier recognized, on a fresh Round009 pool. H16/H17 do not establish a positive or null strategy effect. No confirmation, Gate/Fresh execution, or real-game run occurred. G7 remains Champion; there was no promotion or deployment.

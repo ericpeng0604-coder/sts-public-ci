@@ -11,7 +11,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "sts1"))
 
 import sts1_g7_h16_lethal_defend_eval as h16_runner
-from roguelike_ai.sts1_phase3.simulator import _apply_lethal_intent_defend_rescue
+from roguelike_ai.sts1_phase3.simulator import (
+    SimulatorRunError,
+    _apply_full_potion_shop_skip_guard,
+    _apply_lethal_intent_defend_rescue,
+)
 
 
 class _Card:
@@ -297,6 +301,99 @@ def test_h16_legacy_stage_summary_remains_usable_without_trial_id() -> None:
     )
 
 
+def _shop_choice(item_type: str | None, *, leave: bool = False) -> dict[str, object]:
+    return {"kind": "shop", "item_type": item_type, "leave": leave}
+
+
+def _shop_guard(
+    *,
+    screen_name: str = "SHOP_ROOM",
+    kind: str = "shop",
+    recommended_index: int = 0,
+    selected_index: int = 0,
+    choices: list[dict[str, object]] | None = None,
+    potions: list[str] | None = None,
+    gc: object | None = None,
+) -> tuple[int, dict[str, object] | None]:
+    if choices is None:
+        choices = [_shop_choice("POTION"), _shop_choice(None, leave=True)]
+    if gc is None:
+        gc = SimpleNamespace(potions=potions or ["FIRE_POTION"] * 5)
+    return _apply_full_potion_shop_skip_guard(
+        screen_name=screen_name,
+        shop_screen_name="SHOP_ROOM",
+        kind=kind,
+        recommended_index=recommended_index,
+        selected_index=selected_index,
+        choice_semantics=choices,
+        gc=gc,
+    )
+
+
+def test_full_potion_shop_guard_executes_legal_skip_and_records_decision() -> None:
+    selected, intervention = _shop_guard()
+
+    assert selected == 1
+    assert intervention == {
+        "status": "overridden",
+        "reason": "potion_capacity_full",
+        "recommended_index": 0,
+        "executed_index": 1,
+        "recommended_choice": {"kind": "shop", "item_type": "POTION", "leave": False},
+        "executed_choice": {"kind": "shop", "item_type": None, "leave": True},
+    }
+
+
+def test_full_potion_shop_guard_keeps_purchase_when_a_slot_is_empty() -> None:
+    selected, intervention = _shop_guard(potions=["EMPTY_POTION_SLOT"] + ["FIRE_POTION"] * 4)
+
+    assert selected == 0
+    assert intervention is None
+
+
+def test_full_potion_shop_guard_is_inactive_outside_shop_or_for_non_potions() -> None:
+    selected, intervention = _shop_guard(
+        screen_name="EVENT_ROOM",
+        gc=SimpleNamespace(),
+    )
+    assert selected == 0
+    assert intervention is None
+
+    selected, intervention = _shop_guard(
+        choices=[_shop_choice("RELIC"), _shop_choice(None, leave=True)],
+        gc=SimpleNamespace(),
+    )
+    assert selected == 0
+    assert intervention is None
+
+
+@pytest.mark.parametrize(
+    "gc",
+    [
+        SimpleNamespace(),
+        SimpleNamespace(potions=["FIRE_POTION"] * 4 + ["UNKNOWN"]),
+    ],
+)
+def test_full_potion_shop_guard_fails_closed_on_missing_or_unknown_inventory(gc: object) -> None:
+    with pytest.raises(SimulatorRunError, match="potion inventory"):
+        _shop_guard(gc=gc)
+
+
+def test_full_potion_shop_guard_fails_closed_without_one_legal_skip() -> None:
+    with pytest.raises(SimulatorRunError, match="legal shop skip"):
+        _shop_guard(choices=[_shop_choice("POTION")])
+
+    with pytest.raises(SimulatorRunError, match="legal shop skip"):
+        _shop_guard(
+            choices=[_shop_choice("POTION"), _shop_choice(None, leave=True), _shop_choice(None, leave=True)]
+        )
+
+
+def test_full_potion_shop_guard_fails_closed_on_unknown_recommendation_semantics() -> None:
+    with pytest.raises(SimulatorRunError, match="shop action semantics"):
+        _shop_guard(choices=[_shop_choice(None), _shop_choice(None, leave=True)])
+
+
 def test_stage_configuration_sets_paired_pool_sizes() -> None:
     assert h16_runner.STAGE_CONFIG["train"]["paired_seed_count"] == 10
     assert h16_runner.STAGE_CONFIG["probe"]["paired_seed_count"] == 10
@@ -578,6 +675,24 @@ def test_override_coverage_requires_matching_prefix_and_changed_afterstate() -> 
     candidate["decisions"] = [
         _decision(selected=defend, recommended=recommended, before="d" * 64, override=True)
     ]
+    assert h16_runner._pair_has_effective_override(parent, candidate) is False
+
+
+def test_shared_shop_guard_does_not_count_as_candidate_override_coverage() -> None:
+    parent = {"decisions": [], "applied": []}
+    candidate = {
+        "decisions": [
+            {
+                "type": "noncombat_decision_trace_v1",
+                "shop_policy_intervention": {
+                    "status": "overridden",
+                    "reason": "potion_capacity_full",
+                },
+            }
+        ],
+        "applied": [],
+    }
+
     assert h16_runner._pair_has_effective_override(parent, candidate) is False
 
 

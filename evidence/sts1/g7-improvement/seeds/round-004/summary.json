@@ -23,7 +23,7 @@
       "manifest_sha256": "a71e75062e99066016243023ec7c7f978ff84fdeedec440fee1504b2e5151777",
       "pool_id": "round-004-20261009-train_hypothesis_1",
       "purpose": "train",
-      "status": "GENERATED_NOT_RUN"
+      "status": "EVALUATED_COMPLETE"
     },
     "train_hypothesis_2": {
       "count": 10,
@@ -50,7 +50,35 @@
     "first_train_pool_count": 10,
     "first_train_pool_manifest_sha256": "a71e75062e99066016243023ec7c7f978ff84fdeedec440fee1504b2e5151777",
     "hypothesis_source": "round-003 bounded H3 Dev diagnostic; hypothesis generation only",
-    "status": "REGISTERED_NOT_RUN"
+    "status": "TRAIN_COMPLETE_POSITIVE_SIGNAL",
+    "train_result": {
+      "candidate_wins": 2,
+      "parent_wins": 1,
+      "candidate_only_wins": 1,
+      "parent_only_wins": 0,
+      "net_wins": 1,
+      "discordant_pairs": 1,
+      "exact_one_sided_sign_p_candidate_positive": 0.5,
+      "paired_seed_count": 10,
+      "episode_count": 21,
+      "candidate_campfire_overheal_opportunities": 29,
+      "candidate_campfire_overheal_overrides": 29,
+      "seeds_with_opportunity": 7,
+      "trace_files": 20,
+      "complete_legal_terminal_traces": 20,
+      "trace_invariance": "PASS",
+      "illegal_actions": 0,
+      "crashes": 0,
+      "timeouts": 0,
+      "communication_errors": "N/A_LOCAL_SIMULATOR",
+      "interpretation": "Positive train signal only; not a win-rate acceptance result. Proceed to the preregistered Probe10 gate without changing the frozen policy."
+    },
+    "frozen_candidate_identity": {
+      "local_authoring_commit": "30bb16c1519049b6b9c27c38370a883ed9df6fe9",
+      "github_commit": "029e2d94b1c2539f7e25ada7fe5beb6d9b431350",
+      "git_tree_sha": "b23f8169925d3f7e33f61504e030b0ad8c3edf69",
+      "same_tree_verified": true
+    }
   },
   "source_audit_sha256": "5f4e7775b5bde11159e3c675086fa581c4d5e4a70471881c076d882658fe53dc",
   "next_round_exclusion_inventory": {
@@ -60,5 +88,5 @@
     "source_manifest_count": 66,
     "use": "future-round disjointness only; private seed IDs remain storage-only"
   },
-  "status": "GENERATED_NOT_RUN"
+  "status": "TRAIN_HYPOTHESIS_1_COMPLETE_PENDING_PROBE10"
 }

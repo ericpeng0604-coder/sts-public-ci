@@ -632,9 +632,13 @@ def test_stage_gate_rejects_missing_or_inconsistent_pair_counters() -> None:
 
 
 def test_dev_positive_net_is_candidate_selection_signal_without_p_threshold() -> None:
+    paired = _registered_pair_summary("dev", candidate_only=4)
+    assert paired["candidate_only_wins"] == 4
+    assert paired["parent_only_wins"] == 0
+    assert paired["exact_one_sided_sign_p_candidate_positive"] == pytest.approx(0.0625)
     assert h16_runner._stage_gate(
         "dev",
-        _registered_pair_summary("dev", candidate_only=4),
+        paired,
         0,
         True,
     )["advance_eligible"] is True

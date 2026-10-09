@@ -50,6 +50,67 @@ def _value(obj: Any, name: str, default: Any = None) -> Any:
     return value() if callable(value) else value
 
 
+def _diagnostic_fallback_legal_choices(
+    gc: Any,
+    sts: Any,
+) -> tuple[list[dict[str, Any]] | None, int | None]:
+    """Snapshot the native legal actions selected by the legacy fallback."""
+
+    get_actions = getattr(sts, "get_legal_game_actions", None)
+    if not callable(get_actions):
+        return None, None
+    try:
+        actions = list(get_actions(gc))
+        if not actions:
+            return None, None
+        screen_name = _enum_name(_value(gc, "screen_state"))
+        choices: list[dict[str, Any]] = []
+        for index, action in enumerate(actions):
+            fields: dict[str, Any] = {}
+            for name in ("bits", "idx1", "idx2", "idx3", "is_potion_action"):
+                value = _value(action, name)
+                if value is not None:
+                    fields[name] = value
+            if screen_name in {"REWARDS", "SHOP_ROOM"}:
+                reward_type = _value(action, "rewards_action_type")
+                if reward_type is not None:
+                    fields["rewards_action_type"] = _enum_name(reward_type)
+            if not fields:
+                return None, None
+            choices.append({
+                "index": index,
+                "descriptor": json.dumps(fields, sort_keys=True, separators=(",", ":")),
+                "semantics": {"native_action_type": type(action).__name__, **fields},
+                "score": None,
+            })
+
+        selected_index = 0
+        if screen_name == "REWARDS":
+            offered = list(gc.get_card_reward())
+            wanted_type = "CARD" if offered else "SKIP"
+            selected_index = next(
+                (
+                    index
+                    for index, action in enumerate(actions)
+                    if _enum_name(_value(action, "rewards_action_type")) == wanted_type
+                    and (
+                        wanted_type != "CARD"
+                        or (
+                            _value(action, "idx1") == 0
+                            and _value(action, "idx2") == 0
+                        )
+                    )
+                ),
+                -1,
+            )
+        if not 0 <= selected_index < len(choices):
+            return None, None
+        return choices, selected_index
+    except Exception:
+        # Diagnostics must fail closed without changing the fallback policy run.
+        return None, None
+
+
 def _sequence(value: Any) -> list[Any]:
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return list(value)
@@ -189,6 +250,62 @@ def _public_action(action: Any, hand: Sequence[Any]) -> dict[str, Any]:
     }
 
 
+def _usable_potion_slots(
+    legal_actions: Sequence[Any], hand: Sequence[Any]
+) -> set[int]:
+    """Return potion slots exposed by the complete current native legal-action list."""
+
+    slots: set[int] = set()
+    for action in legal_actions:
+        if _action_type(action) != "POTION":
+            continue
+        public_action = _public_action(action, hand)
+        slot = public_action.get("potion_index")
+        if (
+            public_action.get("kind") == "use_potion"
+            and isinstance(slot, int)
+            and not isinstance(slot, bool)
+        ):
+            slots.add(slot)
+    return slots
+
+
+def _apply_last_potion_reserve(
+    recommended_action: Any,
+    legal_actions: Sequence[Any],
+    *,
+    hand: Sequence[Any],
+    floor: int,
+    reserve_until_floor: int,
+    player_hp: int | None,
+    player_block: int | None,
+    incoming_damage: int | None,
+) -> tuple[Any, bool]:
+    """Keep the final usable potion before a floor threshold unless the visible
+    current intent is lethal. If MCTS recommends that potion, use a deterministic
+    legal non-potion action when one exists; do not replace the potion with an
+    empty end turn.
+    """
+
+    if (
+        floor >= reserve_until_floor
+        or _action_type(recommended_action) != "POTION"
+        or _public_action(recommended_action, hand).get("kind") != "use_potion"
+        or len(_usable_potion_slots(legal_actions, hand)) != 1
+        or player_hp is None
+        or player_block is None
+        or incoming_damage is None
+        or incoming_damage >= player_hp + player_block
+    ):
+        return recommended_action, False
+
+    for preferred_type in ("CARD", "SINGLE_CARD_SELECT", "MULTI_CARD_SELECT"):
+        for action in legal_actions:
+            if _action_type(action) == preferred_type:
+                return action, True
+    return recommended_action, False
+
+
 def _safe_targetless_card_alias(first: Any, second: Any, hand: Sequence[Any]) -> bool:
     """Accept only the pinned simulator's proven target-index alias for targetless cards."""
 
@@ -323,7 +440,7 @@ class SimulatorCombatAdapter:
             "turn": _value(battle, "turn"),
             "combat_active": _enum_name(_value(battle, "outcome", "UNDECIDED")).upper() == "UNDECIDED",
             "relics": list(run.get("relics", [])),
-            "potions": list(run.get("potions", [])),
+            "potions": list(run.get("potions") or []),
             "gold": run.get("gold"),
             "floor": run.get("floor"),
             "act": run.get("act"),
@@ -378,6 +495,7 @@ def _diagnostic_run_snapshot(gc: Any, armg_policy: Any = None) -> dict[str, Any]
 
     state = public_run_state(gc)
     screen = _enum_name(_value(gc, "screen_state"))
+    potion_inventory = _value(gc, "potions", None)
     state.update({
         "screen_state": screen,
         "room": screen,
@@ -393,7 +511,12 @@ def _diagnostic_run_snapshot(gc: Any, armg_policy: Any = None) -> dict[str, Any]
             else [_card(card) for card in _sequence(_value(gc, "deck", []))]
         ),
         "relics": [_diagnostic_label(item) for item in _sequence(_value(gc, "relics", []))],
-        "potions": [_diagnostic_label(item) for item in _sequence(_value(gc, "potions", []))],
+        "potions": (
+            [_diagnostic_label(item) for item in _sequence(potion_inventory)]
+            if potion_inventory is not None
+            else None
+        ),
+        "potion_inventory_complete": potion_inventory is not None,
     })
     return state
 
@@ -493,6 +616,138 @@ def _diagnostic_map_route(
     except Exception as exc:
         trace["incomplete_reason"] = f"map_route_read_failed:{type(exc).__name__}"
     return trace
+
+
+def _apply_low_hp_elite_route_avoidance(
+    recommended_index: int,
+    scores: Sequence[Any],
+    route: Mapping[str, Any] | None,
+    *,
+    current_hp: Any,
+    max_hp: Any,
+    known_room_names: set[str],
+) -> tuple[int, dict[str, Any]]:
+    """Avoid an immediate Elite below half HP, using only current legal choices.
+
+    The fallback is fail-closed: incomplete route, room, HP, or score data leaves
+    the original ArmG recommendation untouched.
+    """
+
+    detail: dict[str, Any] = {
+        "kind": "avoid_elite_below_half_hp",
+        "threshold_ratio": 0.5,
+        "hp_before": current_hp if isinstance(current_hp, (int, float)) and not isinstance(current_hp, bool) else None,
+        "max_hp_before": max_hp if isinstance(max_hp, (int, float)) and not isinstance(max_hp, bool) else None,
+        "hp_ratio": None,
+        "recommended_index": recommended_index,
+        "actual_index": recommended_index,
+        "recommended_room": None,
+        "actual_room": None,
+        "recommended_score": None,
+        "actual_score": None,
+        "status": "unchanged",
+        "reason": None,
+        "overridden": False,
+    }
+
+    def fail_closed(reason: str) -> tuple[int, dict[str, Any]]:
+        detail["status"] = "fail_closed"
+        detail["reason"] = reason
+        return recommended_index, detail
+
+    if (
+        not isinstance(current_hp, (int, float))
+        or isinstance(current_hp, bool)
+        or not math.isfinite(float(current_hp))
+        or not isinstance(max_hp, (int, float))
+        or isinstance(max_hp, bool)
+        or not math.isfinite(float(max_hp))
+        or float(current_hp) < 0
+        or float(max_hp) <= 0
+    ):
+        return fail_closed("player_hp_unavailable_or_invalid")
+
+    hp_ratio = float(current_hp) / float(max_hp)
+    detail["hp_ratio"] = hp_ratio
+    if hp_ratio >= 0.5:
+        detail["reason"] = "hp_not_below_half"
+        return recommended_index, detail
+
+    if not isinstance(route, Mapping) or route.get("choices_complete") is not True:
+        return fail_closed("map_route_incomplete")
+    choices = route.get("choices")
+    if (
+        not isinstance(choices, Sequence)
+        or isinstance(choices, (str, bytes))
+        or not choices
+        or len(choices) != route.get("choice_count")
+        or not isinstance(recommended_index, int)
+        or isinstance(recommended_index, bool)
+        or not 0 <= recommended_index < len(choices)
+    ):
+        return fail_closed("map_choice_count_or_index_invalid")
+    if not isinstance(scores, Sequence) or isinstance(scores, (str, bytes)) or len(scores) != len(choices):
+        return fail_closed("armg_scores_incomplete")
+
+    normalized_known_rooms = {
+        value.upper()
+        for value in known_room_names
+        if isinstance(value, str) and value
+    }
+    if not normalized_known_rooms or "ELITE" not in normalized_known_rooms:
+        return fail_closed("known_room_vocabulary_unavailable")
+
+    room_names: list[str] = []
+    normalized_scores: list[float] = []
+    for index, (choice, score) in enumerate(zip(choices, scores, strict=True)):
+        if not isinstance(choice, Mapping) or choice.get("legal_action_index") != index:
+            return fail_closed("map_legal_action_order_mismatch")
+        room = choice.get("target_room")
+        target = choice.get("target_node")
+        if (
+            not isinstance(room, str)
+            or not room
+            or room.upper() not in normalized_known_rooms
+            or not isinstance(target, Mapping)
+            or not isinstance(target.get("x"), int)
+            or isinstance(target.get("x"), bool)
+            or not isinstance(target.get("y"), int)
+            or isinstance(target.get("y"), bool)
+        ):
+            return fail_closed("map_room_or_target_unknown")
+        if not isinstance(score, (int, float)) or isinstance(score, bool):
+            return fail_closed("armg_score_invalid")
+        score_value = float(score)
+        if not math.isfinite(score_value):
+            return fail_closed("armg_score_non_finite")
+        room_names.append(room.upper())
+        normalized_scores.append(score_value)
+
+    detail["recommended_room"] = room_names[recommended_index]
+    detail["recommended_score"] = normalized_scores[recommended_index]
+    if room_names[recommended_index] != "ELITE":
+        detail["actual_room"] = room_names[recommended_index]
+        detail["actual_score"] = normalized_scores[recommended_index]
+        detail["reason"] = "recommended_route_not_elite"
+        return recommended_index, detail
+
+    non_elite_indices = [index for index, room in enumerate(room_names) if room != "ELITE"]
+    if not non_elite_indices:
+        return fail_closed("no_known_non_elite_route")
+
+    # Highest ArmG score wins; a tie deterministically chooses the lowest index.
+    actual_index = max(non_elite_indices, key=lambda index: (normalized_scores[index], -index))
+    detail.update(
+        {
+            "actual_index": actual_index,
+            "actual_room": room_names[actual_index],
+            "actual_score": normalized_scores[actual_index],
+            "status": "overridden",
+            "reason": "low_hp_elite_replaced_by_highest_scored_non_elite",
+            "overridden": True,
+        }
+    )
+    return actual_index, detail
 
 
 def deterministic_noncombat_step(gc: Any, sts: Any) -> str:
@@ -981,6 +1236,8 @@ def run_simulator_game(
     combat_mcts_boss_sims: int | None = None,
     combat_mcts_boss_floors: Sequence[int] = (16, 33, 50),
     combat_mcts_exploration: float | None = None,
+    reserve_last_potion_until_floor: int | None = None,
+    avoid_low_hp_elite_routes: bool = False,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
@@ -1035,6 +1292,30 @@ def run_simulator_game(
         raise SimulatorRunError("combat MCTS exploration parameter must be positive")
     if combat_mcts_exploration is not None and consensus_budgets:
         raise SimulatorRunError("tuned exploration cannot be combined with consensus budgets")
+    if reserve_last_potion_until_floor is not None:
+        if (
+            not isinstance(reserve_last_potion_until_floor, int)
+            or isinstance(reserve_last_potion_until_floor, bool)
+            or reserve_last_potion_until_floor < 1
+        ):
+            raise SimulatorRunError("potion reserve floor must be a positive integer")
+        if (
+            combat_mcts_sims is None
+            or consensus_budgets
+            or hybrid_budgets
+            or combat_mcts_late_sims is not None
+            or combat_mcts_boss_sims is not None
+            or combat_mcts_exploration is not None
+        ):
+            raise SimulatorRunError(
+                "last-potion reserve requires one fixed, untuned combat MCTS budget"
+            )
+    if not isinstance(avoid_low_hp_elite_routes, bool):
+        raise SimulatorRunError("low-HP Elite route intervention must be a boolean")
+    if avoid_low_hp_elite_routes and armg_policy is None:
+        raise SimulatorRunError("low-HP Elite route intervention requires the ArmG map policy")
+    if avoid_low_hp_elite_routes and reserve_last_potion_until_floor is not None:
+        raise SimulatorRunError("enable only one primary policy intervention per run")
     if any(value < 1 for value in consensus_budgets):
         raise SimulatorRunError("all MCTS consensus budgets must be positive")
     if hybrid_budgets and (len(hybrid_budgets) < 2 or any(value < 1 for value in hybrid_budgets)):
@@ -1058,6 +1339,9 @@ def run_simulator_game(
     fallback_count = 0
     armg_action_count = 0
     mcts_action_count = 0
+    potion_reserve_override_count = 0
+    map_elite_avoidance_override_count = 0
+    map_elite_avoidance_fail_closed_count = 0
     hybrid_student_vote_count = 0
     hybrid_student_tiebreak_count = 0
     illegal_actions = 0
@@ -1086,6 +1370,23 @@ def run_simulator_game(
         "ui_seed": ui_seed,
         "simulator_seed_long": simulator_seed,
         "seed_contract": seed_contract,
+        "combat_policy_intervention": (
+            {
+                "kind": "reserve_last_usable_potion_before_floor",
+                "until_floor": reserve_last_potion_until_floor,
+            }
+            if reserve_last_potion_until_floor is not None
+            else None
+        ),
+        "map_policy_intervention": (
+            {
+                "kind": "avoid_elite_below_half_hp",
+                "hp_ratio_threshold": 0.5,
+                "fallback": "keep_armg_recommendation_if_required_data_incomplete",
+            }
+            if avoid_low_hp_elite_routes
+            else None
+        ),
         "run_metadata": dict(diagnostic_metadata or {}),
     })
 
@@ -1107,23 +1408,94 @@ def run_simulator_game(
                 )
                 diagnostic_choices: list[dict[str, Any]] | None = None
                 diagnostic_route: dict[str, Any] | None = None
+                diagnostic_selected_index: int | None = None
+                diagnostic_recommended_index: int | None = None
+                map_policy_intervention: dict[str, Any] | None = None
                 if armg_policy is None:
                     if diagnostic_trace_path is not None:
-                        diagnostic_legal_actions_complete = False
+                        (
+                            diagnostic_choices,
+                            diagnostic_selected_index,
+                        ) = _diagnostic_fallback_legal_choices(gc, sts)
+                        if (
+                            diagnostic_choices is None
+                            or diagnostic_selected_index is None
+                        ):
+                            diagnostic_legal_actions_complete = False
+                        if screen_before == _enum_name(sts.ScreenState.MAP_SCREEN):
+                            diagnostic_route = _diagnostic_map_route(
+                                gc,
+                                sts,
+                                choice_count=len(diagnostic_choices or []),
+                                selected_index=(
+                                    diagnostic_selected_index
+                                    if diagnostic_selected_index is not None
+                                    else -1
+                                ),
+                            )
+                            if not diagnostic_route["choices_complete"]:
+                                diagnostic_legal_actions_complete = False
+                        diagnostic_recommended_index = diagnostic_selected_index
                     choice = deterministic_noncombat_step(gc, sts)
                     fallback_count += 1
                     policy_name = "legacy_fallback"
                 else:
                     kind, selected_index, descs, execs, scores = armg_policy.decide(gc, sts)
-                    if diagnostic_trace_path is not None and kind == "map":
+                    recommended_index = selected_index
+                    diagnostic_recommended_index = recommended_index
+                    if kind == "map" and (
+                        diagnostic_trace_path is not None or avoid_low_hp_elite_routes
+                    ):
                         diagnostic_route = _diagnostic_map_route(
                             gc,
                             sts,
                             choice_count=len(descs),
-                            selected_index=selected_index,
+                            selected_index=recommended_index,
                         )
-                        if not diagnostic_route["choices_complete"]:
+                        if (
+                            diagnostic_trace_path is not None
+                            and not diagnostic_route["choices_complete"]
+                        ):
                             diagnostic_legal_actions_complete = False
+                    if avoid_low_hp_elite_routes and kind == "map":
+                        module = getattr(armg_policy, "module", None)
+                        room_vocabulary = getattr(module, "ROOM_IDX", {})
+                        known_room_names = {
+                            str(getattr(room, "name", room)).upper()
+                            for room in room_vocabulary
+                        }
+                        selected_index, map_policy_intervention = (
+                            _apply_low_hp_elite_route_avoidance(
+                                recommended_index,
+                                scores,
+                                diagnostic_route,
+                                current_hp=_value(gc, "cur_hp", None),
+                                max_hp=_value(gc, "max_hp", None),
+                                known_room_names=known_room_names,
+                            )
+                        )
+                        if map_policy_intervention["status"] == "overridden":
+                            map_elite_avoidance_override_count += 1
+                        elif map_policy_intervention["status"] == "fail_closed":
+                            map_elite_avoidance_fail_closed_count += 1
+                        if diagnostic_route is not None:
+                            diagnostic_route["recommended_selected_index"] = recommended_index
+                            diagnostic_route["actual_selected_index"] = selected_index
+                            diagnostic_route["recommended_route"] = diagnostic_route.get(
+                                "selected_route"
+                            )
+                            if (
+                                diagnostic_route.get("choices_complete") is True
+                                and 0 <= selected_index < len(diagnostic_route["choices"])
+                            ):
+                                actual_route = diagnostic_route["choices"][selected_index]
+                                diagnostic_route["selected_route"] = {
+                                    "from": diagnostic_route.get("source_node"),
+                                    "to": actual_route.get("target_node"),
+                                    "room": actual_route.get("target_room"),
+                                    "legal_action_index": selected_index,
+                                }
+                    diagnostic_selected_index = selected_index
                     before = public_run_state(gc)
                     choice_descriptions = [repr(value) for value in descs]
                     choice_semantics = [armg_policy.describe_choice(kind, value) for value in descs]
@@ -1155,6 +1527,8 @@ def run_simulator_game(
                         "screen": screen_before,
                         "kind": kind,
                         "selected_index": selected_index,
+                        "recommended_index": recommended_index,
+                        "map_policy_intervention": map_policy_intervention,
                         "choice_count": len(descs),
                         "choice_descriptions": choice_descriptions,
                         "choice_semantics": choice_semantics,
@@ -1200,6 +1574,9 @@ def run_simulator_game(
                         "policy": policy_name,
                         "legal_choices_complete": diagnostic_choices is not None,
                         "legal_choices": diagnostic_choices,
+                        "selected_legal_action_index": diagnostic_selected_index,
+                        "recommended_legal_action_index": diagnostic_recommended_index,
+                        "map_policy_intervention": map_policy_intervention,
                         "route": diagnostic_route,
                         "selected_choice": choice,
                         "state_before": diagnostic_run_before,
@@ -1346,6 +1723,57 @@ def run_simulator_game(
                             chosen = tuned(battle, active_mcts_sims, combat_mcts_exploration)
                         if chosen is None:
                             chosen = native_actions[0]
+                    mcts_recommended_action = chosen
+                    potion_reserve_override = False
+                    if reserve_last_potion_until_floor is not None:
+                        player = _value(battle, "player")
+                        player_hp_raw = _value(player, "cur_hp", None)
+                        player_block_raw = _value(player, "block", None)
+                        player_hp = (
+                            int(player_hp_raw)
+                            if isinstance(player_hp_raw, (int, float))
+                            and not isinstance(player_hp_raw, bool)
+                            else None
+                        )
+                        player_block = (
+                            int(player_block_raw)
+                            if isinstance(player_block_raw, (int, float))
+                            and not isinstance(player_block_raw, bool)
+                            else None
+                        )
+                        incoming_damage: int | None = 0
+                        for enemy_index, enemy in enumerate(
+                            _sequence(_value(battle, "monsters", []))
+                        ):
+                            enemy_state = _enemy(enemy, index=enemy_index, battle=battle)
+                            enemy_hp = enemy_state.get("hp")
+                            if enemy_state.get("is_gone") is True or (
+                                isinstance(enemy_hp, (int, float)) and enemy_hp <= 0
+                            ):
+                                continue
+                            damage = enemy_state.get("intent_damage")
+                            hits = enemy_state.get("intent_hits")
+                            if (
+                                not isinstance(damage, (int, float))
+                                or isinstance(damage, bool)
+                                or not isinstance(hits, (int, float))
+                                or isinstance(hits, bool)
+                            ):
+                                incoming_damage = None
+                                break
+                            incoming_damage += max(0, int(damage)) * max(1, int(hits))
+                        chosen, potion_reserve_override = _apply_last_potion_reserve(
+                            mcts_recommended_action,
+                            native_actions,
+                            hand=hand_raw,
+                            floor=floor_now,
+                            reserve_until_floor=reserve_last_potion_until_floor,
+                            player_hp=player_hp,
+                            player_block=player_block,
+                            incoming_damage=incoming_damage,
+                        )
+                        if potion_reserve_override:
+                            potion_reserve_override_count += 1
                     latency_ms = (time.perf_counter() - started) * 1000.0
                     latencies_ms.append(latency_ms)
                     chosen_bits = _value(chosen, "bits")
@@ -1399,15 +1827,37 @@ def run_simulator_game(
                             run_state=diagnostic_run_state,
                             projected_legal_actions=public_actions,
                         )
+                        diagnostic_state["usable_potion_slots"] = sorted(
+                            _usable_potion_slots(native_actions, hand_raw)
+                        )
+                        diagnostic_state["usable_potion_slots_complete"] = True
+                        diagnostic_state["usable_potion_slots_source"] = (
+                            "canonical_native_legal_actions"
+                        )
+                        diagnostic_state["potion_inventory_complete"] = bool(
+                            diagnostic_run_state.get("potion_inventory_complete", False)
+                        )
+                        if not diagnostic_state["potion_inventory_complete"]:
+                            diagnostic_state["potions"] = None
                         selected_public_matches = [
                             index
                             for index, action in enumerate(public_actions)
                             if canonical_json(action) == canonical_json(trace_action)
                         ]
-                        chosen_native_index = next(
-                            (index for index, action in enumerate(native_actions) if action is chosen),
-                            None,
+                        chosen_native_matches = [
+                            index
+                            for index, action in enumerate(native_actions)
+                            if _value(action, "bits") == _value(chosen, "bits")
+                        ]
+                        chosen_native_index = (
+                            chosen_native_matches[0]
+                            if len(chosen_native_matches) == 1
+                            else None
                         )
+                        if chosen_native_index is None and len(selected_public_matches) == 1:
+                            public_index = selected_public_matches[0]
+                            if public_index < len(native_index_map):
+                                chosen_native_index = native_index_map[public_index]
                         if len(selected_public_matches) != 1 or chosen_native_index is None:
                             diagnostic_legal_actions_complete = False
                         _record(diagnostic_trace_path, {
@@ -1426,6 +1876,10 @@ def run_simulator_game(
                             "policy_legal_actions": public_actions,
                             "legal_actions_complete": True,
                             "legal_action_alias_count": alias_count,
+                            "mcts_recommended_action": _public_action(
+                                mcts_recommended_action, hand_raw
+                            ),
+                            "potion_reserve_override": potion_reserve_override,
                             "selected_action": trace_action,
                             "selected_public_action_index": (
                                 selected_public_matches[0] if len(selected_public_matches) == 1 else None
@@ -1442,6 +1896,10 @@ def run_simulator_game(
                         "block_before": _value(trace_player, "block"),
                         "energy_before": _value(trace_player, "energy"),
                         "action": trace_action,
+                        "mcts_recommended_action": _public_action(
+                            mcts_recommended_action, hand_raw
+                        ),
+                        "potion_reserve_override": potion_reserve_override,
                         "action_type": _action_type(chosen),
                         "card": trace_card,
                         "target_index": _value(chosen, "target_idx", -1),
@@ -1451,6 +1909,7 @@ def run_simulator_game(
                             for i, enemy in enumerate(_sequence(_value(battle, "monsters", [])))
                         ],
                         "mcts_sims": active_mcts_sims,
+                        "potion_reserve_override": potion_reserve_override,
                     })
                     chosen.execute(battle)
                     mcts_action_count += 1
@@ -1608,6 +2067,12 @@ def run_simulator_game(
             )
         ),
         "noncombat_policy": "armg" if armg_policy is not None else "legacy_fallback",
+        "potion_inventory_snapshot_complete": _value(gc, "potions", None) is not None,
+        "potion_reserve_until_floor": reserve_last_potion_until_floor,
+        "potion_reserve_override_count": potion_reserve_override_count,
+        "avoid_low_hp_elite_routes": avoid_low_hp_elite_routes,
+        "map_elite_avoidance_override_count": map_elite_avoidance_override_count,
+        "map_elite_avoidance_fail_closed_count": map_elite_avoidance_fail_closed_count,
         "fallback_rate": fallback_count / max(1, student_actions + fallback_count + armg_action_count),
         "equivalent_action_alias_count": equivalent_action_alias_count,
         "illegal_action_count": illegal_actions,
@@ -1630,6 +2095,9 @@ def run_simulator_game(
         "illegal_action_count": illegal_actions,
         "timeout_count": timeout_count,
         "crash_count": crash_count,
+        "potion_inventory_snapshot_complete": summary[
+            "potion_inventory_snapshot_complete"
+        ],
         "final_floor": summary["final_floor"],
         "final_act": int(_value(gc, "act", 0) or 0),
         "final_hp": summary["final_hp"],

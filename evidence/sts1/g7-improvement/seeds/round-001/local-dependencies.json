@@ -1,0 +1,71 @@
+{
+  "schema_version": "sts1-g7-local-dependency-audit-v1",
+  "recorded_at_utc": "2026-10-08T04:22:57Z",
+  "purpose": "Repair and verify an isolated local runtime for the pinned STS1 simulator; this record does not claim a strategy evaluation.",
+  "environment": {
+    "location": "temporary isolated Python environment",
+    "python": "3.12.14",
+    "torch": "2.11.0+cpu",
+    "numpy": "2.5.3",
+    "pytest": "9.1.1",
+    "cmake": "4.4.4",
+    "ninja": "1.13.2",
+    "ziglang": "0.16.0",
+    "compiler_target": "x86_64-windows-gnu"
+  },
+  "pinned_sources": {
+    "simulator_commit": "7476a81954020087da31d41d16fddf475746ec2d",
+    "simulator_source_archive_sha256": "f63bc36ce51ef5204f68e9e61df4f499293c4935763ed494e94632bbafa5e2e6",
+    "pybind11_commit": "3e9dfa2866941655c56877882565e7577de6fc7b",
+    "pybind11_source_archive_sha256": "5c2ff40925dc83273163f9b192aa0fbd09ad4b18c75c1d888794645d9e582935",
+    "nlohmann_json_commit": "0b345b20c888f7dc8888485768e4bf9a6be29de0",
+    "nlohmann_json_source_archive_sha256": "8a7f37bd8145350e126e922b9b8bf52e05dc0e55a1b660d70b7dc6cc9ba80c6c",
+    "sim_rl_hooks_patch_sha256": "6cb33d57fc70ab44d23c2e5216e745cd7af59477b5994ae7065990b406933dbc",
+    "local_clone_binding_patch_sha256": "60fc8803d479c5dad33fa3a90b0ebbbaced504d7ec0f0c2aa5eab1ba2e794ce6"
+  },
+  "simulator_module": {
+    "filename": "slaythespire.cp312-win_amd64.pyd",
+    "bytes": 2588160,
+    "sha256": "dea5e3b88097c7e7b7ffb74f03c227b7244a548b07fc5344c6b195d737c65512",
+    "cmake_configure": "PASS",
+    "build": "PASS",
+    "python_import": "PASS"
+  },
+  "focused_tests": {
+    "command_scope": [
+      "tests/test_sts1_seed_ledger.py",
+      "tests/test_sts1_seed_inventory.py",
+      "tests/test_sts1_simulator_trace.py"
+    ],
+    "result": "13 passed, 2 subtests passed"
+  },
+  "artifact_identity": {
+    "g7_parent_hash_from_existing_handoff": "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0",
+    "candidate_model_hash_from_existing_handoff": "f843ac19bb89f4e8e2703297cd728b3a97048801c343ddea656b17db85c43b7b",
+    "candidate_adapter_sidecar_hash_from_existing_handoff": "8e66a92c6462dd8365776d818278f8bf2e0e55ca9038a70cea0966d2d7431733",
+    "checkpoint_available_in_audited_local_roots": false,
+    "recovery_artifact_download": "HTTPError; not retried"
+  },
+  "experiment_status": {
+    "generated_exploration_pool_manifest_sha256": "53df27d22dbc0fe51b6818d55e1a947b8db4d397e3fbc91d232bcef331bce874",
+    "generated_pool_usage": "0 episodes",
+    "strategy_evaluation": "NOT_RUN",
+    "pinned_simulator_trace_invariance": "NOT_VERIFIED",
+    "formal_seed_results_read_or_executed": false,
+    "g7_champion_changed": false,
+    "reason": "The pinned simulator imports, but the exact G7 checkpoint is not present in the audited local roots and the existing recovery artifact could not be downloaded through the available temporary reference."
+  },
+  "superseding_artifact_recovery_update": {
+    "recorded_at": "2026-10-09",
+    "status": "VERIFIED",
+    "source": "user-supplied GitHub Actions ZIP",
+    "actions_run_id": 36674639174,
+    "actions_artifact_id": 11079234863,
+    "archive_sha256": "3f4fc50b9452138e50ed5274cc7ac71a9ad011077785279de7834a478c934e66",
+    "artifact_digest_match": true,
+    "checkpoint_role": "pinned G7 parent",
+    "checkpoint_sha256": "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0",
+    "checkpoint_matches_pinned_parent": true,
+    "inspection_boundary": "Verified archive identity, checkpoint hash, and top-level checkpoint keys only; cached evaluation outputs, replay rows, labels, traces, and Gate/Fresh result contents were not inspected or used."
+  }
+}

@@ -11,6 +11,10 @@ from roguelike_ai.sts1_phase3.simulator import run_simulator_game
 class _Screen(Enum):
     MAP_SCREEN = auto()
     BATTLE = auto()
+    REWARDS = auto()
+    REST_ROOM = auto()
+    SHOP_ROOM = auto()
+    EVENT_SCREEN = auto()
 
 
 class _GameOutcome(Enum):
@@ -33,12 +37,27 @@ class _MapAction:
         self.idx1 = target_x
         self.bits = target_x + 100
 
+    def execute(self, gc: _GameContext) -> None:
+        gc.cur_map_node_x = self.idx1
+        gc.cur_map_node_y += 1
+        gc.screen_state = _Screen.BATTLE
+
 
 class _Action:
     action_type = "END_TURN"
     source_idx = -1
     target_idx = -1
     bits = 1
+
+    def execute(self, battle: _BattleContext) -> None:
+        battle.outcome = _BattleOutcome.PLAYER_VICTORY
+
+
+class _AlternateAction:
+    action_type = "SIMULATOR_SPECIAL"
+    source_idx = 1
+    target_idx = -1
+    bits = 2
 
     def execute(self, battle: _BattleContext) -> None:
         battle.outcome = _BattleOutcome.PLAYER_VICTORY
@@ -148,6 +167,17 @@ class _PinnedSTS:
         return [_MapAction(2), _MapAction(5)]
 
 
+class _DetachedRecommendationSTS(_PinnedSTS):
+    @staticmethod
+    def get_legal_actions(_battle: _BattleContext) -> list[object]:
+        return [_Action(), _AlternateAction()]
+
+    @staticmethod
+    def mcts_recommend(_battle: _BattleContext, _budget: int) -> _Action:
+        # Simulate a pybind wrapper returned separately from the legal-action list.
+        return _Action()
+
+
 def test_diagnostic_trace_preserves_fixed_seed_outcome_and_full_legal_actions(tmp_path: Path) -> None:
     common = {
         "student": None,
@@ -213,3 +243,79 @@ def test_diagnostic_trace_preserves_fixed_seed_outcome_and_full_legal_actions(tm
     assert by_type["encounter_finished_v1"]["battle_outcome"] == "PLAYER_VICTORY"
     assert by_type["terminal_trace_v1"]["complete"] is True
     assert by_type["terminal_trace_v1"]["legal_actions_complete"] is True
+
+
+def test_legacy_fallback_trace_records_native_legal_actions_without_changing_run(
+    tmp_path: Path,
+) -> None:
+    common = {
+        "student": None,
+        "sts": _PinnedSTS,
+        "seed": "347001",
+        "combat_mcts_sims": 2000,
+    }
+    without_trace = run_simulator_game(**common)
+    trace_path = tmp_path / "legacy-fallback-diagnostic.ndjson"
+    with_trace = run_simulator_game(
+        **common,
+        diagnostic_trace_path=trace_path,
+        diagnostic_metadata={"fixture": "legacy-fallback-trace-invariance"},
+    )
+
+    stable_fields = (
+        "seed",
+        "simulator_seed_long",
+        "seed_contract",
+        "outcome",
+        "result",
+        "final_floor",
+        "final_hp",
+        "illegal_action_count",
+        "timeout_count",
+        "crash_count",
+        "game_steps",
+        "fallback_count",
+        "mcts_action_count",
+    )
+    assert {key: without_trace[key] for key in stable_fields} == {
+        key: with_trace[key] for key in stable_fields
+    }
+    assert with_trace["outcome"] == "victory"
+    assert with_trace["illegal_action_count"] == 0
+    assert with_trace["timeout_count"] == 0
+    assert with_trace["crash_count"] == 0
+
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    by_type = {record["type"]: record for record in records}
+    noncombat = by_type["noncombat_decision_trace_v1"]
+    assert noncombat["policy"] == "legacy_fallback"
+    assert noncombat["legal_choices_complete"] is True
+    assert noncombat["selected_legal_action_index"] == 0
+    assert [choice["semantics"]["bits"] for choice in noncombat["legal_choices"]] == [102, 105]
+    assert noncombat["route"]["choices_complete"] is True
+    assert noncombat["route"]["selected_route"]["legal_action_index"] == 0
+    assert by_type["terminal_trace_v1"]["complete"] is True
+    assert by_type["terminal_trace_v1"]["legal_actions_complete"] is True
+
+
+def test_combat_trace_maps_detached_native_action_wrapper_by_bits(tmp_path: Path) -> None:
+    trace_path = tmp_path / "detached-native-action.ndjson"
+    result = run_simulator_game(
+        student=None,
+        sts=_DetachedRecommendationSTS,
+        seed="347001",
+        combat_mcts_sims=2000,
+        diagnostic_trace_path=trace_path,
+    )
+
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    combat = next(record for record in records if record["type"] == "combat_decision_trace_v1")
+    terminal = next(record for record in records if record["type"] == "terminal_trace_v1")
+    assert result["outcome"] == "victory"
+    assert result["illegal_action_count"] == 0
+    assert result["timeout_count"] == 0
+    assert result["crash_count"] == 0
+    assert combat["selected_public_action_index"] == 0
+    assert combat["selected_native_action_index"] == 0
+    assert combat["legal_actions_complete"] is True
+    assert terminal["legal_actions_complete"] is True

@@ -1,0 +1,73 @@
+{
+  "schema_version": "sts1-g7-trace-invariance-smoke-v2",
+  "verified_at_utc": "2026-10-08T10:05:03Z",
+  "usage_id": "trace-invariance-native-final-20261008-100503",
+  "purpose": "infrastructure_trace_invariance_only",
+  "simulator": {
+    "commit": "7476a81954020087da31d41d16fddf475746ec2d",
+    "source_archive_sha256": "f63bc36ce51ef5204f68e9e61df4f499293c4935763ed494e94632bbafa5e2e6",
+    "binding_sha256": "dea5e3b88097c7e7b7ffb74f03c227b7244a548b07fc5344c6b195d737c65512",
+    "native_import": "PASS"
+  },
+  "seed_usage": {
+    "source_pool": "round-001-20261008-train_hypothesis_1",
+    "source_pool_manifest_sha256": "eff9960687e4757eb95900227a631a8e57980a3cf29dc809c06cccc6f59dfec3",
+    "unique_seeds_used_for_infrastructure": 1,
+    "episodes_in_this_pair": 2,
+    "cumulative_infrastructure_episodes_on_this_seed": 6,
+    "unused_train_seeds_remaining": 29,
+    "private_seed_and_usage_record": "PRIVATE_LOCAL_STORAGE_ONLY",
+    "raw_trace": "PRIVATE_LOCAL_STORAGE_ONLY"
+  },
+  "configuration": {
+    "trace_off_and_trace_on_use_same_seed": true,
+    "combat_budget_per_run": 2000,
+    "noncombat_policy": "deterministic_legacy_fallback",
+    "g7_policy_used": false,
+    "strategy_evaluation": "NOT_RUN"
+  },
+  "result": {
+    "stable_fields_equal": true,
+    "stable_fields_checked": [
+      "outcome",
+      "result",
+      "final_floor",
+      "final_hp",
+      "illegal_action_count",
+      "timeout_count",
+      "crash_count",
+      "game_steps",
+      "fallback_count",
+      "mcts_action_count"
+    ],
+    "outcome_pair": ["defeat", "defeat"],
+    "final_floor_pair": [33, 33],
+    "both_terminal_records_complete": true,
+    "illegal_actions": 0,
+    "timeouts": 0,
+    "crashes": 0,
+    "trace_records": 403,
+    "trace_record_types": {
+      "combat_decision_trace_v1": 299,
+      "diagnostic_trace_header_v1": 1,
+      "encounter_finished_v1": 18,
+      "encounter_started_v1": 18,
+      "noncombat_decision_trace_v1": 66,
+      "terminal_trace_v1": 1
+    },
+    "raw_trace_sha256": "bcd457e50ec1b475a42b71ce908e4777aa11adbfb228e28cd5ce40c1e6077771",
+    "raw_trace_bytes": 1738482,
+    "legal_action_trace_completeness": "COMPLETE_FOR_THIS_RUN",
+    "incomplete_combat_flags": 0,
+    "incomplete_noncombat_flags": 0,
+    "incomplete_terminal_flags": 0,
+    "limitation": "This verifies trace invariance and complete legal-action mapping for the deterministic fallback plus native MCTS infrastructure only. G7 weights and G7-policy trace coverage remain NOT_VERIFIED; this is not strategy evidence."
+  },
+  "acceptance_boundary": {
+    "trace_outcome_invariance_for_this_fallback_run": "VERIFIED",
+    "g7_weight_sha256": "NOT_VERIFIED",
+    "g7_strategy_evaluation": "NOT_RUN",
+    "confirmation": "NOT_RUN",
+    "champion": "G7"
+  }
+}

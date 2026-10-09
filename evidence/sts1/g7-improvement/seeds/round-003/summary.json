@@ -47,7 +47,16 @@
     "probe": {
       "count": 10,
       "manifest_sha256": "d6ed4a75d4fca4b0df414572e1effe8585778b2be6cb7f88995b002e3b7ba477",
-      "status": "GENERATED_NOT_RUN"
+      "status": "COMPLETED",
+      "paired": {
+        "g7_wins": 0,
+        "candidate_wins": 0,
+        "candidate_only": 0,
+        "g7_only": 0,
+        "net": 0,
+        "discordant_pairs": 0,
+        "exact_one_sided_sign_p": 1
+      }
     },
     "dev": {
       "count": 30,
@@ -77,6 +86,31 @@
       "exact_one_sided_sign_p": 1
     },
     "private_aggregate_sha256": "df827e229c2ea148323da034373208dc6ca459cd006ca87f954943ff71476e13"
+  },
+  "h3_probe_evaluation": {
+    "status": "COMPLETE",
+    "candidate_policy_commit": "009e233bb38f71a2df3aea611db0b8ab9b664aa1",
+    "evaluator_commit": "48f60b04868714cbd026b90b12e7d68ef0a35c7e",
+    "episodes": 21,
+    "seed_contract": "heldout_internal",
+    "trace_invariance": "PASS",
+    "trace_enabled_terminal_records_complete_and_legal": 20,
+    "candidate_low_hp_potion_opportunities": 6,
+    "candidate_emergency_potion_overrides": 6,
+    "illegal_actions": 0,
+    "crashes": 0,
+    "timeouts": 0,
+    "communication_errors": "NOT_APPLICABLE_LOCAL_SIMULATOR",
+    "paired": {
+      "g7_wins": 0,
+      "candidate_wins": 0,
+      "candidate_only": 0,
+      "g7_only": 0,
+      "net": 0,
+      "discordant_pairs": 0,
+      "exact_one_sided_sign_p": 1
+    },
+    "private_aggregate_sha256": "a2c9d4786b3bc43725ac00d17ebb6b52626c87c484186e6e15468540cac9bc72"
   },
   "h2_train_evaluation": {
     "status": "COMPLETE",

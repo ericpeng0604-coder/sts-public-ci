@@ -7,7 +7,7 @@ Status: protocol v2 was approved after the partial H18 attempt and applies prosp
 
 The previous exploration gate vetoed a Candidate if even one paired terminal floor or final-HP result was lower than G7. That zero-regression rule applied to H12-H17 and remains part of those historical decisions; this protocol does not reclassify or reopen those runs.
 
-Starting with the first eligible H19 Train10 stage:
+Protocol v2 was registered before the first H19 episode. Round010 was its first eligible Train10 attempt, but failed closed before the candidate arm; its seed pool is withdrawn. Any continuation uses a fresh disjoint Round011 pool and the same pre-registered gate rules:
 
 - Train→Probe requires complete/legal paired evidence, zero hard-safety counters, verified effective overrides on at least 3/10 distinct seeds, and paired net ≥ 0.
 - Probe→Dev uses the same hard-safety and 3/10 coverage requirements with paired net ≥ 0.
@@ -39,9 +39,9 @@ Protocol v1 remains the historical classification for H12-H18, including the inc
 ## Prospective protocol registration
 
 - Protocol ID: `sts1-g7-stage-gate-v2-2026-10-10`.
-- Effective time: the Issue #19 body amendment timestamp; first eligible stage: H19 Train10, using a newly generated and disjoint pool after runtime and provenance preflight.
-- H18 remains `NOT_VERIFIED`; its partial pool is consumed and withdrawn. No historical result is reclassified under v2.
-- H19 candidate implementation is frozen to the committed simulator policy source. Candidate policy source Git blob: `f449f5dabf8429ac51554972bc0a162fca7564ab`; stage evaluator Git blob: `4862ea3074693899886915186598df24d12f1610`. The active H19 exploration evaluator writes this protocol ID into preflight and stage summaries. Confirmation execution remains NOT_VERIFIED in this evaluator and must be wired or independently verified before any confirmation run.
+- Effective time: the Issue #19 body amendment timestamp; first eligible stage: the registered H19 Round010 Train10 after runtime and provenance preflight.
+- H18 remains `NOT_VERIFIED`; its partial pool is consumed and withdrawn. H19 Round010 also remains `NOT_VERIFIED` because the native potion property was missing before the candidate arm. Neither result is reclassified as a strategy result under v2.
+- H19 candidate implementation remains frozen to the committed simulator policy source. Candidate policy source Git blob: `f449f5dabf8429ac51554972bc0a162fca7564ab`; Round011 stage evaluator Git blob: `ee26fff922280f00a84765f8f339bbaa1326ec6b`. The evaluator writes this protocol ID into preflight and stage summaries. Confirmation execution remains NOT_VERIFIED in this evaluator and must be wired or independently verified before any confirmation run.
 - Dev30 must have 30 complete paired outcomes and pass all hard guards. Candidate wins must exceed G7 wins. The exact one-sided p-value is retained as a diagnostic and does not gate Dev-to-confirmation selection.
 - Train10 and Probe10 require net >= 0, at least 3 distinct seeds with a verified effective candidate override, and all hard guards. A change in total override count without distinct-seed coverage does not pass.
 - Confirmation keeps two fresh, mutually disjoint 100-seed batches; each batch must have positive net, the combined net must be at least 10/200, and the combined exact one-sided sign test must pass the permanent trial-specific alpha. No floor/HP regression can waive these win-rate conditions.
@@ -50,8 +50,8 @@ Protocol v1 remains the historical classification for H12-H18, including the inc
 ### Public-source privacy and H19 runner boundary
 
 - The public evaluator no longer embeds checkpoint, native-binding, ArmG, exclusion-inventory, or H17/H18 allocation fingerprints. It reads the expected runtime identities from a required private identity-lock file outside the repository and records only the validated identities in private stage evidence.
-- The runner accepts only H19 exploration stages and validates the Round010 inventory, ledger, manifests, pairwise disjointness, and private allocation record. H16-H18 pools cannot be selected through its CLI.
-- This evaluator refactor does not change the candidate policy. H19 remains NOT_STARTED until the synchronized remote code, private identity lock, new pool lineage, and runtime preflight all pass.
+- The runner accepts only H19 exploration stages and validates the Round011 inventory, ledger, manifests, pairwise disjointness, and private allocation record. H16-H18 and consumed Round010 pools cannot be selected through its CLI.
+- This evaluator refactor does not change the candidate policy. Round011 remains NOT_STARTED until the synchronized remote code, private identity lock, new pool lineage, and runtime preflight all pass.
 
 ### Guards retained
 

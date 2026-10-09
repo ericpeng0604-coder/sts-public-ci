@@ -1,4 +1,4 @@
-"""Run the preregistered H19 Defend evaluation on fresh Round010 pools.
+"""Run the preregistered H19 Defend evaluation on fresh Round011 pools.
 
 Raw seed IDs, episodes, traces, and usage records must remain in the private
 Temp evaluation directory. This runner never tunes the registered rule.
@@ -35,7 +35,7 @@ import sts1_g7_h15_train_trace_audit as h15  # noqa: E402
 import sts1_g7_seed_ledger as seed_ledger  # noqa: E402
 
 EvaluationIntegrityError = h2.EvaluationIntegrityError
-ROUND_ID = "round-010-20261010"
+ROUND_ID = "round-011-20261010"
 TRIAL_ROUND_IDS = {"h19": ROUND_ID}
 TRIAL_POOL_ROLE = {"h19": {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"}}
 ACTIVE_TRIAL_IDS = tuple(TRIAL_POOL_ROLE)
@@ -143,12 +143,12 @@ def _stage_seed_roles(stage: str, stage_seeds: tuple[int, ...]) -> tuple[tuple[i
     raise EvaluationIntegrityError("stage has no registered seed role")
 
 
-def _round010_assets(
+def _round011_assets(
     *, trial_id: str, stage: str, pool_file: Path, pools_dir: Path,
     inventory_path: Path, allocation_event: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], tuple[int, ...], dict[str, Any], dict[str, Any]]:
     if trial_id != "h19" or stage not in TRIAL_POOL_ROLE["h19"]:
-        raise EvaluationIntegrityError("Round010 assets are registered only for H19")
+        raise EvaluationIntegrityError("Round011 assets are registered only for H19")
     if allocation_event is None and stage != "train":
         raise EvaluationIntegrityError("H19 held-out stages require the existing private allocation record")
     role = TRIAL_POOL_ROLE[trial_id][stage]
@@ -158,7 +158,7 @@ def _round010_assets(
     try:
         excluded, source_audit = seed_ledger.validate_inventory(inventory)
     except seed_ledger.SeedLedgerError as exc:
-        raise EvaluationIntegrityError("Round010 exclusion inventory validation failed") from exc
+        raise EvaluationIntegrityError("Round011 exclusion inventory validation failed") from exc
     inventory_sha256 = _sha256(inventory_path)
     ledger = h15._read_json(pools_dir / "ledger.json")
     ledger_payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
@@ -173,9 +173,9 @@ def _round010_assets(
         or set(ledger.get("pools", {})) != set(POOL_FILES)
         or set(seed_ledger.EXPLORATION_POOL_SIZES) != set(POOL_FILES)
     ):
-        raise EvaluationIntegrityError("Round010 seed-ledger identity or provenance mismatch")
+        raise EvaluationIntegrityError("Round011 seed-ledger identity or provenance mismatch")
     if {path.name for path in pools_dir.glob("*.json")} != {"ledger.json", *POOL_FILES.values()}:
-        raise EvaluationIntegrityError("Round010 pool directory has unexpected or missing JSON files")
+        raise EvaluationIntegrityError("Round011 pool directory has unexpected or missing JSON files")
     pool_manifests: dict[str, dict[str, Any]] = {}
     for pool_name, expected_count in seed_ledger.EXPLORATION_POOL_SIZES.items():
         manifest = h15._read_json(pools_dir / POOL_FILES[pool_name])
@@ -196,12 +196,12 @@ def _round010_assets(
             or manifest.get("manifest_sha256") != seed_ledger.sha256_json(payload)
             or len(manifest.get("seed_ids", [])) != expected_count
         ):
-            raise EvaluationIntegrityError("Round010 pool manifest does not match its ledger entry")
+            raise EvaluationIntegrityError("Round011 pool manifest does not match its ledger entry")
         pool_manifests[pool_name] = manifest
     try:
         seed_ledger._verify_generated(ledger, excluded)
     except (KeyError, TypeError, seed_ledger.SeedLedgerError) as exc:
-        raise EvaluationIntegrityError("Round010 pools are not disjoint from exclusions") from exc
+        raise EvaluationIntegrityError("Round011 pools are not disjoint from exclusions") from exc
     expected_allocation = {
         "record_type": "h19_pool_allocation",
         "schema_version": "sts1-g7-pool-allocation-v1",
@@ -1079,7 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
         identities["stage_gate_protocol_version"] = STAGE_GATE_PROTOCOL_VERSION
         events = _read_jsonl(usage_path)
         allocation_event = events[0] if events else None
-        pool, seeds, pool_preflight, allocation_event = _round010_assets(
+        pool, seeds, pool_preflight, allocation_event = _round011_assets(
             trial_id=trial_id, stage=stage, pool_file=args.pool_file.resolve(),
             pools_dir=args.pools_dir.resolve(), inventory_path=args.exclusion_inventory.resolve(),
             allocation_event=allocation_event,

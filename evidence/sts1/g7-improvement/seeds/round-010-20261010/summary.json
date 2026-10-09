@@ -1,7 +1,5 @@
 {
   "generator": "sha256-counter-rejection-v1",
-  "inventory_id": "round-009-20261009-extended-exclusion",
-  "inventory_sha256": "916f93771eed948dab2dc8160101cc03feea6927514dcb348a215793d5fb55cd",
   "manifest_sha256": "4caa168bfe4927c95633ebc0b916580efd04ba2910906435d76ffd4836ee79b7",
   "pools": {
     "dev": {
@@ -42,7 +40,6 @@
   },
   "record_type": "exploration_round",
   "round_id": "round-010-20261010",
-  "schema_version": "sts1-g7-seed-public-summary-v1",
-  "source_audit_sha256": "ea1e197df9a5dc445b95b81c6eb85ae2bb4b72ea3a844d30f8637638148a2972",
+  "schema_version": "sts1-g7-seed-public-summary-v2",
   "status": "GENERATED_NOT_RUN"
 }

@@ -209,8 +209,8 @@ def _h19_identities() -> dict[str, str]:
 
 
 def test_h19_private_paths_and_legacy_trials_fail_closed(tmp_path) -> None:
-    pools_dir = tmp_path / "round-010-seeds" / "pools"
-    output = tmp_path / "round-010-h19-train-20261010"
+    pools_dir = tmp_path / "round-011-seeds" / "pools"
+    output = tmp_path / "round-011-h19-train-20261010"
     usage = pools_dir.parent / "h19-usage-private.jsonl"
     inventory = pools_dir.parent / "exclusion-inventory.json"
     identity_lock = pools_dir.parent / "h19-identity-private.json"
@@ -359,7 +359,7 @@ def test_h19_identity_lock_pins_all_runtime_inputs(tmp_path, monkeypatch) -> Non
     assert set(h16_runner.PRIVATE_IDENTITY_KEYS) <= set(identities)
 
 
-def test_round010_assets_validate_generated_pools_and_private_allocation(tmp_path) -> None:
+def test_round011_assets_validate_generated_pools_and_private_allocation(tmp_path) -> None:
     ledger_module = h16_runner.seed_ledger
     inventory = {
         "schema_version": ledger_module.INVENTORY_SCHEMA_VERSION,
@@ -375,7 +375,7 @@ def test_round010_assets_validate_generated_pools_and_private_allocation(tmp_pat
             for index, category in enumerate(ledger_module.REQUIRED_SOURCE_CATEGORIES, 1)
         ],
     }
-    seed_dir = tmp_path / "round-010-seeds"
+    seed_dir = tmp_path / "round-011-seeds"
     pools_dir = seed_dir / "pools"
     pools_dir.mkdir(parents=True)
     inventory_path = seed_dir / "exclusion-inventory.json"
@@ -392,7 +392,7 @@ def test_round010_assets_validate_generated_pools_and_private_allocation(tmp_pat
             json.dumps(manifest), encoding="utf-8"
         )
 
-    pool, seeds, preflight, allocation = h16_runner._round010_assets(
+    pool, seeds, preflight, allocation = h16_runner._round011_assets(
         trial_id="h19",
         stage="train",
         pool_file=pools_dir / "train_hypothesis_1.json",
@@ -405,7 +405,7 @@ def test_round010_assets_validate_generated_pools_and_private_allocation(tmp_pat
     assert preflight["seed_disjointness_verified"] is True
 
     with pytest.raises(h16_runner.EvaluationIntegrityError):
-        h16_runner._round010_assets(
+        h16_runner._round011_assets(
             trial_id="h19",
             stage="train",
             pool_file=pools_dir / "train_hypothesis_1.json",

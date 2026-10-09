@@ -1,0 +1,45 @@
+{
+  "generator": "sha256-counter-rejection-v1",
+  "manifest_sha256": "53b17b837d916ff876b276c0bc7d52e9433617c8183f84114fbdf093ef4f978f",
+  "pools": {
+    "dev": {
+      "count": 30,
+      "manifest_sha256": "e0ced3b19bcf02d3ef798cc23e0207de5fac5accdf0f317e7a84f7167ca5c7f1",
+      "pool_id": "round-011-20261010-dev",
+      "purpose": "dev",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "probe": {
+      "count": 10,
+      "manifest_sha256": "5d578d6b8c16f967348683592f189badbdba011738c75f77df899a85135c838f",
+      "pool_id": "round-011-20261010-probe",
+      "purpose": "probe",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_1": {
+      "count": 10,
+      "manifest_sha256": "d2e50db5f812c759a1f6dc530af3ff7b8efc5b3f110cff1d120e2729b0247b30",
+      "pool_id": "round-011-20261010-train_hypothesis_1",
+      "purpose": "train",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_2": {
+      "count": 10,
+      "manifest_sha256": "8410bef77f5e89c04db1172a8f61ef95cf55eb1c00334dabf0c9e59c0d8c0477",
+      "pool_id": "round-011-20261010-train_hypothesis_2",
+      "purpose": "train",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_3": {
+      "count": 10,
+      "manifest_sha256": "f4250bab10d244b230aeb7dbc991cc87af1ac989aeaabb8e0fc30c79cabf8878",
+      "pool_id": "round-011-20261010-train_hypothesis_3",
+      "purpose": "train",
+      "status": "GENERATED_NOT_RUN"
+    }
+  },
+  "record_type": "exploration_round",
+  "round_id": "round-011-20261010",
+  "schema_version": "sts1-g7-seed-public-summary-v2",
+  "status": "GENERATED_NOT_RUN"
+}

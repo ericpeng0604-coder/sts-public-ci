@@ -1,0 +1,79 @@
+{
+  "schema_version": "sts1-g7-seed-public-summary-v1",
+  "round_id": "round-003-20261009",
+  "inventory_id": "sts1-g7-existing-seeds-v3-20261009-round003",
+  "inventory_sha256": "8fa7cf83b46f57d37da6b9a6c60870d29423f13f66d99a095c74472ccf0a8f1b",
+  "ledger_sha256": "dd78cd1bfaaf7ca62bebc0049c02672839dc9b2cd138eebcd1d4acdba4d19334",
+  "generator": "sha256-counter-rejection-v1",
+  "unique_excluded_count": 22756,
+  "pool_count": 5,
+  "total_pool_seed_count": 70,
+  "pairwise_disjoint": true,
+  "disjoint_from_exclusion_inventory": true,
+  "pools": {
+    "train_hypothesis_1": {
+      "count": 10,
+      "manifest_sha256": "1693f7cf0e61cbf4dd8881a0dca357b17b681f517ea195b414ac829d731fd1d2",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "train_hypothesis_2": {
+      "count": 10,
+      "manifest_sha256": "101477197215c2b53773848f1f11182e3d9e9aa5b1539bcbc8b836b7ec9ba8a0",
+      "status": "COMPLETED",
+      "paired": {
+        "g7_wins": 1,
+        "candidate_wins": 1,
+        "candidate_only": 0,
+        "g7_only": 0,
+        "net": 0,
+        "discordant_pairs": 0,
+        "exact_one_sided_sign_p": 1
+      }
+    },
+    "train_hypothesis_3": {
+      "count": 10,
+      "manifest_sha256": "3f3d5f8f0e9fd762529bddc7577bd02ea29331e66d72cbdf9b36001d48669f52",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "probe": {
+      "count": 10,
+      "manifest_sha256": "d6ed4a75d4fca4b0df414572e1effe8585778b2be6cb7f88995b002e3b7ba477",
+      "status": "GENERATED_NOT_RUN"
+    },
+    "dev": {
+      "count": 30,
+      "manifest_sha256": "1c5902006c427aee215e7b79eca65e58cf489ef125b18113a4b99c72e007d856",
+      "status": "GENERATED_NOT_RUN"
+    }
+  },
+  "h2_train_evaluation": {
+    "status": "COMPLETE",
+    "episodes": 21,
+    "evidence_files_validated": 21,
+    "traces_validated": 20,
+    "validator_failures": 0,
+    "trace_invariance": "PASS",
+    "map_decisions": 407,
+    "unchanged_decisions": 401,
+    "fail_closed_decisions": 6,
+    "low_hp_elite_recommendations": 2,
+    "overrides": 0,
+    "fail_closed_reasons": {
+      "no_known_non_elite_route": 2,
+      "map_room_or_target_unknown": 4
+    },
+    "illegal_actions": 0,
+    "crashes": 0,
+    "timeouts": 0,
+    "communication_errors": "N/A_LOCAL_SIMULATOR",
+    "source_sha256": "dfb04a0c993c653c1ad23c7a1cb46f99dab53e826971e7a228631f10328fff91",
+    "mcts_budget": 2000,
+    "decision": "NULL_TRAIN_RESULT_RETIRE_H2_NO_PROBE_OR_DEV"
+  },
+  "raw_manifests": "PRIVATE_LOCAL_STORAGE_ONLY",
+  "raw_traces": "PRIVATE_LOCAL_STORAGE_ONLY",
+  "gate_fresh_result_data": "NOT_READ_OR_USED",
+  "champion": "G7",
+  "confirmation": "NOT_RUN",
+  "real_game": "NOT_RUN"
+}

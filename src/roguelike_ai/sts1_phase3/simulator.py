@@ -2875,6 +2875,9 @@ def run_simulator_game(
                             "act": int(_value(gc, "act", 0) or 0),
                             "turn": _value(battle, "turn"),
                             "mcts_sims": active_mcts_sims,
+                            "state_before_signature_sha256": sha256_json(
+                                _diagnostic_battle_snapshot(battle, gc, armg_policy)
+                            ),
                             "public_state": diagnostic_state,
                             "canonical_native_legal_actions": [
                                 _public_action(action, hand_raw) for action in native_actions
@@ -2931,6 +2934,17 @@ def run_simulator_game(
                         "emergency_potion_override": emergency_potion_override,
                     })
                     chosen.execute(battle)
+                    if diagnostic_trace_path is not None:
+                        _record(diagnostic_trace_path, {
+                            "type": "combat_action_applied_v1",
+                            "game_step": game_steps,
+                            "encounter_index": encounter_index,
+                            "battle_step": battle_steps,
+                            "selected_action": trace_action,
+                            "state_after_signature_sha256": sha256_json(
+                                _diagnostic_battle_snapshot(battle, gc, armg_policy)
+                            ),
+                        })
                     mcts_action_count += 1
                     _record(evidence_path, {
                         "type": "simulator_combat_action",
@@ -3125,6 +3139,7 @@ def run_simulator_game(
         "fallback_rate": fallback_count / max(1, student_actions + fallback_count + armg_action_count),
         "equivalent_action_alias_count": equivalent_action_alias_count,
         "illegal_action_count": illegal_actions,
+        "communication_error_count": 0,
         "timeout_count": timeout_count,
         "crash_count": crash_count,
         "mean_inference_latency_ms": sum(latencies_ms) / len(latencies_ms) if latencies_ms else None,
@@ -3142,6 +3157,7 @@ def run_simulator_game(
         "error": error,
         "legal_actions_complete": diagnostic_legal_actions_complete,
         "illegal_action_count": illegal_actions,
+        "communication_error_count": 0,
         "timeout_count": timeout_count,
         "crash_count": crash_count,
         "potion_inventory_snapshot_complete": summary[

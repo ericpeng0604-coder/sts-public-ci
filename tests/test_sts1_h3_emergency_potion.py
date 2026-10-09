@@ -12,6 +12,7 @@ from scripts.sts1.sts1_g7_h3_emergency_potion_eval import (
 from scripts.sts1.sts1_g7_h3_stage_eval import (
     STAGES,
     StageEvaluationError,
+    _paired_summary,
     _seed_contract_kwargs,
     _stage_spec,
 )
@@ -147,3 +148,32 @@ def test_heldout_stage_specs_are_exactly_the_preregistered_pools() -> None:
 def test_unregistered_stage_cannot_use_a_seed_contract() -> None:
     with pytest.raises(StageEvaluationError):
         _seed_contract_kwargs("train_hypothesis_3", (1, 2))
+
+
+def test_paired_summary_supports_the_registered_dev30_size() -> None:
+    parent = ["victory", "defeat"] * 15
+    candidate = ["victory", "defeat"] * 14 + ["victory", "victory"]
+
+    result = _paired_summary(parent, candidate)
+
+    assert result["parent_wins"] == 15
+    assert result["candidate_wins"] == 16
+    assert result["candidate_only_wins"] == 1
+    assert result["parent_only_wins"] == 0
+    assert result["net_wins"] == 1
+    assert result["discordant_pairs"] == 1
+    assert result["exact_one_sided_sign_p_candidate_positive"] == 0.5
+
+
+def test_paired_summary_reports_p_one_when_no_pairs_are_discordant() -> None:
+    result = _paired_summary(["defeat"] * 30, ["defeat"] * 30)
+
+    assert result["discordant_pairs"] == 0
+    assert result["exact_one_sided_sign_p_candidate_positive"] == 1.0
+
+
+def test_paired_summary_rejects_unknown_or_unpaired_outcomes() -> None:
+    with pytest.raises(StageEvaluationError):
+        _paired_summary(["victory"], ["unknown"])
+    with pytest.raises(StageEvaluationError):
+        _paired_summary(["victory"], [])

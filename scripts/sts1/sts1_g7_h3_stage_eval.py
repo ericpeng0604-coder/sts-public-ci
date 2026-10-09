@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -70,6 +71,37 @@ def _seed_contract_kwargs(stage: str, seeds: tuple[int, ...]) -> dict[str, Any]:
     if stage not in STAGES or not seeds:
         raise StageEvaluationError("held-out seed contract requires a registered stage and nonempty pool")
     return {"heldout_seeds": seeds, "training_seeds": None}
+
+
+def _paired_summary(parent: list[str], candidate: list[str]) -> dict[str, Any]:
+    if not parent or len(parent) != len(candidate):
+        raise StageEvaluationError("paired held-out evaluation requires equal nonempty outcome lists")
+    if any(value not in {"victory", "defeat"} for value in parent + candidate):
+        raise StageEvaluationError("unknown outcomes cannot be counted as losses")
+    parent_wins = sum(value == "victory" for value in parent)
+    candidate_wins = sum(value == "victory" for value in candidate)
+    candidate_only = sum(
+        p != "victory" and c == "victory" for p, c in zip(parent, candidate, strict=True)
+    )
+    parent_only = sum(
+        p == "victory" and c != "victory" for p, c in zip(parent, candidate, strict=True)
+    )
+    discordant = candidate_only + parent_only
+    p_value = (
+        1.0
+        if discordant == 0
+        else sum(math.comb(discordant, value) for value in range(candidate_only, discordant + 1))
+        / (2**discordant)
+    )
+    return {
+        "parent_wins": parent_wins,
+        "candidate_wins": candidate_wins,
+        "candidate_only_wins": candidate_only,
+        "parent_only_wins": parent_only,
+        "net_wins": candidate_wins - parent_wins,
+        "discordant_pairs": discordant,
+        "exact_one_sided_sign_p_candidate_positive": p_value,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -372,7 +404,7 @@ def main() -> int:
                 })
                 h3.shared._append_jsonl(args.private_output_dir / "paired-runs.ndjson", rows[-1])
 
-            paired = h3.shared._paired_summary(parent_outcomes, candidate_outcomes)
+            paired = _paired_summary(parent_outcomes, candidate_outcomes)
             overrides = sum(int(row["candidate"].get("emergency_potion_override_count") or 0) for row in rows)
             opportunities = sum(int(row["candidate_trace"]["low_hp_potion_opportunities"]) for row in rows)
             safety = {

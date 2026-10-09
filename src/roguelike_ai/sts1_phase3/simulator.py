@@ -802,6 +802,117 @@ def _apply_low_hp_elite_route_avoidance(
     return actual_index, detail
 
 
+def _apply_campfire_overheal_override(
+    recommended_index: int,
+    kind: str,
+    descs: Sequence[Any],
+    gc: Any,
+    sts: Any,
+    armg_policy: Any,
+) -> tuple[int, dict[str, Any]]:
+    """Choose the legal Smith action only when the recommended Rest over-heals.
+
+    The rule uses the pinned simulator's REST (option 0) and SMITH (option 1)
+    semantics. Missing state, relic, or descriptor data keeps the ArmG action.
+    """
+
+    detail: dict[str, Any] = {
+        "kind": "prefer_smith_when_rest_overheals",
+        "recommended_index": recommended_index,
+        "selected_index": recommended_index,
+        "recommended_option_index": None,
+        "rest_heal_amount": None,
+        "overridden": False,
+        "reason": "unchanged",
+    }
+    if kind != "rest":
+        detail["reason"] = "not_campfire"
+        return recommended_index, detail
+
+    describe = getattr(armg_policy, "describe_choice", None)
+    if (
+        not callable(describe)
+        or not isinstance(recommended_index, int)
+        or isinstance(recommended_index, bool)
+        or not 0 <= recommended_index < len(descs)
+    ):
+        detail["reason"] = "choice_semantics_unavailable"
+        return recommended_index, detail
+
+    semantics: list[dict[str, Any]] = []
+    for desc in descs:
+        try:
+            value = describe(kind, desc)
+        except Exception:
+            detail["reason"] = "choice_semantics_unavailable"
+            return recommended_index, detail
+        option_index = value.get("option_index") if isinstance(value, Mapping) else None
+        if not isinstance(option_index, int) or isinstance(option_index, bool):
+            detail["reason"] = "choice_semantics_incomplete"
+            return recommended_index, detail
+        semantics.append(dict(value))
+
+    recommended_option = semantics[recommended_index]["option_index"]
+    detail["recommended_option_index"] = recommended_option
+    rest_indices = [i for i, item in enumerate(semantics) if item["option_index"] == 0]
+    smith_indices = [i for i, item in enumerate(semantics) if item["option_index"] == 1]
+    if len(rest_indices) != 1 or len(smith_indices) != 1:
+        detail["reason"] = "rest_or_smith_not_uniquely_legal"
+        return recommended_index, detail
+    if recommended_option != 0:
+        detail["reason"] = "parent_did_not_recommend_rest"
+        return recommended_index, detail
+
+    current_hp = _value(gc, "cur_hp")
+    max_hp = _value(gc, "max_hp")
+    if (
+        not isinstance(current_hp, (int, float))
+        or isinstance(current_hp, bool)
+        or not math.isfinite(float(current_hp))
+        or not isinstance(max_hp, (int, float))
+        or isinstance(max_hp, bool)
+        or not math.isfinite(float(max_hp))
+        or current_hp < 0
+        or max_hp <= 0
+    ):
+        detail["reason"] = "player_hp_unavailable_or_invalid"
+        return recommended_index, detail
+
+    has_relic = getattr(gc, "hasRelic", None)
+    try:
+        if callable(has_relic):
+            has_pillow = bool(has_relic(sts.RelicId.REGAL_PILLOW))
+        else:
+            relics = getattr(gc, "relics", None)
+            if relics is None:
+                detail["reason"] = "relic_state_unavailable"
+                return recommended_index, detail
+            has_pillow = any(
+                _enum_name(_value(relic, "id", relic)).upper().endswith("REGAL_PILLOW")
+                for relic in _sequence(relics)
+            )
+    except Exception:
+        detail["reason"] = "relic_state_unavailable"
+        return recommended_index, detail
+
+    # Native fractionMaxHp(0.30f) uses std::round for positive max HP.
+    heal_amount = int(math.floor(float(max_hp) * 0.30 + 0.5)) + (15 if has_pillow else 0)
+    detail["rest_heal_amount"] = heal_amount
+    detail["hp_before"] = int(current_hp) if isinstance(current_hp, int) else float(current_hp)
+    detail["max_hp_before"] = int(max_hp) if isinstance(max_hp, int) else float(max_hp)
+    if current_hp + heal_amount <= max_hp:
+        detail["reason"] = "rest_heal_does_not_overflow"
+        return recommended_index, detail
+
+    smith_index = smith_indices[0]
+    detail.update({
+        "selected_index": smith_index,
+        "overridden": True,
+        "reason": "rest_heal_would_exceed_max_hp",
+    })
+    return smith_index, detail
+
+
 def deterministic_noncombat_step(gc: Any, sts: Any) -> str:
     if gc.screen_state == sts.ScreenState.REWARDS:
         offered = list(gc.get_card_reward())
@@ -1291,6 +1402,7 @@ def run_simulator_game(
     reserve_last_potion_until_floor: int | None = None,
     use_potion_below_hp_fraction: float | None = None,
     avoid_low_hp_elite_routes: bool = False,
+    prefer_smith_when_rest_overheals: bool = False,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
@@ -1420,6 +1532,7 @@ def run_simulator_game(
     mcts_action_count = 0
     potion_reserve_override_count = 0
     emergency_potion_override_count = 0
+    campfire_overheal_override_count = 0
     map_elite_avoidance_override_count = 0
     map_elite_avoidance_fail_closed_count = 0
     hybrid_student_vote_count = 0
@@ -1468,6 +1581,17 @@ def run_simulator_game(
             if use_potion_below_hp_fraction is not None
             else None
         ),
+        "campfire_policy_intervention": (
+            {
+                "kind": "prefer_smith_when_rest_overheals",
+                "rest_option_index": 0,
+                "smith_option_index": 1,
+                "rest_heal": "round(0.30*max_hp) + 15 with REGAL_PILLOW",
+                "fallback": "keep_armg_recommendation_if_state_or_legal_choices_are_incomplete",
+            }
+            if prefer_smith_when_rest_overheals
+            else None
+        ),
         "map_policy_intervention": (
             {
                 "kind": "avoid_elite_below_half_hp",
@@ -1501,6 +1625,7 @@ def run_simulator_game(
                 diagnostic_selected_index: int | None = None
                 diagnostic_recommended_index: int | None = None
                 map_policy_intervention: dict[str, Any] | None = None
+                campfire_policy_intervention: dict[str, Any] | None = None
                 if armg_policy is None:
                     if diagnostic_trace_path is not None:
                         (
@@ -1585,6 +1710,19 @@ def run_simulator_game(
                                     "room": actual_route.get("target_room"),
                                     "legal_action_index": selected_index,
                                 }
+                    if prefer_smith_when_rest_overheals and kind == "rest":
+                        selected_index, campfire_policy_intervention = (
+                            _apply_campfire_overheal_override(
+                                recommended_index,
+                                kind,
+                                descs,
+                                gc,
+                                sts,
+                                armg_policy,
+                            )
+                        )
+                        if campfire_policy_intervention["overridden"]:
+                            campfire_overheal_override_count += 1
                     diagnostic_selected_index = selected_index
                     before = public_run_state(gc)
                     choice_descriptions = [repr(value) for value in descs]
@@ -1619,6 +1757,7 @@ def run_simulator_game(
                         "selected_index": selected_index,
                         "recommended_index": recommended_index,
                         "map_policy_intervention": map_policy_intervention,
+                        "campfire_policy_intervention": campfire_policy_intervention,
                         "choice_count": len(descs),
                         "choice_descriptions": choice_descriptions,
                         "choice_semantics": choice_semantics,
@@ -1667,6 +1806,7 @@ def run_simulator_game(
                         "selected_legal_action_index": diagnostic_selected_index,
                         "recommended_legal_action_index": diagnostic_recommended_index,
                         "map_policy_intervention": map_policy_intervention,
+                        "campfire_policy_intervention": campfire_policy_intervention,
                         "route": diagnostic_route,
                         "selected_choice": choice,
                         "state_before": diagnostic_run_before,
@@ -2194,6 +2334,8 @@ def run_simulator_game(
         "potion_reserve_override_count": potion_reserve_override_count,
         "use_potion_below_hp_fraction": use_potion_below_hp_fraction,
         "emergency_potion_override_count": emergency_potion_override_count,
+        "prefer_smith_when_rest_overheals": prefer_smith_when_rest_overheals,
+        "campfire_overheal_override_count": campfire_overheal_override_count,
         "avoid_low_hp_elite_routes": avoid_low_hp_elite_routes,
         "map_elite_avoidance_override_count": map_elite_avoidance_override_count,
         "map_elite_avoidance_fail_closed_count": map_elite_avoidance_fail_closed_count,

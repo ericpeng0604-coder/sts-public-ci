@@ -9,6 +9,12 @@ from scripts.sts1.sts1_g7_h3_emergency_potion_eval import (
     EvaluationIntegrityError,
     _check_trace,
 )
+from scripts.sts1.sts1_g7_h3_stage_eval import (
+    STAGES,
+    StageEvaluationError,
+    _seed_contract_kwargs,
+    _stage_spec,
+)
 
 
 class _Action:
@@ -123,3 +129,21 @@ def test_trace_validator_rejects_override_above_threshold(tmp_path) -> None:
 
     with pytest.raises(EvaluationIntegrityError):
         _check_trace(trace, candidate=True, expected_overrides=1)
+
+
+@pytest.mark.parametrize("stage", ["probe", "dev"])
+def test_heldout_stage_uses_only_the_heldout_seed_contract(stage: str) -> None:
+    contract = _seed_contract_kwargs(stage, (1, 2))
+
+    assert contract == {"heldout_seeds": (1, 2), "training_seeds": None}
+
+
+def test_heldout_stage_specs_are_exactly_the_preregistered_pools() -> None:
+    assert _stage_spec("probe") == STAGES["probe"]
+    assert STAGES["probe"]["seed_count"] == 10
+    assert STAGES["dev"]["seed_count"] == 30
+
+
+def test_unregistered_stage_cannot_use_a_seed_contract() -> None:
+    with pytest.raises(StageEvaluationError):
+        _seed_contract_kwargs("train_hypothesis_3", (1, 2))

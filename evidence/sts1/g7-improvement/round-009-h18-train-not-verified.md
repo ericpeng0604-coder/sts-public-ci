@@ -20,7 +20,9 @@ The batch is `NOT_VERIFIED`, not a valid defeat or completed paired evaluation. 
 
 A bounded suffix of the failed episode's private trace showed 50 consecutive Act 3 Shop decisions while potion capacity was full (5/5). Each selected action was classified as a potion purchase; the potion inventory did not change, gold decreased by one per decision, and the screen remained the Shop. The trace contained 15 legal choices at each decision. Seed IDs and raw trace contents remain storage-only and are intentionally absent here.
 
-This pattern is consistent with a repeated non-advancing Shop action, but the pinned native action implementation is not present in the checkout and the observation comes from one incomplete episode. The causal root and cross-seed recurrence are `NOT_VERIFIED`; this is not evidence of a policy win-rate effect. The current H18 native-Defend hypothesis did not establish effective override coverage before the integrity failure.
+The pinned native source confirms the mechanism: `GameAction::getAllShopActions` and `isValidShopAction` expose an in-stock potion when it is affordable, without checking potion capacity; `Shop::buyPotion` calls `obtainPotion` and then charges gold. See the [pinned action validation and enumeration](https://github.com/gamerpuppy/sts_lightspeed/blob/7476a81954020087da31d41d16fddf475746ec2d/src/sim/search/GameAction.cpp#L217-L239) and [pinned purchase implementation](https://github.com/gamerpuppy/sts_lightspeed/blob/7476a81954020087da31d41d16fddf475746ec2d/src/game/Shop.cpp#L142-L154). Together with the trace, this verifies that full-capacity potion purchases can consume gold while leaving the potion inventory unchanged.
+
+This verifies a wasted-purchase mechanism, not the full cause of the 600-step bound: only one incomplete episode was observed, and the remaining run path was not tested. Cross-seed recurrence and whether this mechanism alone caused the timeout remain `NOT_VERIFIED`. The current H18 native-Defend hypothesis did not establish effective override coverage before the integrity failure.
 
 ## Safety and next-step boundary
 

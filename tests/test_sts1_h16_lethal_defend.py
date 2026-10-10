@@ -304,7 +304,7 @@ def test_h19_identity_lock_is_mandatory_and_public_source_has_no_private_pins(tm
     assert "EXPECTED_H18_ALLOCATION" not in source
     parser = h16_runner._parser()
     trial_action = next(action for action in parser._actions if action.dest == "trial_id")
-    assert trial_action.choices == ("h19",)
+    assert trial_action.choices == ("h19", "h20")
 
 
 def test_h19_identity_lock_pins_all_runtime_inputs(tmp_path, monkeypatch) -> None:

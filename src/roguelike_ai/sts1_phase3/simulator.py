@@ -28,6 +28,7 @@ from .frozen_student import (
 )
 from .protocol import A0_FROZEN_SEEDS_V1, A0_PROTOCOL_VERSION, frozen_a0_manifest
 from .residual_scoring import apply_residual_scores, top1_index
+from .inflame_end_turn import select_inflame_before_end_turn
 
 
 SIMULATOR_EVIDENCE_SCHEMA = "sts1-phase3-a0-simulator-v1"
@@ -2048,6 +2049,7 @@ def run_simulator_game(
     use_potion_below_hp_fraction: float | None = None,
     lethal_potion_rescue: bool = False,
     lethal_intent_defend_rescue: bool = False,
+    inflame_end_turn: bool = False,
     avoid_low_hp_elite_routes: bool = False,
     prefer_smith_when_rest_overheals: bool = False,
     prefer_smith_when_overheal_exceeds_effective_rest_heal: bool = False,
@@ -2200,6 +2202,14 @@ def run_simulator_game(
         raise SimulatorRunError(
             "lethal-intent Defend rescue requires one fixed, untuned combat MCTS budget"
         )
+    if not isinstance(inflame_end_turn, bool):
+        raise SimulatorRunError("Inflame intervention must be a boolean")
+    if inflame_end_turn and (
+        combat_mcts_sims != 2000 or consensus_budgets or hybrid_budgets
+        or combat_mcts_late_sims is not None or combat_mcts_boss_sims is not None
+        or combat_mcts_exploration is not None or collect_teacher or collect_ppo
+    ):
+        raise SimulatorRunError("Inflame intervention requires frozen MCTS2000 without collection")
     if not isinstance(avoid_low_hp_elite_routes, bool):
         raise SimulatorRunError("low-HP Elite route intervention must be a boolean")
     if avoid_low_hp_elite_routes and armg_policy is None:
@@ -2212,6 +2222,7 @@ def run_simulator_game(
             use_potion_below_hp_fraction is not None,
             lethal_potion_rescue,
             lethal_intent_defend_rescue,
+            inflame_end_turn,
             skip_card_reward_when_deck_size_at_least is not None,
             skip_duplicate_card_reward_when_deck_size_at_least is not None,
         )
@@ -2246,6 +2257,8 @@ def run_simulator_game(
     lethal_potion_rescue_reason_counts: dict[str, int] = {}
     lethal_intent_defend_override_count = 0
     lethal_intent_defend_reason_counts: dict[str, int] = {}
+    inflame_override_count = 0
+    inflame_reason_counts: dict[str, int] = {}
     card_reward_skip_override_count = 0
     card_reward_skip_eligible_count = 0
     card_reward_skip_reason_counts: dict[str, int] = {}
@@ -2308,6 +2321,10 @@ def run_simulator_game(
             }
             if lethal_intent_defend_rescue
             else None
+        ),
+        "inflame_policy_intervention": (
+            {"kind": "legal_inflame_before_end_turn", "selection": "lowest_hand_index_then_native_ordinal"}
+            if inflame_end_turn else None
         ),
         "campfire_policy_intervention": (
             {
@@ -2757,6 +2774,9 @@ def run_simulator_game(
                     lethal_intent_defend_override = False
                     lethal_intent_defend_reason = "disabled"
                     lethal_intent_defend_detail: dict[str, Any] = {}
+                    inflame_override = False
+                    inflame_reason = "disabled"
+                    inflame_detail: dict[str, Any] = {}
                     if reserve_last_potion_until_floor is not None:
                         player = _value(battle, "player")
                         player_hp_raw = _value(player, "cur_hp", None)
@@ -2873,6 +2893,32 @@ def run_simulator_game(
                         ) + 1
                         if lethal_intent_defend_override:
                             lethal_intent_defend_override_count += 1
+                    if inflame_end_turn:
+                        # Independent of tracing: tracing must never change decisions.
+                        inflame_run_state = _diagnostic_run_snapshot(gc, armg_policy)
+                        inflame_run_state["room"] = "COMBAT"
+                        inflame_state = adapter.adapt(
+                            battle, legal_actions=native_actions,
+                            run_state=inflame_run_state,
+                            projected_legal_actions=public_actions,
+                        )
+                        inflame_choice, inflame_reason = select_inflame_before_end_turn(
+                            inflame_state,
+                            [_public_action(action, hand_raw) for action in native_actions],
+                            _public_action(mcts_recommended_action, hand_raw),
+                            legal_actions_complete=diagnostic_legal_actions_complete,
+                        )
+                        if inflame_choice is not None:
+                            chosen = native_actions[inflame_choice.native_action_index]
+                            if _public_action(chosen, hand_raw) != inflame_choice.action:
+                                raise SimulatorRunError("Inflame native ordinal projection mismatch")
+                            inflame_override = True
+                            inflame_override_count += 1
+                            inflame_detail = {
+                                "selected_inflame_hand_index": inflame_choice.action["hand_index"],
+                                "selected_native_action_index": inflame_choice.native_action_index,
+                            }
+                        inflame_reason_counts[inflame_reason] = inflame_reason_counts.get(inflame_reason, 0) + 1
                     latency_ms = (time.perf_counter() - started) * 1000.0
                     latencies_ms.append(latency_ms)
                     chosen_bits = _value(chosen, "bits")
@@ -2993,6 +3039,9 @@ def run_simulator_game(
                             "lethal_intent_defend_override": lethal_intent_defend_override,
                             "lethal_intent_defend_reason": lethal_intent_defend_reason,
                             "lethal_intent_defend_detail": lethal_intent_defend_detail,
+                            "inflame_override": inflame_override,
+                            "inflame_reason": inflame_reason,
+                            "inflame_detail": inflame_detail,
                             "selected_action": trace_action,
                             "selected_public_action_index": (
                                 selected_public_matches[0] if len(selected_public_matches) == 1 else None
@@ -3019,6 +3068,9 @@ def run_simulator_game(
                         "lethal_intent_defend_override": lethal_intent_defend_override,
                         "lethal_intent_defend_reason": lethal_intent_defend_reason,
                         "lethal_intent_defend_detail": lethal_intent_defend_detail,
+                        "inflame_override": inflame_override,
+                        "inflame_reason": inflame_reason,
+                        "inflame_detail": inflame_detail,
                         "action_type": _action_type(chosen),
                         "card": trace_card,
                         "target_index": _value(chosen, "target_idx", -1),
@@ -3214,6 +3266,9 @@ def run_simulator_game(
         "lethal_intent_defend_rescue_enabled": lethal_intent_defend_rescue,
         "lethal_intent_defend_override_count": lethal_intent_defend_override_count,
         "lethal_intent_defend_reason_counts": lethal_intent_defend_reason_counts,
+        "inflame_end_turn_enabled": inflame_end_turn,
+        "inflame_override_count": inflame_override_count,
+        "inflame_reason_counts": inflame_reason_counts,
         "skip_card_reward_when_deck_size_at_least": (
             skip_card_reward_when_deck_size_at_least
         ),
@@ -3269,6 +3324,9 @@ def run_simulator_game(
         "lethal_intent_defend_rescue_enabled": lethal_intent_defend_rescue,
         "lethal_intent_defend_override_count": lethal_intent_defend_override_count,
         "lethal_intent_defend_reason_counts": lethal_intent_defend_reason_counts,
+        "inflame_end_turn_enabled": inflame_end_turn,
+        "inflame_override_count": inflame_override_count,
+        "inflame_reason_counts": inflame_reason_counts,
         "final_floor": summary["final_floor"],
         "final_act": int(_value(gc, "act", 0) or 0),
         "final_hp": summary["final_hp"],

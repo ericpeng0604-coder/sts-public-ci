@@ -5,6 +5,39 @@ import pytest
 
 from roguelike_ai.sts1_phase3.inflame_end_turn import select_inflame_before_end_turn
 from scripts.sts1.sts1_g7_h20_shadow_audit import AuditError, audit
+from scripts.sts1 import sts1_g7_h16_lethal_defend_eval as runner
+
+
+def test_h20_coverage_requires_matching_parent_and_changed_afterstate():
+    _, actions, end = case()
+    def decision(action, before, override):
+        return {"encounter_index": 1, "battle_step": 2,
+                "state_before_signature_sha256": before,
+                "selected_action": action, "mcts_recommended_action": end,
+                "inflame_override": override}
+    def applied(action, after):
+        return {"encounter_index": 1, "battle_step": 2,
+                "selected_action": action, "state_after_signature_sha256": after}
+    parent = {"decisions": [decision(end, "a" * 64, False)],
+              "applied": [applied(end, "b" * 64)]}
+    candidate = {"decisions": [decision(actions[1], "a" * 64, True)],
+                 "applied": [applied(actions[1], "c" * 64)]}
+    assert runner._pair_has_effective_override(parent, candidate, "h20")
+    assert not runner._pair_has_effective_override(parent, candidate, "h19")
+    candidate["decisions"][0]["state_before_signature_sha256"] = "d" * 64
+    assert not runner._pair_has_effective_override(parent, candidate, "h20")
+
+
+def test_h20_replay_checks_its_own_override_count():
+    on = {"inflame_override_count": 1}
+    off = {"inflame_override_count": 2}
+    assert not runner._trace_replay_matches(on, off, "a", "a", 1, 1, "h20")
+
+
+def test_h20_denominator_and_retention_are_unchanged():
+    assert runner._stage_episode_counts("h20", "train", 10)["expected_episodes"] == 21
+    assert runner.STAGE_CONFIG["train"]["minimum_override_seed_coverage"] == 3
+    assert runner.TRIAL_ROUND_IDS["h20"] != runner.TRIAL_ROUND_IDS["h19"]
 
 
 def case():

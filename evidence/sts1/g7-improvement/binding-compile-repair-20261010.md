@@ -9,8 +9,11 @@ include `<algorithm>` directly.
 
 The first repair passed Actions.cpp, then run `38024509411` exposed the same
 missing header in BattleContext.cpp. The final repair supplies `-include algorithm`
-through CMake for the pinned GCC/Clang toolchains, preserving all reference C++
-flags. No combat source is rewritten. Existing exact-source validation and the
+through configuration-specific CMake flags for the pinned GCC/Clang toolchains,
+preserving all reference C++ flags. Run `38024740783` showed that upstream
+overwrites the general CMAKE_CXX_FLAGS variable; the final repair uses the
+reference build-type flags and rejects missing configuration flags.
+No combat source is rewritten. Existing exact-source validation and the
 registered binding patch chain remain intact; build output records the full flags.
 
 Local CPython 3.12 verification with the existing native module: 8 passed across

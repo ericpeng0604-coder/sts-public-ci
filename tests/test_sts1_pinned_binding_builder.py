@@ -42,13 +42,17 @@ def test_pinned_hashes_match_the_registered_raw_source_blobs():
 
 
 def test_compile_compatibility_preserves_reference_flags_and_cache():
-    cache = {"CMAKE_CXX_FLAGS": "-Wno-shift-count-overflow -O3 -DUSER_FLAG=1"}
+    cache = {"CMAKE_BUILD_TYPE": "Release", "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -DUSER_FLAG=1"}
     original = dict(cache)
     assert builder._compatibility_cxx_flags(cache) == (
-        "-Wno-shift-count-overflow -O3 -DUSER_FLAG=1 -include algorithm"
+        "CMAKE_CXX_FLAGS_RELEASE", "-O3 -DNDEBUG -DUSER_FLAG=1 -include algorithm"
     )
     assert cache == original
-    assert builder._compatibility_cxx_flags({}) == "-include algorithm"
+    assert builder._compatibility_cxx_flags({"CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_FLAGS_DEBUG": "-g"}) == (
+        "CMAKE_CXX_FLAGS_DEBUG", "-g -include algorithm"
+    )
+    with pytest.raises(builder.BuildInputError, match="configuration C\+\+ flags are missing"):
+        builder._compatibility_cxx_flags({})
 
 
 def test_local_clone_binding_is_added_once_to_the_scratch_source(tmp_path):

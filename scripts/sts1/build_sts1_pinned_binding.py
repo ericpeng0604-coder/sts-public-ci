@@ -61,10 +61,15 @@ def _verify_pinned_source_hashes(source_root: Path) -> dict[str, str]:
     return observed_hashes
 
 
-def _compatibility_cxx_flags(cache: dict[str, str]) -> str:
+def _compatibility_cxx_flags(cache: dict[str, str]) -> tuple[str, str]:
     # Pinned GCC/Clang builds cannot rely on transitive STL includes.
     # Preserve the reference flags and supply the missing header at build time.
-    return (cache.get("CMAKE_CXX_FLAGS", "") + " -include algorithm").strip()
+    build_type = cache.get("CMAKE_BUILD_TYPE") or "Release"
+    key = f"CMAKE_CXX_FLAGS_{build_type.upper()}"
+    if key not in cache:
+        raise BuildInputError("reference configuration C++ flags are missing")
+    # Upstream overwrites CMAKE_CXX_FLAGS; configuration flags are preserved.
+    return key, (cache[key] + " -include algorithm").strip()
 
 
 def _patch_target_paths(patch_path: Path) -> list[Path]:
@@ -446,6 +451,7 @@ def main() -> int:
         verified["patch_path"],
     )
 
+    compatibility_key, compatibility_flags = _compatibility_cxx_flags(verified["cache"])
     configure = [
         str(cmake),
         "-S",
@@ -457,7 +463,7 @@ def main() -> int:
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
         f"-DCMAKE_MAKE_PROGRAM={paths['ninja']}",
         f"-DCMAKE_CXX_COMPILER={paths['compiler']}",
-        f"-DCMAKE_CXX_FLAGS={_compatibility_cxx_flags(verified['cache'])}",
+        f"-D{compatibility_key}={compatibility_flags}",
         f"-DCMAKE_BUILD_TYPE={verified['cache'].get('CMAKE_BUILD_TYPE', 'Release')}",
         f"-DPython_EXECUTABLE={paths['python']}",
         f"-DPYTHON_EXECUTABLE={paths['python']}",
@@ -497,7 +503,7 @@ def main() -> int:
         "hook_patch_git_blob_sha1": HOOK_PATCH_BLOB_SHA1,
         "potion_patch_sha256": POTION_PATCH_SHA256,
         "patched_paths": ["bindings/slaythespire.cpp"],
-        "build_compatibility_cxx_flags": _compatibility_cxx_flags(verified["cache"]),
+        "build_compatibility_cxx_flags": {compatibility_key: compatibility_flags},
         "source_input_sha256": verified["source_hashes"],
         "base_binding_sha256": BASE_BINDING_SHA256,
         **patch_stage_hashes,

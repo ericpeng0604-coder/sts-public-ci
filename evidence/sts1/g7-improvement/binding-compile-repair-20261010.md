@@ -34,6 +34,17 @@ builder tests before PATH isolation and retains the isolated native-module test
 under the original restricted PATH. It does not add Git or compiler DLL paths to
 the native smoke. A test regex was also made a raw string to remove a warning.
 
+## Verified recovery
+
+Final CI `38025156662` is SUCCESS at code/test/workflow commit
+`a21d8fe17b24965603e092bcae01a96547725df7`: pinned Windows native build,
+zero-episode five-slot read-only smoke, 7 builder regression tests, 1 isolated
+native test and artifact dependency packaging all completed. The follow-up
+evidence commit changes this report only; executable source, tests and workflow
+match the successful CI commit exactly. This prerequisite is verified; model
+win-rate improvement is still NOT_VERIFIED. PR #29 remains Draft; no merge or
+promotion was performed.
+
 ## Bounded next-direction inventory
 
 Read-only Train-only Sample(10): streamed the ten Round011 parent traces

@@ -881,10 +881,12 @@ def _diagnostic_label(value: Any) -> str | None:
     return str(value)
 
 
-def _potion_inventory_snapshot(gc: Any) -> dict[str, Any]:
+def _potion_inventory_snapshot(
+    gc: Any, *, attribute: str = "potions", source: str = "native_gamecontext_potion_enum_names_v1",
+) -> dict[str, Any]:
     """Return all five native potion slots, failing closed on incomplete data."""
 
-    inventory = _value(gc, "potions", None)
+    inventory = _value(gc, attribute, None)
     if inventory is None:
         return {
             "potions": None,
@@ -900,7 +902,7 @@ def _potion_inventory_snapshot(gc: Any) -> dict[str, Any]:
         return {
             "potions": None,
             "potion_inventory_complete": False,
-            "potion_inventory_source": "native_gamecontext_potion_enum_names_v1",
+            "potion_inventory_source": source,
             "potion_inventory_reason": "expected_exactly_five_slots",
         }
     if any(
@@ -912,13 +914,13 @@ def _potion_inventory_snapshot(gc: Any) -> dict[str, Any]:
         return {
             "potions": None,
             "potion_inventory_complete": False,
-            "potion_inventory_source": "native_gamecontext_potion_enum_names_v1",
+            "potion_inventory_source": source,
             "potion_inventory_reason": "unknown_or_invalid_native_slot",
         }
     return {
         "potions": slots,
         "potion_inventory_complete": True,
-        "potion_inventory_source": "native_gamecontext_potion_enum_names_v1",
+        "potion_inventory_source": source,
         "potion_inventory_reason": "exactly_five_valid_native_slots",
     }
 
@@ -1030,12 +1032,21 @@ def _diagnostic_run_snapshot(gc: Any, armg_policy: Any = None) -> dict[str, Any]
     return state
 
 
+def _combat_potion_inventory_snapshot(battle: Any) -> dict[str, Any]:
+    # GameContext is synchronized only by exit_battle; it is not live battle inventory.
+    # Never infer consumed slots from action history or fall back to GameContext.
+    return _potion_inventory_snapshot(
+        battle, attribute="combat_potions", source="native_battlecontext_potion_enum_names_v1",
+    )
+
+
 def _diagnostic_battle_snapshot(battle: Any, gc: Any, armg_policy: Any = None) -> dict[str, Any]:
     player = _value(battle, "player")
     run_state = _diagnostic_run_snapshot(gc, armg_policy)
     run_state["room"] = "COMBAT"
     return {
         "run": run_state,
+        "combat_potion_inventory": _combat_potion_inventory_snapshot(battle),
         "turn": _value(battle, "turn"),
         "outcome": _enum_name(_value(battle, "outcome", "UNKNOWN")),
         "player": {
@@ -2289,6 +2300,7 @@ def run_simulator_game(
     _record(diagnostic_trace_path, {
         "type": "diagnostic_trace_header_v1",
         "trace_schema": "sts1-diagnostic-trace-v1",
+        "live_combat_resources_required": True,
         "manifest": frozen_a0_manifest(),
         "ui_seed": ui_seed,
         "simulator_seed_long": simulator_seed,
@@ -2989,6 +3001,9 @@ def run_simulator_game(
                         diagnostic_state["potion_inventory_reason"] = diagnostic_run_state.get(
                             "potion_inventory_reason"
                         )
+                        # Preserve the run snapshot and label its scope; add live resources separately.
+                        diagnostic_state["potion_inventory_scope"] = "run_context"
+                        diagnostic_state["combat_potion_inventory"] = _combat_potion_inventory_snapshot(battle)
                         selected_public_matches = [
                             index
                             for index, action in enumerate(public_actions)

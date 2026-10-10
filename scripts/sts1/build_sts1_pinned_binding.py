@@ -136,6 +136,28 @@ def _add_local_clone_binding(source_root: Path) -> str:
     return _sha256(binding)
 
 
+def _add_local_combat_potion_binding(source_root: Path) -> str:
+    """Expose live battle slots read-only; never alter native gameplay."""
+    binding = source_root / "bindings" / "slaythespire.cpp"
+    text = binding.read_text(encoding="utf-8")
+    anchor = '        .def_readonly("player", &BattleContext::player)\n'
+    if '.def_property_readonly("combat_potions"' in text or text.count(anchor) != 1:
+        raise BuildInputError("live combat potion anchor is missing, ambiguous, or already patched")
+    extension = '''        .def_property_readonly("combat_potions", [](const BattleContext &bc) {
+            std::vector<std::string> names;
+            constexpr std::size_t count = sizeof(potionEnumNames) / sizeof(potionEnumNames[0]);
+            for (const Potion potion : bc.potions) {
+                const auto index = static_cast<std::size_t>(potion);
+                names.emplace_back(index < count && potionEnumNames[index] != nullptr
+                    ? potionEnumNames[index] : "INVALID");
+            }
+            return names;
+        }, "returns a copy of all five live battle potion slots")
+'''
+    binding.write_text(text.replace(anchor, anchor + extension, 1), encoding="utf-8", newline="\n")
+    return _sha256(binding)
+
+
 def _parse_cmake_cache(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -201,9 +223,14 @@ def _apply_versioned_patch(source_root: Path, patch_path: Path) -> None:
     for old_start, old_count, new_start, new_count, old_lines, new_lines in hunks:
         if new_start != old_start + offset:
             raise BuildInputError("versioned patch hunk positions are inconsistent")
-        index = old_start - 1 + offset
-        if source_lines[index:index + old_count] != old_lines:
+        # The pinned hook removes unused wrappers before GameContext. Its exact
+        # context survives, but legacy hunk line numbers describe the old wrapper layout.
+        # Verify unique exact context; never use fuzzy patching or guessed offsets.
+        matches = [index for index in range(len(source_lines) - old_count + 1)
+                   if source_lines[index:index + old_count] == old_lines]
+        if len(matches) != 1:
             raise BuildInputError("pinned source does not match versioned patch context")
+        index = matches[0]
         source_lines[index:index + old_count] = new_lines
         offset += new_count - old_count
     target = source_root / relative
@@ -230,18 +257,21 @@ def _apply_binding_patch_chain(
     patched_text = binding.read_text(encoding="utf-8")
     if patched_text.count('.def_property_readonly("potions"') != 1:
         raise BuildInputError("patched binding does not contain exactly one read-only potion property")
+    combat_binding_sha256 = _add_local_combat_potion_binding(source_root)
 
     return {
         "patch_stage_order": [
             "upstream_hook_patch",
             "local_clone_binding",
             "potion_inventory_binding_patch",
+            "live_combat_potion_binding",
         ],
         "hook_patch_input_sha256": hook_inputs,
         "hook_patch_output_sha256": hook_outputs,
         "clone_binding_sha256": clone_binding_sha256,
         "potion_patch_input_binding_sha256": potion_input_binding_sha256,
         "potion_patch_output_binding_sha256": potion_output_binding_sha256,
+        "combat_potion_binding_sha256": combat_binding_sha256,
     }
 
 
@@ -382,6 +412,20 @@ except AttributeError:
     pass
 else:
     raise AssertionError("potion inventory binding is writable")
+battle = module.BattleContext()
+battle.init_encounter(context, module.MonsterEncounter.CULTIST)
+combat_slots = list(battle.combat_potions)
+if combat_slots != slots:
+    raise AssertionError("live battle inventory differs from initial run inventory")
+try:
+    battle.combat_potions = ["FIRE_POTION"] * 5
+except AttributeError:
+    pass
+else:
+    raise AssertionError("live battle inventory binding is writable")
+combat_slots[0] = "FIRE_POTION"
+if list(battle.combat_potions) != slots:
+    raise AssertionError("live inventory getter leaked a mutable native reference")
 print(json.dumps({"potion_slots": slots, "episodes_started": 0}, sort_keys=True))
 """
     completed = subprocess.run(

@@ -288,13 +288,13 @@ def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
-def _valid_potion_snapshot(state: Any, where: str) -> None:
+def _valid_potion_snapshot(state: Any, where: str, *, source: str = POTION_SOURCE) -> None:
     if not isinstance(state, dict):
         raise EvaluationIntegrityError(f"{where} has no diagnostic state object")
     slots = state.get("potions")
     if (
         state.get("potion_inventory_complete") is not True
-        or state.get("potion_inventory_source") != POTION_SOURCE
+        or state.get("potion_inventory_source") != source
         or state.get("potion_inventory_reason") != "exactly_five_valid_native_slots"
         or not isinstance(slots, list)
         or len(slots) != 5
@@ -322,6 +322,7 @@ def _validate_trace(path: Path, result: dict[str, Any], metadata: dict[str, Any]
         raise EvaluationIntegrityError("trace provenance header or unique terminal record is missing")
 
     combat_count = 0
+    live_resources_required = headers[0].get("live_combat_resources_required") is True
     encounter_count = 0
     noncombat_count = 0
     route_count = 0
@@ -362,6 +363,14 @@ def _validate_trace(path: Path, result: dict[str, Any], metadata: dict[str, Any]
             ):
                 raise EvaluationIntegrityError("combat legal-action provenance or selection is invalid")
             _valid_potion_snapshot(event.get("public_state"), "combat decision")
+            if live_resources_required:
+                state = event["public_state"]
+                if state.get("potion_inventory_scope") != "run_context":
+                    raise EvaluationIntegrityError("combat run inventory has no explicit scope")
+                _valid_potion_snapshot(
+                    state.get("combat_potion_inventory"), "live combat resources",
+                    source="native_battlecontext_potion_enum_names_v1",
+                )
         elif event_type == "noncombat_decision_trace_v1":
             noncombat_count += 1
             if event.get("legal_choices_complete") is not True or not isinstance(event.get("legal_choices"), list):

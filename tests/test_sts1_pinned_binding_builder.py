@@ -39,6 +39,8 @@ def test_pinned_hashes_match_the_registered_raw_source_blobs():
     assert builder.POTION_PATCH_SHA256 == (
         "fe75bb6fee0f83689bd5ab541a14ffead4f0df6b5b855c4f30096d308a4f9c7b"
     )
+    patch = Path(builder.__file__).resolve().parents[2] / builder.PATCH_RELATIVE_PATH
+    assert builder._sha256(patch) == builder.POTION_PATCH_SHA256
 
 
 def test_compile_compatibility_preserves_reference_flags_and_cache():
@@ -75,7 +77,24 @@ def test_local_clone_binding_is_added_once_to_the_scratch_source(tmp_path):
         builder._add_local_clone_binding(source_root)
 
 
-def test_versioned_potion_patch_preserves_unmarked_blank_context(tmp_path):
+def test_live_combat_binding_uses_battle_slots_readonly_and_rejects_reapplication(tmp_path):
+    source = tmp_path / "source"
+    binding = source / "bindings/slaythespire.cpp"
+    binding.parent.mkdir(parents=True)
+    anchor = '        .def_readonly("player", &BattleContext::player)\n'
+    binding.write_text(anchor, encoding="utf-8")
+    digest = builder._add_local_combat_potion_binding(source)
+    text = binding.read_text(encoding="utf-8")
+    assert '.def_property_readonly("combat_potions"' in text
+    assert "bc.potions" in text and "gc.potions" not in text
+    assert "index < count" in text and '"INVALID"' in text
+    assert digest == builder._sha256(binding)
+    with pytest.raises(builder.BuildInputError, match="already patched"):
+        builder._add_local_combat_potion_binding(source)
+
+
+@pytest.mark.parametrize("prefix", [[], ["// shifted by registered hook"]])
+def test_versioned_potion_patch_preserves_unmarked_blank_context(tmp_path, prefix):
     source_root = tmp_path / "simulator"
     binding = source_root / "bindings" / "slaythespire.cpp"
     binding.parent.mkdir(parents=True)
@@ -91,7 +110,7 @@ def test_versioned_potion_patch_preserves_unmarked_blank_context(tmp_path):
         '        .def("get_card_reward", &sts::py::getCardReward, "return the current card reward list")',
         '        .def_property_readonly("encounter", [](const GameContext &gc) { return gc.info.encounter; })',
     ]
-    binding.write_text("\n".join(source_lines) + "\n", encoding="utf-8", newline="\n")
+    binding.write_text("\n".join(prefix + source_lines) + "\n", encoding="utf-8", newline="\n")
     patch_path = Path(builder.__file__).resolve().parents[2] / builder.PATCH_RELATIVE_PATH
 
     builder._apply_versioned_patch(source_root, patch_path)
@@ -133,7 +152,8 @@ def test_patch_chain_rejects_wrong_base_and_enforces_registered_order(tmp_path):
         "// base\n"
         'pybind11::class_<GameContext> gameContext(m, "GameContext");\n'
         "    gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())\n"
-        '        .def("pick_reward_card", &sts::py::pickRewardCard, "pick")\n',
+        '        .def("pick_reward_card", &sts::py::pickRewardCard, "pick")\n'
+        '        .def_readonly("player", &BattleContext::player)\n',
         encoding="utf-8",
         newline="\n",
     )
@@ -187,6 +207,7 @@ def test_patch_chain_rejects_wrong_base_and_enforces_registered_order(tmp_path):
         "upstream_hook_patch",
         "local_clone_binding",
         "potion_inventory_binding_patch",
+        "live_combat_potion_binding",
     ]
     final_text = binding.read_text(encoding="utf-8")
     assert final_text.count('.def_property_readonly("potions"') == 1

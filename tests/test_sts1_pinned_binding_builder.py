@@ -51,7 +51,7 @@ def test_compile_compatibility_preserves_reference_flags_and_cache():
     assert builder._compatibility_cxx_flags({"CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_FLAGS_DEBUG": "-g"}) == (
         "CMAKE_CXX_FLAGS_DEBUG", "-g -include algorithm"
     )
-    with pytest.raises(builder.BuildInputError, match="configuration C\+\+ flags are missing"):
+    with pytest.raises(builder.BuildInputError, match=r"configuration C\+\+ flags are missing"):
         builder._compatibility_cxx_flags({})
 
 

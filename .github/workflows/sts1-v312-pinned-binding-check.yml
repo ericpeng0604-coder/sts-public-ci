@@ -254,13 +254,16 @@ jobs:
           $artifactRootJson = (& $python -c "import json,sys; print(json.dumps(sys.argv[1]))" $artifactRoot).Trim()
           "import os`n_sts1_artifact_dll_directory = os.add_dll_directory($artifactRootJson)`n" | Set-Content -LiteralPath $artifactPythonPath -Encoding utf8
           $env:STS1_POTION_BINDING_MODULE = $moduleTarget
+          # Patch-chain tests need Git; run them before the DLL-isolation check.
+          & $python -m pytest -q (Join-Path $repoRoot "tests\test_sts1_pinned_binding_builder.py")
+          if ($LASTEXITCODE -ne 0) { throw "Pinned binding builder regression test failed." }
           $pytestLog = Join-Path $outputRoot "native-binding-pytest.log"
           $originalPath = $env:PATH
           $originalPythonPath = $env:PYTHONPATH
           try {
             $env:PATH = @((Join-Path $env:WINDIR "System32"), $env:WINDIR) -join ";"
             $env:PYTHONPATH = $artifactRoot
-            & $python -m pytest -q (Join-Path $repoRoot "tests\test_sts1_h19_potion_binding.py") (Join-Path $repoRoot "tests\test_sts1_pinned_binding_builder.py") *> $pytestLog
+            & $python -m pytest -q (Join-Path $repoRoot "tests\test_sts1_h19_potion_binding.py") *> $pytestLog
             if ($LASTEXITCODE -ne 0) {
               Get-Content -LiteralPath $pytestLog -Tail 80 | Write-Host
               throw "Isolated native potion binding regression test failed."

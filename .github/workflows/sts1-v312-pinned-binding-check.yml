@@ -1,0 +1,282 @@
+name: STS1 v3.12 pinned potion binding check
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/sts1-v312-pinned-binding-check.yml"
+      - "scripts/sts1/build_sts1_pinned_binding.py"
+      - "tests/test_sts1_h19_potion_binding.py"
+      - "tests/test_sts1_pinned_binding_builder.py"
+      - "control/sts1-g7-improvement/native-patches/potion-inventory-binding.patch"
+      - "external/sts_lightspeed/UPSTREAM.json"
+      - "external/sts-rl-agent/UPSTREAM.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sts1-v312-pinned-binding-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pinned-binding:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout project revision
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install UCRT64 GCC and Ninja
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          pacboy: >-
+            gcc:p
+            ninja:p
+          cache: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned build utilities
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check cmake==3.31.6 pytest==9.1.1
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Python build utilities could not be installed." }
+
+      - name: Checkout pinned simulator and submodules
+        uses: actions/checkout@v5
+        with:
+          repository: gamerpuppy/sts_lightspeed
+          ref: 7476a81954020087da31d41d16fddf475746ec2d
+          path: external/sts_lightspeed/sts_lightspeed-7476a81954020087da31d41d16fddf475746ec2d
+          submodules: recursive
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build and verify pinned native binding
+        shell: pwsh
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+          SIMULATOR_COMMIT: 7476a81954020087da31d41d16fddf475746ec2d
+          AGENT_COMMIT: b20eb2cac2f52b22fbb6c79900c309b51ea0a1db
+          HOOK_PATCH_BLOB: 83d3a89ba0f7639e93f35df6b8f27bf2fe6326a8
+          PYBIND_OVERRIDE_COMMIT: 3e9dfa2866941655c56877882565e7577de6fc7b
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repoRoot = $env:GITHUB_WORKSPACE
+          $outputRoot = Join-Path $env:RUNNER_TEMP "sts1-v312-pinned-binding-evidence"
+          $referenceBuild = Join-Path $env:RUNNER_TEMP "sts1-v312-reference-build"
+          $scratchRoot = Join-Path $env:RUNNER_TEMP "sts1-v312-binding-build"
+          $artifactRoot = Join-Path $outputRoot "artifact"
+          New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+          New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+          if (Test-Path -LiteralPath $referenceBuild) { throw "Reference build path already exists; refusing to overwrite it." }
+          if (Test-Path -LiteralPath $scratchRoot) { throw "Binding scratch path already exists; refusing to overwrite it." }
+
+          $sourceRoot = Join-Path $repoRoot "external\sts_lightspeed\sts_lightspeed-$env:SIMULATOR_COMMIT"
+          $hooksPatch = Join-Path $env:RUNNER_TEMP "sts1-sim-rl-hooks-$env:AGENT_COMMIT.patch"
+          $pybindRoot = Join-Path $sourceRoot "pybind11"
+          $python = (Get-Command python -ErrorAction Stop).Source
+          $pythonRoot = (& $python -c "import sys; print(sys.base_prefix)").Trim()
+          $pythonScripts = (& $python -c "import sysconfig; print(sysconfig.get_path('scripts'))").Trim()
+          $pythonAbi = (& $python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')").Trim()
+          $pythonVersion = (& $python --version).Trim()
+          $pythonInclude = (& $python -c "import sysconfig; print(sysconfig.get_path('include'))").Trim()
+          $pythonLibrary = Join-Path $pythonRoot "libs\python$pythonAbi.lib"
+          $gccBin = Join-Path $env:MSYS2_ROOT "ucrt64\bin"
+          $compiler = Join-Path $gccBin "g++.exe"
+          $ninja = Join-Path $gccBin "ninja.exe"
+          $cmake = Join-Path $pythonScripts "cmake.exe"
+          $pybindInclude = Join-Path $pybindRoot "include"
+
+          if ($pythonAbi -ne "312") { throw "Expected CPython 3.12, found $pythonVersion ($pythonAbi)." }
+          foreach ($path in @($sourceRoot, $compiler, $ninja, $cmake, $pythonInclude, $pythonLibrary, $pybindInclude)) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Required pinned build input is missing: $path" }
+          }
+
+          $hookUri = "https://raw.githubusercontent.com/Jialeiv/sts-rl-agent/$env:AGENT_COMMIT/sim_patch/sim_rl_hooks.patch"
+          curl.exe --fail --silent --show-error --location --output $hooksPatch $hookUri
+          if ($LASTEXITCODE -ne 0) { throw "Could not download the exact pinned simulator hook patch." }
+
+          # Restore exact pinned Git blob bytes in this disposable CI checkout; the builder hashes raw bytes.
+          & git -c core.autocrlf=false -C $sourceRoot checkout --force -- .
+          if ($LASTEXITCODE -ne 0) { throw "Could not restore exact pinned simulator source bytes." }
+
+          $simulatorHead = (& git -C $sourceRoot rev-parse HEAD).Trim()
+          $agentHead = $env:AGENT_COMMIT
+          $patchBlob = (& git hash-object $hooksPatch).Trim()
+          if ($simulatorHead -ne $env:SIMULATOR_COMMIT) { throw "Pinned simulator commit mismatch: $simulatorHead" }
+          if ($agentHead -ne $env:AGENT_COMMIT) { throw "Pinned hook repository commit mismatch: $agentHead" }
+          if ($patchBlob -ne $env:HOOK_PATCH_BLOB) { throw "Pinned simulator hook patch blob mismatch: $patchBlob" }
+
+          $originalPybindHead = (& git -C $pybindRoot rev-parse HEAD).Trim()
+          git -C $pybindRoot fetch --depth 1 origin $env:PYBIND_OVERRIDE_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch the registered pybind11 override commit." }
+          git -C $pybindRoot checkout --detach $env:PYBIND_OVERRIDE_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "Could not select the registered pybind11 override commit." }
+          $pybindHead = (& git -C $pybindRoot rev-parse HEAD).Trim()
+          if ($pybindHead -ne $env:PYBIND_OVERRIDE_COMMIT) { throw "pybind11 override commit mismatch: $pybindHead" }
+
+          $env:PATH = "$gccBin;$pythonScripts;$env:PATH"
+          $pythonStartup = Join-Path $env:RUNNER_TEMP "sts1-v312-python-startup"
+          New-Item -ItemType Directory -Path $pythonStartup -Force | Out-Null
+          $gccBinJson = (& $python -c "import json,sys; print(json.dumps(sys.argv[1]))" $gccBin).Trim()
+          "import os`n_sts1_dll_directory = os.add_dll_directory($gccBinJson)`n" | Set-Content -LiteralPath (Join-Path $pythonStartup "sitecustomize.py") -Encoding utf8
+          $env:PYTHONPATH = if ($env:PYTHONPATH) { "$pythonStartup;$env:PYTHONPATH" } else { $pythonStartup }
+
+          $toolchain = [ordered]@{
+            project_commit = $env:GITHUB_SHA
+            simulator_commit = $simulatorHead
+            agent_commit = $agentHead
+            hook_patch_blob = $patchBlob
+            pybind_original_submodule_commit = $originalPybindHead
+            pybind_override_commit = $pybindHead
+            python = $pythonVersion
+            compiler = ((& $compiler --version | Select-Object -First 1).Trim())
+            cmake = ((& $cmake --version | Select-Object -First 1).Trim())
+            ninja = ((& $ninja --version | Select-Object -First 1).Trim())
+          }
+          $toolchain | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $outputRoot "toolchain.json") -Encoding utf8
+
+          $configureLog = Join-Path $outputRoot "reference-configure.log"
+          & $cmake -S $sourceRoot -B $referenceBuild -G Ninja `
+            "-DCMAKE_MAKE_PROGRAM=$ninja" `
+            "-DCMAKE_CXX_COMPILER=$compiler" `
+            "-DCMAKE_BUILD_TYPE=Release" `
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" `
+            "-DPython_EXECUTABLE=$python" `
+            "-DPYTHON_EXECUTABLE=$python" `
+            "-DPython_INCLUDE_DIR=$pythonInclude" `
+            "-DPython_LIBRARY=$pythonLibrary" `
+            "-DPYBIND11_INCLUDE_DIR=$pybindInclude" `
+            -DPYBIND11_PYTHONLIBS_OVERWRITE=ON *> $configureLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content -LiteralPath $configureLog -Tail 80 | Write-Host
+            throw "Pinned reference CMake configure failed."
+          }
+          if (Test-Path -LiteralPath (Join-Path $referenceBuild "CMakeCache.txt")) {
+            Copy-Item -LiteralPath (Join-Path $referenceBuild "CMakeCache.txt") -Destination (Join-Path $outputRoot "reference-CMakeCache.txt")
+          }
+
+          $builder = Join-Path $repoRoot "scripts\sts1\build_sts1_pinned_binding.py"
+          $potionPatchRelative = "control/sts1-g7-improvement/native-patches/potion-inventory-binding.patch"
+          & git -c core.autocrlf=false -C $repoRoot checkout --force -- $potionPatchRelative
+          if ($LASTEXITCODE -ne 0) { throw "Could not restore exact versioned potion patch bytes." }
+          $builderLog = Join-Path $outputRoot "binding-builder.log"
+          & $python $builder `
+            --source-root $sourceRoot `
+            --hooks-patch $hooksPatch `
+            --reference-build $referenceBuild `
+            --cmake $cmake `
+            --scratch-root $scratchRoot *> $builderLog
+          foreach ($logName in @("configure.log", "build.log")) {
+            $sourceLog = Join-Path $scratchRoot $logName
+            if (Test-Path -LiteralPath $sourceLog) { Copy-Item -LiteralPath $sourceLog -Destination (Join-Path $outputRoot "binding-$logName") }
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content -LiteralPath $builderLog -Tail 100 | Write-Host
+            throw "Pinned binding build or native smoke failed."
+          }
+
+          $summaryText = Get-Content -LiteralPath $builderLog -Raw
+          $summary = $summaryText | ConvertFrom-Json
+          if ($summary.status -ne "PASS" -or $summary.episodes_started -ne 0) { throw "Binding helper did not report a zero-episode PASS." }
+          $summaryText | Set-Content -LiteralPath (Join-Path $outputRoot "binding-summary.json") -Encoding utf8
+          $moduleSource = (Resolve-Path -LiteralPath $summary.module_path).Path
+          $moduleTarget = Join-Path $artifactRoot (Split-Path -Leaf $moduleSource)
+          Copy-Item -LiteralPath $moduleSource -Destination $moduleTarget
+          $moduleSha256 = (Get-FileHash -LiteralPath $moduleTarget -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($moduleSha256 -ne $summary.native_module_sha256) { throw "Built native extension hash differs from the builder summary." }
+
+          $objdump = Join-Path $gccBin "objdump.exe"
+          if (-not (Test-Path -LiteralPath $objdump)) { throw "Pinned UCRT64 objdump is missing." }
+          $dependencyOutput = & $objdump -p $moduleTarget
+          if ($LASTEXITCODE -ne 0) { throw "Could not inspect native extension DLL dependencies." }
+          $dependencyNames = @($dependencyOutput | ForEach-Object { if ($_ -match "DLL Name:\s*(\S+)") { $Matches[1] } } | Sort-Object -Unique)
+          if ($dependencyNames.Count -eq 0) { throw "Native extension has no inspectable DLL imports." }
+          $pendingDependencies = [System.Collections.Generic.Queue[string]]::new()
+          foreach ($dllName in @($dependencyNames + "python$pythonAbi.dll" | Sort-Object -Unique)) { $pendingDependencies.Enqueue($dllName) }
+          $seenDependencies = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+          $runtimeDependencies = [System.Collections.Generic.List[object]]::new()
+          $systemDependencies = [System.Collections.Generic.List[string]]::new()
+          $apiSetDependencies = [System.Collections.Generic.List[string]]::new()
+          while ($pendingDependencies.Count -gt 0) {
+            $dllName = $pendingDependencies.Dequeue()
+            if (-not $seenDependencies.Add($dllName)) { continue }
+            if ($dllName -match "^(api-ms-win-|ext-ms-win-)") {
+              $apiSetDependencies.Add($dllName)
+              continue
+            }
+            $systemDll = Join-Path (Join-Path $env:WINDIR "System32") $dllName
+            if (Test-Path -LiteralPath $systemDll) {
+              $systemDependencies.Add($dllName)
+              continue
+            }
+            $dllSource = $null
+            foreach ($dllDirectory in @($gccBin, $pythonRoot)) {
+              $candidateDll = Join-Path $dllDirectory $dllName
+              if (Test-Path -LiteralPath $candidateDll) { $dllSource = $candidateDll; break }
+            }
+            if (-not $dllSource) { throw "Required native extension DLL is missing: $dllName" }
+            $dllTarget = Join-Path $artifactRoot $dllName
+            Copy-Item -LiteralPath $dllSource -Destination $dllTarget -Force
+            $runtimeDependencies.Add([ordered]@{
+              name = $dllName
+              kind = "bundled"
+              sha256 = (Get-FileHash -LiteralPath $dllTarget -Algorithm SHA256).Hash.ToLowerInvariant()
+              bytes = (Get-Item -LiteralPath $dllTarget).Length
+            })
+            $childOutput = & $objdump -p $dllSource
+            if ($LASTEXITCODE -ne 0) { throw "Could not inspect transitive DLL dependencies for $dllName." }
+            $childNames = @($childOutput | ForEach-Object { if ($_ -match "DLL Name:\s*(\S+)") { $Matches[1] } } | Sort-Object -Unique)
+            foreach ($childName in $childNames) { $pendingDependencies.Enqueue($childName) }
+          }
+          [ordered]@{
+            python_version = $pythonVersion
+            python_abi = $pythonAbi
+            extension_filename = Split-Path -Leaf $moduleTarget
+            extension_sha256 = $moduleSha256
+            dependency_closure_complete = $true
+            windows_system_dependencies = @($systemDependencies | Sort-Object -Unique)
+            windows_api_sets = @($apiSetDependencies | Sort-Object -Unique)
+            bundled_dependencies = @($runtimeDependencies.ToArray())
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $artifactRoot "binding-runtime.json") -Encoding utf8
+
+          $artifactPythonPath = Join-Path $artifactRoot "sitecustomize.py"
+          $artifactRootJson = (& $python -c "import json,sys; print(json.dumps(sys.argv[1]))" $artifactRoot).Trim()
+          "import os`n_sts1_artifact_dll_directory = os.add_dll_directory($artifactRootJson)`n" | Set-Content -LiteralPath $artifactPythonPath -Encoding utf8
+          $env:STS1_POTION_BINDING_MODULE = $moduleTarget
+          $pytestLog = Join-Path $outputRoot "native-binding-pytest.log"
+          $originalPath = $env:PATH
+          $originalPythonPath = $env:PYTHONPATH
+          try {
+            $env:PATH = @((Join-Path $env:WINDIR "System32"), $env:WINDIR) -join ";"
+            $env:PYTHONPATH = $artifactRoot
+            & $python -m pytest -q (Join-Path $repoRoot "tests\test_sts1_h19_potion_binding.py") (Join-Path $repoRoot "tests\test_sts1_pinned_binding_builder.py") *> $pytestLog
+            if ($LASTEXITCODE -ne 0) {
+              Get-Content -LiteralPath $pytestLog -Tail 80 | Write-Host
+              throw "Isolated native potion binding regression test failed."
+            }
+            Get-Content -LiteralPath $pytestLog | Write-Host
+          }
+          finally {
+            $env:PATH = $originalPath
+            $env:PYTHONPATH = $originalPythonPath
+          }
+
+      - name: Upload build evidence and tested native binding
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: sts1-v312-pinned-binding-${{ github.run_id }}
+          path: ${{ runner.temp }}/sts1-v312-pinned-binding-evidence/**
+          if-no-files-found: warn
+          retention-days: 7

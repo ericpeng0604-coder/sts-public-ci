@@ -1,0 +1,33 @@
+diff --git a/bindings/slaythespire.cpp b/bindings/slaythespire.cpp
+--- a/bindings/slaythespire.cpp
++++ b/bindings/slaythespire.cpp
+@@ -10,5 +10,8 @@
+ #include <sstream>
+ #include <algorithm>
++#include <cstddef>
++#include <string>
++#include <vector>
+
+ #include "sim/ConsoleSimulator.h"
+ #include "sim/search/ScumSearchAgent2.h"
+@@ -68,2 +71,20 @@
+         .def("get_card_reward", &sts::py::getCardReward, "return the current card reward list")
+         .def_property_readonly("encounter", [](const GameContext &gc) { return gc.info.encounter; })
++        .def_property_readonly("potions",
++               [](const GameContext &gc) {
++                   std::vector<std::string> names;
++                   names.reserve(gc.potions.size());
++                   constexpr std::size_t nameCount =
++                       sizeof(potionEnumNames) / sizeof(potionEnumNames[0]);
++                   for (const Potion potion : gc.potions) {
++                       const auto index = static_cast<std::size_t>(potion);
++                       if (index >= nameCount || potionEnumNames[index] == nullptr) {
++                           names.emplace_back("INVALID");
++                       } else {
++                           names.emplace_back(potionEnumNames[index]);
++                       }
++                   }
++                   return names;
++               },
++               "returns a copy of all five native potion slots using exact enum names"
++        )

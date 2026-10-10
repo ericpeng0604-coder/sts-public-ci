@@ -583,7 +583,7 @@ def _apply_last_potion_reserve(
     return recommended_action, False
 
 
-_DEFEND_CARD_IDS = {"DEFEND_R", "DEFEND_G", "DEFEND_B", "DEFEND_P"}
+_DEFEND_CARD_IDS = {"DEFEND_R", "DEFEND_G", "DEFEND_B", "DEFEND_P", "DEFEND_RED"}
 
 
 def _defend_base_block(card: Any) -> tuple[bool, int | None]:
@@ -919,6 +919,87 @@ def _potion_inventory_snapshot(gc: Any) -> dict[str, Any]:
         "potion_inventory_complete": True,
         "potion_inventory_source": "native_gamecontext_potion_enum_names_v1",
         "potion_inventory_reason": "exactly_five_valid_native_slots",
+    }
+
+
+def _apply_full_potion_shop_skip_guard(
+    *,
+    screen_name: str,
+    shop_screen_name: str,
+    kind: str,
+    recommended_index: int,
+    selected_index: int,
+    choice_semantics: Sequence[Mapping[str, Any]],
+    gc: Any,
+) -> tuple[int, dict[str, Any] | None]:
+    """Skip a recommended potion purchase when all five native slots are occupied."""
+
+    if screen_name != shop_screen_name or kind != "shop":
+        return selected_index, None
+    if (
+        not isinstance(recommended_index, int)
+        or isinstance(recommended_index, bool)
+        or not 0 <= recommended_index < len(choice_semantics)
+    ):
+        raise SimulatorRunError("full-potion shop guard: invalid recommended shop action index")
+
+    recommended = choice_semantics[recommended_index]
+    if not isinstance(recommended, Mapping):
+        raise SimulatorRunError("full-potion shop guard: incomplete shop action semantics")
+    if recommended.get("leave") is True:
+        return selected_index, None
+    item_type = recommended.get("item_type")
+    if (
+        not isinstance(item_type, str)
+        or not item_type.strip()
+        or item_type.upper() in {"INVALID", "UNKNOWN"}
+        or item_type.isdecimal()
+    ):
+        raise SimulatorRunError("full-potion shop guard: incomplete shop action semantics")
+    if item_type.upper() != "POTION":
+        return selected_index, None
+
+    potion_inventory = _potion_inventory_snapshot(gc)
+    if potion_inventory.get("potion_inventory_complete") is not True:
+        reason = potion_inventory.get("potion_inventory_reason", "unknown")
+        raise SimulatorRunError(
+            f"full-potion shop guard: potion inventory is incomplete ({reason})"
+        )
+    potions = potion_inventory.get("potions")
+    if (
+        not isinstance(potions, list)
+        or len(potions) != 5
+        or any(
+            not isinstance(potion, str)
+            or not potion.strip()
+            or potion.upper() in {"INVALID", "UNKNOWN"}
+            for potion in potions
+        )
+    ):
+        raise SimulatorRunError("full-potion shop guard: potion inventory is incomplete")
+    if any(potion.upper() == "EMPTY_POTION_SLOT" for potion in potions):
+        return selected_index, None
+
+    skip_indices = [
+        index
+        for index, semantics in enumerate(choice_semantics)
+        if isinstance(semantics, Mapping) and semantics.get("leave") is True
+    ]
+    if len(skip_indices) != 1:
+        raise SimulatorRunError(
+            "full-potion shop guard: no unique legal shop skip action is available"
+        )
+    skip_index = skip_indices[0]
+    if not 0 <= selected_index < len(choice_semantics):
+        raise SimulatorRunError("full-potion shop guard: invalid selected shop action index")
+
+    return skip_index, {
+        "status": "overridden",
+        "reason": "potion_capacity_full",
+        "recommended_index": recommended_index,
+        "executed_index": skip_index,
+        "recommended_choice": dict(recommended),
+        "executed_choice": dict(choice_semantics[skip_index]),
     }
 
 
@@ -2285,6 +2366,7 @@ def run_simulator_game(
                 diagnostic_recommended_index: int | None = None
                 map_policy_intervention: dict[str, Any] | None = None
                 campfire_policy_intervention: dict[str, Any] | None = None
+                shop_policy_intervention: dict[str, Any] | None = None
                 card_reward_skip_intervention: dict[str, Any] | None = None
                 if armg_policy is None:
                     if diagnostic_trace_path is not None:
@@ -2420,10 +2502,24 @@ def run_simulator_game(
                             )
                         if card_reward_skip_intervention["overridden"]:
                             card_reward_skip_override_count += 1
+                    choice_semantics = [
+                        armg_policy.describe_choice(kind, value) for value in descs
+                    ]
+                    if kind == "shop":
+                        selected_index, shop_policy_intervention = (
+                            _apply_full_potion_shop_skip_guard(
+                                screen_name=screen_before,
+                                shop_screen_name=_enum_name(sts.ScreenState.SHOP_ROOM),
+                                kind=kind,
+                                recommended_index=recommended_index,
+                                selected_index=selected_index,
+                                choice_semantics=choice_semantics,
+                                gc=gc,
+                            )
+                        )
                     diagnostic_selected_index = selected_index
                     before = public_run_state(gc)
                     choice_descriptions = [repr(value) for value in descs]
-                    choice_semantics = [armg_policy.describe_choice(kind, value) for value in descs]
                     deck_before = armg_policy.deck_snapshot(gc)
                     training_vector = armg_policy.training_vector_snapshot(gc, descs)
                     capture = getattr(armg_policy, "capture_conversion_state", None)
@@ -2455,6 +2551,7 @@ def run_simulator_game(
                         "recommended_index": recommended_index,
                         "map_policy_intervention": map_policy_intervention,
                         "campfire_policy_intervention": campfire_policy_intervention,
+                        "shop_policy_intervention": shop_policy_intervention,
                         "choice_count": len(descs),
                         "choice_descriptions": choice_descriptions,
                         "choice_semantics": choice_semantics,
@@ -2504,6 +2601,7 @@ def run_simulator_game(
                         "recommended_legal_action_index": diagnostic_recommended_index,
                         "map_policy_intervention": map_policy_intervention,
                         "campfire_policy_intervention": campfire_policy_intervention,
+                        "shop_policy_intervention": shop_policy_intervention,
                         "card_reward_skip_intervention": card_reward_skip_intervention,
                         "route": diagnostic_route,
                         "selected_choice": choice,
@@ -2875,6 +2973,9 @@ def run_simulator_game(
                             "act": int(_value(gc, "act", 0) or 0),
                             "turn": _value(battle, "turn"),
                             "mcts_sims": active_mcts_sims,
+                            "state_before_signature_sha256": sha256_json(
+                                _diagnostic_battle_snapshot(battle, gc, armg_policy)
+                            ),
                             "public_state": diagnostic_state,
                             "canonical_native_legal_actions": [
                                 _public_action(action, hand_raw) for action in native_actions
@@ -2931,6 +3032,17 @@ def run_simulator_game(
                         "emergency_potion_override": emergency_potion_override,
                     })
                     chosen.execute(battle)
+                    if diagnostic_trace_path is not None:
+                        _record(diagnostic_trace_path, {
+                            "type": "combat_action_applied_v1",
+                            "game_step": game_steps,
+                            "encounter_index": encounter_index,
+                            "battle_step": battle_steps,
+                            "selected_action": trace_action,
+                            "state_after_signature_sha256": sha256_json(
+                                _diagnostic_battle_snapshot(battle, gc, armg_policy)
+                            ),
+                        })
                     mcts_action_count += 1
                     _record(evidence_path, {
                         "type": "simulator_combat_action",
@@ -3125,6 +3237,7 @@ def run_simulator_game(
         "fallback_rate": fallback_count / max(1, student_actions + fallback_count + armg_action_count),
         "equivalent_action_alias_count": equivalent_action_alias_count,
         "illegal_action_count": illegal_actions,
+        "communication_error_count": 0,
         "timeout_count": timeout_count,
         "crash_count": crash_count,
         "mean_inference_latency_ms": sum(latencies_ms) / len(latencies_ms) if latencies_ms else None,
@@ -3142,6 +3255,7 @@ def run_simulator_game(
         "error": error,
         "legal_actions_complete": diagnostic_legal_actions_complete,
         "illegal_action_count": illegal_actions,
+        "communication_error_count": 0,
         "timeout_count": timeout_count,
         "crash_count": crash_count,
         "potion_inventory_snapshot_complete": summary[

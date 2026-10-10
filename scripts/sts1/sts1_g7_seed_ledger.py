@@ -496,14 +496,11 @@ def _public_summary(manifest: Mapping[str, Any], *, record_type: str) -> dict[st
     manifest_hash_key = "trial_manifest_sha256" if record_type == "confirmation_trial" else "ledger_sha256"
     pools = manifest["pools"]
     summary: dict[str, Any] = {
-        "schema_version": "sts1-g7-seed-public-summary-v1",
+        "schema_version": "sts1-g7-seed-public-summary-v2",
         "record_type": record_type,
         "round_id": manifest.get("round_id"),
         "confirmation_trial_k": manifest.get("confirmation_trial_k"),
         "alpha_exact": manifest.get("alpha_exact"),
-        "inventory_id": manifest["inventory_id"],
-        "inventory_sha256": manifest["inventory_sha256"],
-        "source_audit_sha256": manifest["source_audit_sha256"],
         "candidate_sha256": manifest.get("candidate_sha256"),
         "config_sha256": manifest.get("config_sha256"),
         "generator": manifest["generator"],

@@ -1,0 +1,32 @@
+{
+  "schema_version": "sts1-g7-seed-public-summary-v1",
+  "record_type": "exploration_round",
+  "round_id": "round-009-20261009",
+  "generator": "sha256-counter-rejection-v1",
+  "status": "WITHDRAWN_PRIVATE_FINGERPRINT_EXPOSURE",
+  "privacy_note": "This current summary omits seed IDs, pool identifiers, inventory identifiers, and hashes. Earlier public PR history contained private provenance fingerprints; all Round009 pools are withdrawn from future research. The private seed ledger remains unchanged.",
+  "redacted_private_fields": [
+    "inventory_id",
+    "inventory_sha256",
+    "manifest_sha256",
+    "source_audit_sha256",
+    "pool_id"
+  ],
+  "pools": {
+    "dev": {
+      "status": "WITHDRAWN_PRIVATE_FINGERPRINT_EXPOSURE"
+    },
+    "probe": {
+      "status": "WITHDRAWN_PRIVATE_FINGERPRINT_EXPOSURE"
+    },
+    "train_hypothesis_1": {
+      "status": "CONSUMED_AND_WITHDRAWN_PRIVATE_FINGERPRINT_EXPOSURE"
+    },
+    "train_hypothesis_2": {
+      "status": "WITHDRAWN_PRIVATE_FINGERPRINT_EXPOSURE"
+    },
+    "train_hypothesis_3": {
+      "status": "WITHDRAWN_PRIVATE_FINGERPRINT_EXPOSURE"
+    }
+  }
+}

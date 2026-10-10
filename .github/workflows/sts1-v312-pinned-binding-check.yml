@@ -6,6 +6,7 @@ on:
       - ".github/workflows/sts1-v312-pinned-binding-check.yml"
       - "scripts/sts1/build_sts1_pinned_binding.py"
       - "tests/test_sts1_h19_potion_binding.py"
+      - "tests/test_sts1_pinned_binding_builder.py"
       - "control/sts1-g7-improvement/native-patches/potion-inventory-binding.patch"
       - "external/sts_lightspeed/UPSTREAM.json"
       - "external/sts-rl-agent/UPSTREAM.json"
@@ -105,9 +106,9 @@ jobs:
           curl.exe --fail --silent --show-error --location --output $hooksPatch $hookUri
           if ($LASTEXITCODE -ne 0) { throw "Could not download the exact pinned simulator hook patch." }
 
-          # Windows runner Git config can rewrite LF source blobs to CRLF; restore exact pinned bytes locally.
+          # Restore exact pinned Git blob bytes in this disposable CI checkout; the builder hashes raw bytes.
           & git -c core.autocrlf=false -C $sourceRoot checkout --force -- .
-          if ($LASTEXITCODE -ne 0) { throw "Could not restore exact pinned simulator checkout bytes." }
+          if ($LASTEXITCODE -ne 0) { throw "Could not restore exact pinned simulator source bytes." }
 
           $simulatorHead = (& git -C $sourceRoot rev-parse HEAD).Trim()
           $agentHead = $env:AGENT_COMMIT
@@ -166,6 +167,9 @@ jobs:
           }
 
           $builder = Join-Path $repoRoot "scripts\sts1\build_sts1_pinned_binding.py"
+          $potionPatchRelative = "control/sts1-g7-improvement/native-patches/potion-inventory-binding.patch"
+          & git -c core.autocrlf=false -C $repoRoot checkout --force -- $potionPatchRelative
+          if ($LASTEXITCODE -ne 0) { throw "Could not restore exact versioned potion patch bytes." }
           $builderLog = Join-Path $outputRoot "binding-builder.log"
           & $python $builder `
             --source-root $sourceRoot `
@@ -189,20 +193,84 @@ jobs:
           $moduleSource = (Resolve-Path -LiteralPath $summary.module_path).Path
           $moduleTarget = Join-Path $artifactRoot (Split-Path -Leaf $moduleSource)
           Copy-Item -LiteralPath $moduleSource -Destination $moduleTarget
-          foreach ($dllName in @("libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll", "libatomic-1.dll", "python$pythonAbi.dll")) {
-            $dllSource = Join-Path $gccBin $dllName
-            if (-not (Test-Path -LiteralPath $dllSource)) { $dllSource = Join-Path $pythonRoot $dllName }
-            if (Test-Path -LiteralPath $dllSource) { Copy-Item -LiteralPath $dllSource -Destination (Join-Path $artifactRoot $dllName) -Force }
-          }
+          $moduleSha256 = (Get-FileHash -LiteralPath $moduleTarget -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($moduleSha256 -ne $summary.native_module_sha256) { throw "Built native extension hash differs from the builder summary." }
 
+          $objdump = Join-Path $gccBin "objdump.exe"
+          if (-not (Test-Path -LiteralPath $objdump)) { throw "Pinned UCRT64 objdump is missing." }
+          $dependencyOutput = & $objdump -p $moduleTarget
+          if ($LASTEXITCODE -ne 0) { throw "Could not inspect native extension DLL dependencies." }
+          $dependencyNames = @($dependencyOutput | ForEach-Object { if ($_ -match "DLL Name:\s*(\S+)") { $Matches[1] } } | Sort-Object -Unique)
+          if ($dependencyNames.Count -eq 0) { throw "Native extension has no inspectable DLL imports." }
+          $pendingDependencies = [System.Collections.Generic.Queue[string]]::new()
+          foreach ($dllName in @($dependencyNames + "python$pythonAbi.dll" | Sort-Object -Unique)) { $pendingDependencies.Enqueue($dllName) }
+          $seenDependencies = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+          $runtimeDependencies = [System.Collections.Generic.List[object]]::new()
+          $systemDependencies = [System.Collections.Generic.List[string]]::new()
+          $apiSetDependencies = [System.Collections.Generic.List[string]]::new()
+          while ($pendingDependencies.Count -gt 0) {
+            $dllName = $pendingDependencies.Dequeue()
+            if (-not $seenDependencies.Add($dllName)) { continue }
+            if ($dllName -match "^(api-ms-win-|ext-ms-win-)") {
+              $apiSetDependencies.Add($dllName)
+              continue
+            }
+            $systemDll = Join-Path (Join-Path $env:WINDIR "System32") $dllName
+            if (Test-Path -LiteralPath $systemDll) {
+              $systemDependencies.Add($dllName)
+              continue
+            }
+            $dllSource = $null
+            foreach ($dllDirectory in @($gccBin, $pythonRoot)) {
+              $candidateDll = Join-Path $dllDirectory $dllName
+              if (Test-Path -LiteralPath $candidateDll) { $dllSource = $candidateDll; break }
+            }
+            if (-not $dllSource) { throw "Required native extension DLL is missing: $dllName" }
+            $dllTarget = Join-Path $artifactRoot $dllName
+            Copy-Item -LiteralPath $dllSource -Destination $dllTarget -Force
+            $runtimeDependencies.Add([ordered]@{
+              name = $dllName
+              kind = "bundled"
+              sha256 = (Get-FileHash -LiteralPath $dllTarget -Algorithm SHA256).Hash.ToLowerInvariant()
+              bytes = (Get-Item -LiteralPath $dllTarget).Length
+            })
+            $childOutput = & $objdump -p $dllSource
+            if ($LASTEXITCODE -ne 0) { throw "Could not inspect transitive DLL dependencies for $dllName." }
+            $childNames = @($childOutput | ForEach-Object { if ($_ -match "DLL Name:\s*(\S+)") { $Matches[1] } } | Sort-Object -Unique)
+            foreach ($childName in $childNames) { $pendingDependencies.Enqueue($childName) }
+          }
+          [ordered]@{
+            python_version = $pythonVersion
+            python_abi = $pythonAbi
+            extension_filename = Split-Path -Leaf $moduleTarget
+            extension_sha256 = $moduleSha256
+            dependency_closure_complete = $true
+            windows_system_dependencies = @($systemDependencies | Sort-Object -Unique)
+            windows_api_sets = @($apiSetDependencies | Sort-Object -Unique)
+            bundled_dependencies = @($runtimeDependencies.ToArray())
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $artifactRoot "binding-runtime.json") -Encoding utf8
+
+          $artifactPythonPath = Join-Path $artifactRoot "sitecustomize.py"
+          $artifactRootJson = (& $python -c "import json,sys; print(json.dumps(sys.argv[1]))" $artifactRoot).Trim()
+          "import os`n_sts1_artifact_dll_directory = os.add_dll_directory($artifactRootJson)`n" | Set-Content -LiteralPath $artifactPythonPath -Encoding utf8
           $env:STS1_POTION_BINDING_MODULE = $moduleTarget
           $pytestLog = Join-Path $outputRoot "native-binding-pytest.log"
-          & $python -m pytest -q (Join-Path $repoRoot "tests\test_sts1_h19_potion_binding.py") *> $pytestLog
-          if ($LASTEXITCODE -ne 0) {
-            Get-Content -LiteralPath $pytestLog -Tail 80 | Write-Host
-            throw "Native potion binding regression test failed."
+          $originalPath = $env:PATH
+          $originalPythonPath = $env:PYTHONPATH
+          try {
+            $env:PATH = @((Join-Path $env:WINDIR "System32"), $env:WINDIR) -join ";"
+            $env:PYTHONPATH = $artifactRoot
+            & $python -m pytest -q (Join-Path $repoRoot "tests\test_sts1_h19_potion_binding.py") (Join-Path $repoRoot "tests\test_sts1_pinned_binding_builder.py") *> $pytestLog
+            if ($LASTEXITCODE -ne 0) {
+              Get-Content -LiteralPath $pytestLog -Tail 80 | Write-Host
+              throw "Isolated native potion binding regression test failed."
+            }
+            Get-Content -LiteralPath $pytestLog | Write-Host
           }
-          Get-Content -LiteralPath $pytestLog | Write-Host
+          finally {
+            $env:PATH = $originalPath
+            $env:PYTHONPATH = $originalPythonPath
+          }
 
       - name: Upload build evidence and tested native binding
         if: always()

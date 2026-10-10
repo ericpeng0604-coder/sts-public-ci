@@ -8,15 +8,15 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
 GAMEPLAY_COMMIT = "7476a81954020087da31d41d16fddf475746ec2d"
 GAMEPLAY_REPOSITORY = "https://github.com/gamerpuppy/sts_lightspeed"
 HOOK_PATCH_BLOB_SHA1 = "83d3a89ba0f7639e93f35df6b8f27bf2fe6326a8"
-POTION_PATCH_SHA256 = "625402c3599451c62d2c28670082018c46cdf99615b7ff12474638870ff163a6"
-BASE_BINDING_SHA256 = "60fc8803d479c5dad33fa3a90b0ebbbaced504d7ec0f0c2aa5eab1ba2e794ce6"
+POTION_PATCH_SHA256 = "fe75bb6fee0f83689bd5ab541a14ffead4f0df6b5b855c4f30096d308a4f9c7b"
+BASE_BINDING_SHA256 = "2b7220cb976205ee094143915825b3f004f2d3d69338e07dbaf27a56c8d45169"
 GAME_CONTEXT_SHA256 = "b78fd16448b96370fd78740a14baa00b4f6811c820dc544dd5c38cba01f73133"
 POTIONS_HEADER_SHA256 = "998ce625b620c1922222e5b1b7fdc904003d3cb8b765b783f8d9a1688dc7b134"
 PYBIND11_OVERRIDE_COMMIT = "3e9dfa2866941655c56877882565e7577de6fc7b"
@@ -41,6 +41,88 @@ def _git_blob_sha1(path: Path) -> str:
     content = path.read_bytes()
     header = f"blob {len(content)}\0".encode("ascii")
     return hashlib.sha1(header + content).hexdigest()
+
+
+def _verify_pinned_source_hashes(source_root: Path) -> dict[str, str]:
+    expected_hashes = {
+        "bindings/slaythespire.cpp": BASE_BINDING_SHA256,
+        "include/game/GameContext.h": GAME_CONTEXT_SHA256,
+        "include/constants/Potions.h": POTIONS_HEADER_SHA256,
+    }
+    observed_hashes: dict[str, str] = {}
+    for relative, expected in expected_hashes.items():
+        path = source_root / relative
+        if not path.is_file():
+            raise BuildInputError(f"pinned native source is missing: {relative}")
+        observed = _sha256(path)
+        if observed != expected:
+            raise BuildInputError(f"pinned native source hash mismatch: {relative}")
+        observed_hashes[relative] = observed
+    return observed_hashes
+
+
+def _patch_target_paths(patch_path: Path) -> list[Path]:
+    targets: list[Path] = []
+    for line in patch_path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("+++ b/"):
+            continue
+        raw_path = line[6:].split("\t", 1)[0]
+        relative = PurePosixPath(raw_path)
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise BuildInputError("pinned simulator patch contains an unsafe target path")
+        target = Path(*relative.parts)
+        if target not in targets:
+            targets.append(target)
+    if not targets:
+        raise BuildInputError("pinned simulator hook patch has no source targets")
+    return targets
+
+
+def _apply_upstream_hook_patch(source_root: Path, hooks_patch: Path) -> None:
+    source_root = source_root.resolve(strict=True)
+    targets = _patch_target_paths(hooks_patch)
+    for relative in targets:
+        path = (source_root / relative).resolve(strict=True)
+        try:
+            path.relative_to(source_root)
+        except ValueError as exc:
+            raise BuildInputError("pinned simulator patch target escaped the source tree") from exc
+        if not path.is_file():
+            raise BuildInputError("pinned simulator patch target is not a regular file")
+
+    for arguments in (("--check",), ()):
+        completed = subprocess.run(
+            ["git", "apply", *arguments, str(hooks_patch)],
+            cwd=source_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode:
+            raise BuildInputError("pinned simulator hook patch did not apply cleanly")
+
+
+def _add_local_clone_binding(source_root: Path) -> str:
+    binding = source_root / "bindings" / "slaythespire.cpp"
+    text = binding.read_text(encoding="utf-8")
+    if "\r" in text:
+        raise BuildInputError("pinned binding contains non-LF bytes before local clone patch")
+    needle = (
+        '    gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())\n'
+        '        .def("pick_reward_card", &sts::py::pickRewardCard, '
+    )
+    replacement = (
+        '    gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())\n'
+        '        .def("clone", [](const GameContext &gc) { return GameContext(gc); },\n'
+        '             "copy the full run state for deterministic out-of-combat branching")\n'
+        '        .def("pick_reward_card", &sts::py::pickRewardCard, '
+    )
+    if '.def("clone", [](const GameContext &gc)' in text:
+        raise BuildInputError("local GameContext clone binding is already present")
+    if text.count(needle) != 1:
+        raise BuildInputError("pinned GameContext clone binding anchor is missing or ambiguous")
+    binding.write_text(text.replace(needle, replacement, 1), encoding="utf-8", newline="\n")
+    return _sha256(binding)
 
 
 def _parse_cmake_cache(path: Path) -> dict[str, str]:
@@ -83,9 +165,10 @@ def _apply_versioned_patch(source_root: Path, patch_path: Path) -> None:
         new_lines: list[str] = []
         while cursor < len(patch_lines) and not patch_lines[cursor].startswith("@@ "):
             line = patch_lines[cursor]
-            if not line:
-                raise BuildInputError("versioned patch contains an unmarked blank line")
-            if line[0] == " ":
+            if line == "":
+                old_lines.append("")
+                new_lines.append("")
+            elif line[0] == " ":
                 old_lines.append(line[1:])
                 new_lines.append(line[1:])
             elif line[0] == "+":
@@ -114,6 +197,41 @@ def _apply_versioned_patch(source_root: Path, patch_path: Path) -> None:
         offset += new_count - old_count
     target = source_root / relative
     target.write_text("\n".join(source_lines) + "\n", encoding="utf-8", newline="\n")
+
+
+def _hash_patch_targets(source_root: Path, targets: list[Path]) -> dict[str, str]:
+    return {path.as_posix(): _sha256(source_root / path) for path in targets}
+
+
+def _apply_binding_patch_chain(
+    source_root: Path, hooks_patch: Path, potion_patch: Path
+) -> dict[str, Any]:
+    binding = source_root / "bindings" / "slaythespire.cpp"
+    hook_targets = _patch_target_paths(hooks_patch)
+    hook_inputs = _hash_patch_targets(source_root, hook_targets)
+    _apply_upstream_hook_patch(source_root, hooks_patch)
+    hook_outputs = _hash_patch_targets(source_root, hook_targets)
+
+    clone_binding_sha256 = _add_local_clone_binding(source_root)
+    potion_input_binding_sha256 = _sha256(binding)
+    _apply_versioned_patch(source_root, potion_patch)
+    potion_output_binding_sha256 = _sha256(binding)
+    patched_text = binding.read_text(encoding="utf-8")
+    if patched_text.count('.def_property_readonly("potions"') != 1:
+        raise BuildInputError("patched binding does not contain exactly one read-only potion property")
+
+    return {
+        "patch_stage_order": [
+            "upstream_hook_patch",
+            "local_clone_binding",
+            "potion_inventory_binding_patch",
+        ],
+        "hook_patch_input_sha256": hook_inputs,
+        "hook_patch_output_sha256": hook_outputs,
+        "clone_binding_sha256": clone_binding_sha256,
+        "potion_patch_input_binding_sha256": potion_input_binding_sha256,
+        "potion_patch_output_binding_sha256": potion_output_binding_sha256,
+    }
 
 
 def _normal(path: Path) -> str:
@@ -162,15 +280,7 @@ def _validate_inputs(
     if _git_blob_sha1(hooks_patch) != HOOK_PATCH_BLOB_SHA1:
         raise BuildInputError("local simulator hook patch does not match its registered Git blob")
 
-    source_hashes = {
-        "bindings/slaythespire.cpp": BASE_BINDING_SHA256,
-        "include/game/GameContext.h": GAME_CONTEXT_SHA256,
-        "include/constants/Potions.h": POTIONS_HEADER_SHA256,
-    }
-    for relative, expected in source_hashes.items():
-        path = source_root / relative
-        if not path.is_file() or _sha256(path) != expected:
-            raise BuildInputError(f"pinned native source hash mismatch: {relative}")
+    source_hashes = _verify_pinned_source_hashes(source_root)
 
     patch_path = repo_root / PATCH_RELATIVE_PATH
     if _sha256(patch_path) != POTION_PATCH_SHA256:
@@ -319,21 +429,16 @@ def main() -> int:
     copied_source = scratch_root / "source"
     build_root = scratch_root / "build"
     shutil.copytree(source_root, copied_source, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+    copied_source_hashes = _verify_pinned_source_hashes(copied_source)
+    if copied_source_hashes != verified["source_hashes"]:
+        raise BuildInputError("pinned source bytes changed while copying into the scratch tree")
 
     binding = copied_source / "bindings/slaythespire.cpp"
-    original = binding.read_bytes()
-    if _sha256(source_root / "bindings/slaythespire.cpp") != BASE_BINDING_SHA256:
-        raise BuildInputError("preserved upstream binding changed during the source copy")
-    normalized = original.replace(b"\r\n", b"\n")
-    if b"\r" in normalized:
-        raise BuildInputError("binding source has unsupported mixed or bare-CR line endings")
-    binding.write_bytes(normalized)
-
-    patch_path = verified["patch_path"]
-    _apply_versioned_patch(copied_source, patch_path)
-    patched_text = binding.read_text(encoding="utf-8")
-    if patched_text.count('.def_property_readonly("potions"') != 1:
-        raise BuildInputError("patched binding does not contain exactly one read-only potion property")
+    patch_stage_hashes = _apply_binding_patch_chain(
+        copied_source,
+        hooks_patch,
+        verified["patch_path"],
+    )
 
     configure = [
         str(cmake),
@@ -385,7 +490,9 @@ def main() -> int:
         "hook_patch_git_blob_sha1": HOOK_PATCH_BLOB_SHA1,
         "potion_patch_sha256": POTION_PATCH_SHA256,
         "patched_paths": ["bindings/slaythespire.cpp"],
+        "source_input_sha256": verified["source_hashes"],
         "base_binding_sha256": BASE_BINDING_SHA256,
+        **patch_stage_hashes,
         "result_binding_sha256": _sha256(binding),
         "native_module_sha256": _sha256(module_path),
         "module_path": str(module_path),

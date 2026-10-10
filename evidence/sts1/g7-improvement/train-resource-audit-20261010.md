@@ -63,6 +63,12 @@ native state, unchanged native state and complete legal-action bits, and an equa
 MCTS2000 recommendation on untouched versus observed clones. This is a synthetic
 single-decision check, not full-episode trace invariance or win-rate acceptance.
 
+GitHub Windows native CI also passed for code commit
+`fc2a60580d84b01903d259d578ae9cdbc2e0247e`:
+https://github.com/ericpeng0604-coder/sts-public-ci/actions/runs/38052879894
+The build, native smoke, focused binding checks and artifact upload all completed
+successfully. This subsequent report update changes documentation only.
+
 All failed build/preflight attempts and logs were retained privately: CRLF patch
 identity, reference-source mismatch, missing dependency trees, legacy CMake policy
 compatibility, and shifted patch line numbers. The successful r6 build used a

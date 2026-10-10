@@ -19,6 +19,7 @@ POTION_PATCH_SHA256 = "fe75bb6fee0f83689bd5ab541a14ffead4f0df6b5b855c4f30096d308
 BASE_BINDING_SHA256 = "2b7220cb976205ee094143915825b3f004f2d3d69338e07dbaf27a56c8d45169"
 GAME_CONTEXT_SHA256 = "b78fd16448b96370fd78740a14baa00b4f6811c820dc544dd5c38cba01f73133"
 POTIONS_HEADER_SHA256 = "998ce625b620c1922222e5b1b7fdc904003d3cb8b765b783f8d9a1688dc7b134"
+ACTIONS_CPP_GIT_BLOB_SHA1 = "93db96fad413174009b54c13f6814ea0e6347073"
 PYBIND11_OVERRIDE_COMMIT = "3e9dfa2866941655c56877882565e7577de6fc7b"
 PATCH_RELATIVE_PATH = Path(
     "control/sts1-g7-improvement/native-patches/potion-inventory-binding.patch"
@@ -59,6 +60,24 @@ def _verify_pinned_source_hashes(source_root: Path) -> dict[str, str]:
             raise BuildInputError(f"pinned native source hash mismatch: {relative}")
         observed_hashes[relative] = observed
     return observed_hashes
+
+
+def _apply_build_only_algorithm_compatibility_patch(source_root: Path) -> dict[str, str]:
+    target = source_root / "src/combat/Actions.cpp"
+    if not target.is_file():
+        raise BuildInputError("pinned combat action source is missing")
+    source_blob = _git_blob_sha1(target)
+    if source_blob != ACTIONS_CPP_GIT_BLOB_SHA1:
+        raise BuildInputError("pinned combat action source blob mismatch")
+    source = target.read_bytes()
+    anchor = b'#include "combat/Actions.h"\n'
+    if source.count(anchor) != 1 or b"#include <algorithm>" in source:
+        raise BuildInputError("pinned combat action include context is unexpected")
+    target.write_bytes(source.replace(anchor, b"#include <algorithm>\n\n" + anchor, 1))
+    return {
+        "actions_cpp_source_git_blob_sha1": source_blob,
+        "actions_cpp_build_compatibility_sha256": _sha256(target),
+    }
 
 
 def _patch_target_paths(patch_path: Path) -> list[Path]:
@@ -433,6 +452,7 @@ def main() -> int:
     if copied_source_hashes != verified["source_hashes"]:
         raise BuildInputError("pinned source bytes changed while copying into the scratch tree")
 
+    compatibility_hashes = _apply_build_only_algorithm_compatibility_patch(copied_source)
     binding = copied_source / "bindings/slaythespire.cpp"
     patch_stage_hashes = _apply_binding_patch_chain(
         copied_source,
@@ -489,7 +509,8 @@ def main() -> int:
         "gameplay_source_commit": GAMEPLAY_COMMIT,
         "hook_patch_git_blob_sha1": HOOK_PATCH_BLOB_SHA1,
         "potion_patch_sha256": POTION_PATCH_SHA256,
-        "patched_paths": ["bindings/slaythespire.cpp"],
+        "patched_paths": ["src/combat/Actions.cpp", "bindings/slaythespire.cpp"],
+        **compatibility_hashes,
         "source_input_sha256": verified["source_hashes"],
         "base_binding_sha256": BASE_BINDING_SHA256,
         **patch_stage_hashes,

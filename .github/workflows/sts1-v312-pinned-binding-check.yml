@@ -104,6 +104,11 @@ jobs:
           $hookUri = "https://raw.githubusercontent.com/Jialeiv/sts-rl-agent/$env:AGENT_COMMIT/sim_patch/sim_rl_hooks.patch"
           curl.exe --fail --silent --show-error --location --output $hooksPatch $hookUri
           if ($LASTEXITCODE -ne 0) { throw "Could not download the exact pinned simulator hook patch." }
+
+          # Windows runner Git config can rewrite LF source blobs to CRLF; restore exact pinned bytes locally.
+          & git -c core.autocrlf=false -C $sourceRoot checkout --force -- .
+          if ($LASTEXITCODE -ne 0) { throw "Could not restore exact pinned simulator checkout bytes." }
+
           $simulatorHead = (& git -C $sourceRoot rev-parse HEAD).Trim()
           $agentHead = $env:AGENT_COMMIT
           $patchBlob = (& git hash-object $hooksPatch).Trim()

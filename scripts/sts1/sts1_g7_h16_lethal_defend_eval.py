@@ -1,7 +1,7 @@
-"""Run the preregistered H19 Defend evaluation on fresh Round011 pools.
+"""Run registered H19 Defend or H20 Inflame evaluations on distinct fresh pools.
 
 Raw seed IDs, episodes, traces, and usage records must remain in the private
-Temp evaluation directory. This runner never tunes the registered rule.
+evaluation directory outside this repository. This runner never tunes the registered rule.
 """
 
 from __future__ import annotations
@@ -36,8 +36,15 @@ import sts1_g7_seed_ledger as seed_ledger  # noqa: E402
 
 EvaluationIntegrityError = h2.EvaluationIntegrityError
 ROUND_ID = "round-011-20261010"
-TRIAL_ROUND_IDS = {"h19": ROUND_ID}
-TRIAL_POOL_ROLE = {"h19": {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"}}
+TRIAL_ROUND_IDS = {"h19": ROUND_ID, "h20": "round-013-20261010"}
+TRIAL_POOL_ROLE = {
+    trial: {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"}
+    for trial in TRIAL_ROUND_IDS
+}
+TRIAL_POLICY_FIELDS = {
+    "h19": ("lethal_intent_defend_rescue_enabled", "lethal_intent_defend_override", "lethal_intent_defend_reason"),
+    "h20": ("inflame_end_turn_enabled", "inflame_override", "inflame_reason"),
+}
 ACTIVE_TRIAL_IDS = tuple(TRIAL_POOL_ROLE)
 STAGE_CONFIG = {
     "train": {"paired_seed_count": 10, "minimum_override_seed_coverage": 3},
@@ -57,7 +64,7 @@ POOL_COUNTS = {stage: config["paired_seed_count"] for stage, config in STAGE_CON
 
 def _stage_episode_counts(trial_id: str, stage: str, seed_count: int) -> dict[str, int]:
     config = STAGE_CONFIG.get(stage)
-    if trial_id != "h19" or not isinstance(config, dict) or seed_count != config["paired_seed_count"]:
+    if trial_id not in ACTIVE_TRIAL_IDS or not isinstance(config, dict) or seed_count != config["paired_seed_count"]:
         raise EvaluationIntegrityError("episode count does not match the registered stage denominator")
     paired_episode_count = 2 * seed_count
     replay_count = int(stage == "train")
@@ -147,8 +154,9 @@ def _round011_assets(
     *, trial_id: str, stage: str, pool_file: Path, pools_dir: Path,
     inventory_path: Path, allocation_event: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], tuple[int, ...], dict[str, Any], dict[str, Any]]:
-    if trial_id != "h19" or stage not in TRIAL_POOL_ROLE["h19"]:
+    if trial_id not in ACTIVE_TRIAL_IDS or stage not in TRIAL_POOL_ROLE[trial_id]:
         raise EvaluationIntegrityError("Round011 assets are registered only for H19")
+    round_id = TRIAL_ROUND_IDS[trial_id]
     if allocation_event is None and stage != "train":
         raise EvaluationIntegrityError("H19 held-out stages require the existing private allocation record")
     role = TRIAL_POOL_ROLE[trial_id][stage]
@@ -164,7 +172,7 @@ def _round011_assets(
     ledger_payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
     if (
         ledger.get("schema_version") != seed_ledger.SCHEMA_VERSION
-        or ledger.get("round_id") != ROUND_ID
+        or ledger.get("round_id") != round_id
         or ledger.get("inventory_id") != inventory.get("inventory_id")
         or ledger.get("inventory_sha256") != inventory_sha256
         or ledger.get("source_audit_sha256") != seed_ledger.sha256_json(source_audit)
@@ -184,8 +192,8 @@ def _round011_assets(
         if (
             manifest != ledger["pools"].get(pool_name)
             or manifest.get("schema_version") != "sts1-g7-seed-pool-v1"
-            or manifest.get("pool_id") != f"{ROUND_ID}-{pool_name}"
-            or manifest.get("round_id") != ROUND_ID
+            or manifest.get("pool_id") != f"{round_id}-{pool_name}"
+            or manifest.get("round_id") != round_id
             or manifest.get("generation_key") != ledger.get("generation_key")
             or manifest.get("inventory_id") != inventory.get("inventory_id")
             or manifest.get("inventory_sha256") != inventory_sha256
@@ -203,10 +211,10 @@ def _round011_assets(
     except (KeyError, TypeError, seed_ledger.SeedLedgerError) as exc:
         raise EvaluationIntegrityError("Round011 pools are not disjoint from exclusions") from exc
     expected_allocation = {
-        "record_type": "h19_pool_allocation",
+        "record_type": f"{trial_id}_pool_allocation",
         "schema_version": "sts1-g7-pool-allocation-v1",
-        "trial_id": "h19",
-        "round_id": ROUND_ID,
+        "trial_id": trial_id,
+        "round_id": round_id,
         "exclusion_inventory": {
             "inventory_id": inventory.get("inventory_id"),
             "sha256": inventory_sha256,
@@ -227,7 +235,7 @@ def _round011_assets(
     seeds = tuple(pool.get("seed_ids", []))
     _validate_selected_seeds(stage, seeds)
     preflight = {
-        "round_id": ROUND_ID, "pool_id": pool.get("pool_id"),
+        "round_id": round_id, "pool_id": pool.get("pool_id"),
         "pool_manifest_sha256": pool.get("manifest_sha256"),
         "inventory_id": inventory.get("inventory_id"), "inventory_sha256": inventory_sha256,
         "ledger_sha256": ledger.get("ledger_sha256"), "source_count": len(source_audit),
@@ -241,10 +249,10 @@ def _validate_private_paths(
     pools_dir: Path, trial_id: str, stage: str, output_dir: Path, usage_path: Path,
     inventory_path: Path, identity_lock_path: Path,
 ) -> None:
-    if trial_id != "h19" or stage not in TRIAL_POOL_ROLE["h19"]:
+    if trial_id not in ACTIVE_TRIAL_IDS or stage not in TRIAL_POOL_ROLE[trial_id]:
         raise EvaluationIntegrityError("only newly registered H19 stages may execute")
     pools_dir = pools_dir.resolve()
-    parts = ROUND_ID.split("-")
+    parts = TRIAL_ROUND_IDS[trial_id].split("-")
     round_prefix = "-".join(parts[:2])
     round_date = parts[2]
     expected_output = pools_dir.parent.parent / f"{round_prefix}-{trial_id}-{stage}-{round_date}"
@@ -287,13 +295,13 @@ def _validate_identity(
     if (
         lock.get("schema_version") != PRIVATE_IDENTITY_SCHEMA_VERSION
         or lock.get("trial_id") != trial_id
-        or trial_id != "h19"
+        or trial_id not in ACTIVE_TRIAL_IDS
         or lock.get("candidate_commit") != candidate_commit
         or lock.get("simulator_gameplay_commit") != PINNED_GAMEPLAY_COMMIT
         or lock.get("mcts_sims") != 2000
         or MCTS_SIMS != 2000
         or not isinstance(expected_hashes, dict)
-        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS)
+        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS) | ({"candidate_selector_sha256"} if trial_id == "h20" else set())
         or any(not _valid_sha256(value) for value in expected_hashes.values())
     ):
         raise EvaluationIntegrityError("private H19 identity lock does not match the preregistered identity")
@@ -306,9 +314,10 @@ def _validate_identity(
         "g7_checkpoint_sha256": checkpoint,
         "simulator_policy_source_sha256": simulator_source,
         "candidate_evaluator_sha256": Path(__file__).resolve(),
+        "candidate_selector_sha256": simulator_source.parent / "inflame_end_turn.py",
     }
     identities: dict[str, str] = {}
-    for name in PRIVATE_IDENTITY_KEYS:
+    for name in expected_hashes:
         path = actual_paths[name]
         digest = _sha256(path) if path.is_file() else None
         if digest != expected_hashes[name]:
@@ -348,12 +357,12 @@ def _validate_transition(
     *, trial_id: str, stage: str, events: list[dict[str, Any]],
     allocation_event: dict[str, Any], candidate_commit: str, identities: dict[str, str],
 ) -> None:
-    if trial_id != "h19" or stage not in TRIAL_POOL_ROLE["h19"]:
+    if trial_id not in ACTIVE_TRIAL_IDS or stage not in TRIAL_POOL_ROLE[trial_id]:
         raise EvaluationIntegrityError("trial or stage is not registered for this evaluator")
-    allocation_rows = [event for event in events if event.get("record_type") == "h19_pool_allocation"]
+    allocation_rows = [event for event in events if event.get("record_type") == f"{trial_id}_pool_allocation"]
     if (
         len(allocation_rows) != 1 or not events or events[0] != allocation_event
-        or allocation_event.get("trial_id") != trial_id or allocation_event.get("round_id") != ROUND_ID
+        or allocation_event.get("trial_id") != trial_id or allocation_event.get("round_id") != TRIAL_ROUND_IDS[trial_id]
     ):
         raise EvaluationIntegrityError("H19 usage ledger lacks its exact private pool allocation record")
     stage_start_type = f"{trial_id}_stage_start"
@@ -384,6 +393,8 @@ def _validate_transition(
     ):
         if prior.get(key) != identities.get(key):
             raise EvaluationIntegrityError("policy, evaluator, simulator, or parent changed between stages")
+    if trial_id == "h20" and prior.get("candidate_selector_sha256") != identities.get("candidate_selector_sha256"):
+        raise EvaluationIntegrityError("Inflame selector changed between stages")
     if prior.get("advance_eligible") is not True:
         raise EvaluationIntegrityError("preceding paired result did not pass its preregistered gate")
 
@@ -451,6 +462,7 @@ def _valid_sha256(value: Any) -> bool:
 def _pair_has_effective_override(
     parent_trace: dict[str, list[dict[str, Any]]],
     candidate_trace: dict[str, list[dict[str, Any]]],
+    trial_id: str = "h19",
 ) -> bool:
     parent_decisions = {
         _trace_key(event): event
@@ -468,7 +480,7 @@ def _pair_has_effective_override(
         if _trace_key(event) is not None
     }
     for candidate in candidate_trace.get("decisions", []):
-        if candidate.get("lethal_intent_defend_override") is not True:
+        if candidate.get(TRIAL_POLICY_FIELDS[trial_id][1]) is not True:
             continue
         key = _trace_key(candidate)
         parent = parent_decisions.get(key)
@@ -571,13 +583,14 @@ def _trace_replay_matches(
     trace_off_signature: str,
     trace_on_action_count: int,
     trace_off_action_count: int,
+    trial_id: str = "h19",
 ) -> bool:
     return (
         h3._summary_view(trace_on) == h3._summary_view(trace_off)
         and trace_on_signature == trace_off_signature
         and trace_on_action_count == trace_off_action_count
-        and trace_on.get("lethal_intent_defend_override_count")
-        == trace_off.get("lethal_intent_defend_override_count")
+        and trace_on.get(TRIAL_POLICY_FIELDS[trial_id][1] + "_count")
+        == trace_off.get(TRIAL_POLICY_FIELDS[trial_id][1] + "_count")
     )
 
 
@@ -953,7 +966,8 @@ def _run_episode(
         reserve_last_potion_until_floor=None,
         use_potion_below_hp_fraction=None,
         lethal_potion_rescue=False,
-        lethal_intent_defend_rescue=candidate,
+        lethal_intent_defend_rescue=candidate and identity["trial_id"] == "h19",
+        inflame_end_turn=candidate and identity["trial_id"] == "h20",
         avoid_low_hp_elite_routes=False,
         prefer_smith_when_rest_overheals=False,
         prefer_smith_when_overheal_exceeds_effective_rest_heal=False,
@@ -965,7 +979,9 @@ def _run_episode(
         diagnostic_metadata=metadata,
     )
     _check_pair_integrity(evidence_path, result)
-    if result.get("lethal_intent_defend_rescue_enabled") is not candidate:
+    trial_id = identity["trial_id"]
+    enabled_field, override_field, reason_field = TRIAL_POLICY_FIELDS[trial_id]
+    if result.get(enabled_field) is not candidate:
         raise EvaluationIntegrityError("H19 policy activation flag differs from the requested arm")
     if trace_mode == "on":
         trace_stats = h7._validate_trace(trace_path, result, metadata)
@@ -978,12 +994,29 @@ def _run_episode(
     combat_events = [
         event for event in events if event.get("type") == "combat_decision_trace_v1"
     ]
-    override_events = [event for event in combat_events if event.get("lethal_intent_defend_override") is True]
-    if trace_mode == "on" and len(override_events) != result.get("lethal_intent_defend_override_count"):
+    override_events = [event for event in combat_events if event.get(override_field) is True]
+    if trace_mode == "on" and len(override_events) != result.get(override_field + "_count"):
         raise EvaluationIntegrityError("H19 trace and result override counts differ")
     if not candidate and override_events:
         raise EvaluationIntegrityError("unchanged G7 parent unexpectedly recorded an H19 override")
     for event in override_events:
+        if trial_id == "h20":
+            from roguelike_ai.sts1_phase3.inflame_end_turn import select_inflame_before_end_turn
+            choice, reason = select_inflame_before_end_turn(
+                event.get("public_state"), event.get("canonical_native_legal_actions"),
+                event.get("mcts_recommended_action"), legal_actions_complete=True,
+            )
+            if (
+                choice is None or choice.action != event.get("selected_action")
+                or choice.native_action_index != event.get("selected_native_action_index")
+                or reason != event.get("inflame_reason")
+                or event.get("inflame_detail") != {
+                    "selected_inflame_hand_index": choice.action["hand_index"],
+                    "selected_native_action_index": choice.native_action_index,
+                }
+            ):
+                raise EvaluationIntegrityError("H20 override differs from the frozen legal selector")
+            continue
         detail = event.get("lethal_intent_defend_detail")
         selected = event.get("selected_action")
         recommended = event.get("mcts_recommended_action")
@@ -1005,7 +1038,7 @@ def _run_episode(
         ):
             raise EvaluationIntegrityError("H19 override did not select a legal registered Defend action")
     reasons = Counter(
-        str(event.get("lethal_intent_defend_reason", "missing")) for event in combat_events
+        str(event.get(reason_field, "missing")) for event in combat_events
     )
     if candidate and sum(reasons.values()) != len(combat_events):
         raise EvaluationIntegrityError("H19 candidate trace lacks per-decision reasons")
@@ -1017,7 +1050,7 @@ def _run_episode(
         result,
         evidence_path,
         trace_stats,
-        len(override_events) if trace_mode == "on" else int(result["lethal_intent_defend_override_count"]),
+        len(override_events) if trace_mode == "on" else int(result[override_field + "_count"]),
         dict(reasons),
         trace_payload,
         action_signature,
@@ -1189,7 +1222,7 @@ def main(argv: list[str] | None = None) -> int:
             _accumulate_safety(safety_totals, parent)
             legal_trace_episodes += 1
             _accumulate_coverage(parent_trace_totals, parent_stats)
-            if parent_overrides != 0 or parent.get("lethal_intent_defend_override_count") != 0:
+            if parent_overrides != 0 or parent.get(TRIAL_POLICY_FIELDS[trial_id][1] + "_count") != 0:
                 raise EvaluationIntegrityError("G7 parent arm had a registered H19 action override")
 
             print(f"{trial_id.upper()} {stage} pair {pair_index}/{len(seeds)}: candidate")
@@ -1213,13 +1246,13 @@ def main(argv: list[str] | None = None) -> int:
             legal_trace_episodes += 1
             _accumulate_coverage(candidate_trace_totals, candidate_stats)
             candidate_overrides += overrides
-            effective_override_for_seed = _pair_has_effective_override(parent_trace, candidate_trace)
+            effective_override_for_seed = _pair_has_effective_override(parent_trace, candidate_trace, trial_id)
             if effective_override_for_seed:
                 effective_override_seed_count += 1
             candidate_reasons.update(reasons)
 
-            if trial_id == "h19" and stage == "train" and pair_index == 1:
-                print("H19 train trace-invariance replay (candidate, trace off)")
+            if stage == "train" and pair_index == 1:
+                print(f"{trial_id.upper()} train trace-invariance replay (candidate, trace off)")
                 episodes_attempted += 1
                 (
                     replay, replay_path, _, replay_overrides, replay_reasons,
@@ -1246,6 +1279,7 @@ def main(argv: list[str] | None = None) -> int:
                         replay_action_signature,
                         candidate_action_count,
                         replay_action_count,
+                        trial_id,
                     )
                     or replay_overrides != overrides
                 ):

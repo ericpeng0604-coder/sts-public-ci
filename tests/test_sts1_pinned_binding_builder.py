@@ -41,30 +41,14 @@ def test_pinned_hashes_match_the_registered_raw_source_blobs():
     )
 
 
-def test_compile_compatibility_preserves_every_byte_except_the_include(tmp_path, monkeypatch):
-    source_root = tmp_path / "source"
-    target = source_root / "src/combat/Actions.cpp"
-    target.parent.mkdir(parents=True)
-    original = b'// source\n#include "combat/Actions.h"\nvoid f() { std::sort(a, b); }\n'
-    target.write_bytes(original)
-    expected_blob = hashlib.sha1(f"blob {len(original)}\0".encode() + original).hexdigest()
-    monkeypatch.setattr(builder, "ACTIONS_CPP_GIT_BLOB_SHA1", expected_blob)
-    result = builder._apply_build_only_algorithm_compatibility_patch(source_root)
-    assert target.read_bytes().replace(b"#include <algorithm>\n\n", b"", 1) == original
-    assert result["actions_cpp_source_git_blob_sha1"] == expected_blob
-    assert result["actions_cpp_build_compatibility_sha256"] == builder._sha256(target)
-    with pytest.raises(builder.BuildInputError, match="source blob mismatch"):
-        builder._apply_build_only_algorithm_compatibility_patch(source_root)
-
-
-def test_compile_compatibility_rejects_unknown_source_without_writing(tmp_path):
-    target = tmp_path / "src/combat/Actions.cpp"
-    target.parent.mkdir(parents=True)
-    original = b'#include "combat/Actions.h"\n// unknown revision\n'
-    target.write_bytes(original)
-    with pytest.raises(builder.BuildInputError, match="source blob mismatch"):
-        builder._apply_build_only_algorithm_compatibility_patch(tmp_path)
-    assert target.read_bytes() == original
+def test_compile_compatibility_preserves_reference_flags_and_cache():
+    cache = {"CMAKE_CXX_FLAGS": "-Wno-shift-count-overflow -O3 -DUSER_FLAG=1"}
+    original = dict(cache)
+    assert builder._compatibility_cxx_flags(cache) == (
+        "-Wno-shift-count-overflow -O3 -DUSER_FLAG=1 -include algorithm"
+    )
+    assert cache == original
+    assert builder._compatibility_cxx_flags({}) == "-include algorithm"
 
 
 def test_local_clone_binding_is_added_once_to_the_scratch_source(tmp_path):

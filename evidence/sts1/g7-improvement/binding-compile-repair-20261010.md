@@ -7,15 +7,15 @@ The Windows pinned-binding check (run `38021302877`) failed while compiling
 `src/combat/Actions.cpp`: `std::sort` was unavailable because the source did not
 include `<algorithm>` directly.
 
-The builder now checks the exact pinned Actions.cpp Git blob
-`93db96fad413174009b54c13f6814ea0e6347073` before adding only that include to its
-scratch copy. Unknown bytes fail closed before any write. The preserved upstream
-source and gameplay logic remain unchanged. The build result records both the
-input blob and patched SHA-256 and includes Actions.cpp in its patched-path list.
+The first repair passed Actions.cpp, then run `38024509411` exposed the same
+missing header in BattleContext.cpp. The final repair supplies `-include algorithm`
+through CMake for the pinned GCC/Clang toolchains, preserving all reference C++
+flags. No combat source is rewritten. Existing exact-source validation and the
+registered binding patch chain remain intact; build output records the full flags.
 
-Local CPython 3.12 verification: 8 passed, 1 skipped across
+Local CPython 3.12 verification with the existing native module: 8 passed across
 `test_sts1_pinned_binding_builder.py` and `test_sts1_h19_potion_binding.py`.
-The skip requires the compiled native module and is not runtime proof.
+This is not proof of the new native build; the exact-head CI must pass.
 Whitespace check passed. All three changed paths are within Issue #19 scope.
 
 No episodes, new pools, model training, or Champion changes occurred.

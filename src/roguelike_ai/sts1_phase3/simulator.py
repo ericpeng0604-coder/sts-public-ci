@@ -2071,6 +2071,8 @@ def run_simulator_game(
     skip_card_reward_when_deck_size_at_least: int | None = None,
     skip_duplicate_card_reward_when_deck_size_at_least: int | None = None,
     require_all_card_reward_options_are_duplicates: bool = False,
+    skip_clash_reward_in_mixed_deck: bool = False,
+    clash_reward_card_types: dict[str, str] | None = None,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
@@ -2078,6 +2080,10 @@ def run_simulator_game(
     diagnostic_trace_path: Path | None = None,
     diagnostic_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if not isinstance(skip_clash_reward_in_mixed_deck, bool):
+        raise SimulatorRunError("Clash reward mode must be a boolean")
+    if skip_clash_reward_in_mixed_deck and (armg_policy is None or not isinstance(clash_reward_card_types, dict)):
+        raise SimulatorRunError("Clash reward rule requires ArmG and frozen native types")
     if prefer_smith_when_rest_overheals and prefer_smith_when_overheal_exceeds_effective_rest_heal:
         raise SimulatorRunError("choose only one Campfire over-heal rule")
     if skip_card_reward_when_deck_size_at_least is not None:
@@ -2246,6 +2252,7 @@ def run_simulator_game(
             early_defend_end_turn,
             skip_card_reward_when_deck_size_at_least is not None,
             skip_duplicate_card_reward_when_deck_size_at_least is not None,
+            skip_clash_reward_in_mixed_deck,
         )
     ) > 1:
         raise SimulatorRunError("enable only one primary policy intervention per run")
@@ -2283,6 +2290,8 @@ def run_simulator_game(
     card_reward_skip_override_count = 0
     card_reward_skip_eligible_count = 0
     card_reward_skip_reason_counts: dict[str, int] = {}
+    clash_reward_override_count = 0
+    clash_reward_reason_counts: dict[str, int] = {}
     campfire_overheal_override_count = 0
     map_elite_avoidance_override_count = 0
     map_elite_avoidance_fail_closed_count = 0
@@ -2415,6 +2424,7 @@ def run_simulator_game(
                 campfire_policy_intervention: dict[str, Any] | None = None
                 shop_policy_intervention: dict[str, Any] | None = None
                 card_reward_skip_intervention: dict[str, Any] | None = None
+                clash_reward_intervention: dict[str, Any] | None = None
                 if armg_policy is None:
                     if diagnostic_trace_path is not None:
                         (
@@ -2552,6 +2562,15 @@ def run_simulator_game(
                     choice_semantics = [
                         armg_policy.describe_choice(kind, value) for value in descs
                     ]
+                    if skip_clash_reward_in_mixed_deck and kind == "card":
+                        from .clash_reward_skip import select_clash_reward_skip
+                        selected_index, clash_reward_intervention = select_clash_reward_skip(
+                            selected_index, choice_semantics, armg_policy.deck_snapshot(gc),
+                            clash_reward_card_types, legal_choices_complete=len(descs) == len(execs),
+                        )
+                        clash_reward_override_count += int(clash_reward_intervention["overridden"])
+                        reason = clash_reward_intervention["reason"]
+                        clash_reward_reason_counts[reason] = clash_reward_reason_counts.get(reason, 0) + 1
                     if kind == "shop":
                         selected_index, shop_policy_intervention = (
                             _apply_full_potion_shop_skip_guard(
@@ -2600,6 +2619,7 @@ def run_simulator_game(
                         "campfire_policy_intervention": campfire_policy_intervention,
                         "shop_policy_intervention": shop_policy_intervention,
                         "choice_count": len(descs),
+                        "clash_reward_intervention": clash_reward_intervention,
                         "choice_descriptions": choice_descriptions,
                         "choice_semantics": choice_semantics,
                         "choice_scores": scores,
@@ -2650,6 +2670,9 @@ def run_simulator_game(
                         "campfire_policy_intervention": campfire_policy_intervention,
                         "shop_policy_intervention": shop_policy_intervention,
                         "card_reward_skip_intervention": card_reward_skip_intervention,
+                        "clash_reward_intervention": clash_reward_intervention,
+                        "clash_reward_override": bool(clash_reward_intervention and clash_reward_intervention["overridden"]),
+                        "clash_reward_reason": clash_reward_intervention["reason"] if clash_reward_intervention else "disabled_or_not_reward",
                         "route": diagnostic_route,
                         "selected_choice": choice,
                         "state_before": diagnostic_run_before,
@@ -3323,6 +3346,9 @@ def run_simulator_game(
         "free_defense_override_count": inflame_override_count if free_defense_end_turn else 0,
         "free_defense_reason_counts": inflame_reason_counts if free_defense_end_turn else {},
         "early_defend_end_turn_enabled": early_defend_end_turn,
+        "clash_reward_skip_enabled": skip_clash_reward_in_mixed_deck,
+        "clash_reward_override_count": clash_reward_override_count,
+        "clash_reward_reason_counts": clash_reward_reason_counts,
         "early_defend_override_count": inflame_override_count if early_defend_end_turn else 0,
         "early_defend_reason_counts": inflame_reason_counts if early_defend_end_turn else {},
         "skip_card_reward_when_deck_size_at_least": (

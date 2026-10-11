@@ -36,7 +36,7 @@ import sts1_g7_seed_ledger as seed_ledger  # noqa: E402
 
 EvaluationIntegrityError = h2.EvaluationIntegrityError
 ROUND_ID = "round-011-20261010"
-TRIAL_ROUND_IDS = {"h19": ROUND_ID, "h20": "round-013-20261010", "h21": "round-015-20261011", "h22": "round-016-20261011"}
+TRIAL_ROUND_IDS = {"h19": ROUND_ID, "h20": "round-013-20261010", "h21": "round-015-20261011", "h22": "round-016-20261011", "h23": "round-018-20261011"}
 TRIAL_POOL_ROLE = {
     trial: {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"}
     for trial in TRIAL_ROUND_IDS
@@ -46,7 +46,19 @@ TRIAL_POLICY_FIELDS = {
     "h20": ("inflame_end_turn_enabled", "inflame_override", "inflame_reason"),
     "h21": ("free_defense_end_turn_enabled", "free_defense_override", "free_defense_reason"),
     "h22": ("early_defend_end_turn_enabled", "early_defend_override", "early_defend_reason"),
+    "h23": ("clash_reward_skip_enabled", "clash_reward_override", "clash_reward_reason"),
 }
+H23_CARD_TYPES = None
+
+
+def h23_identity_paths(native_source: Path) -> dict[str, Path]:
+    from roguelike_ai.sts1_phase3.card_preparation import SOURCE_HASHES
+    return {
+        "h23_card_catalog_sha256": REPO_ROOT / "src/roguelike_ai/sts1_phase3/card_preparation.py",
+        "h23_runner_sha256": REPO_ROOT / "scripts/sts1/sts1_g7_h23_clash_reward_eval.py",
+        **{f"h23_native_source_{i}_sha256": native_source / relative
+           for i, relative in enumerate(SOURCE_HASHES)},
+    }
 ACTIVE_TRIAL_IDS = tuple(TRIAL_POOL_ROLE)
 STAGE_CONFIG = {
     "train": {"paired_seed_count": 10, "minimum_override_seed_coverage": 3},
@@ -286,7 +298,11 @@ def _validate_pinned_gameplay_manifest(path: Path) -> str:
 def _validate_identity(
     module_dir: Path, armg_root: Path, checkpoint: Path, identity_lock_path: Path,
     trial_id: str, candidate_commit: str,
+    native_source: Path | None = None,
 ) -> dict[str, str]:
+    extra_paths = h23_identity_paths(native_source) if trial_id == "h23" and native_source is not None else {}
+    if trial_id == "h23" and not extra_paths:
+        raise EvaluationIntegrityError("H23 requires its reviewed native source")
     try:
         lock = h15._read_json(identity_lock_path)
     except Exception as exc:
@@ -303,7 +319,7 @@ def _validate_identity(
         or lock.get("mcts_sims") != 2000
         or MCTS_SIMS != 2000
         or not isinstance(expected_hashes, dict)
-        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS) | ({"candidate_selector_sha256"} if trial_id in {"h20", "h21", "h22"} else set())
+        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS) | ({"candidate_selector_sha256"} if trial_id in {"h20", "h21", "h22", "h23"} else set()) | set(extra_paths)
         or any(not _valid_sha256(value) for value in expected_hashes.values())
     ):
         raise EvaluationIntegrityError("private H19 identity lock does not match the preregistered identity")
@@ -317,9 +333,11 @@ def _validate_identity(
         "simulator_policy_source_sha256": simulator_source,
         "candidate_evaluator_sha256": Path(__file__).resolve(),
         "candidate_selector_sha256": simulator_source.parent / (
+            "clash_reward_skip.py" if trial_id == "h23" else
             "early_defend_end_turn.py" if trial_id == "h22" else
             "free_defense_end_turn.py" if trial_id == "h21" else "inflame_end_turn.py"
         ),
+        **extra_paths,
     }
     identities: dict[str, str] = {}
     for name in expected_hashes:
@@ -469,6 +487,9 @@ def _pair_has_effective_override(
     candidate_trace: dict[str, list[dict[str, Any]]],
     trial_id: str = "h19",
 ) -> bool:
+    if trial_id == "h23":
+        from roguelike_ai.sts1_phase3.clash_reward_skip import effective_override
+        return effective_override(parent_trace.get("events", []), candidate_trace.get("events", []))
     parent_decisions = {
         _trace_key(event): event
         for event in parent_trace.get("decisions", [])
@@ -975,6 +996,8 @@ def _run_episode(
         inflame_end_turn=candidate and identity["trial_id"] == "h20",
         free_defense_end_turn=candidate and identity["trial_id"] == "h21",
         early_defend_end_turn=candidate and identity["trial_id"] == "h22",
+        skip_clash_reward_in_mixed_deck=candidate and identity["trial_id"] == "h23",
+        clash_reward_card_types=H23_CARD_TYPES if identity["trial_id"] == "h23" else None,
         avoid_low_hp_elite_routes=False,
         prefer_smith_when_rest_overheals=False,
         prefer_smith_when_overheal_exceeds_effective_rest_heal=False,
@@ -999,14 +1022,21 @@ def _run_episode(
         events = []
         trace_payload = {"decisions": [], "applied": []}
     combat_events = [
-        event for event in events if event.get("type") == "combat_decision_trace_v1"
+        event for event in events if event.get("type") == (
+            "noncombat_decision_trace_v1" if trial_id == "h23" else "combat_decision_trace_v1")
     ]
+    if trial_id == "h23":
+        trace_payload["events"] = events
     override_events = [event for event in combat_events if event.get(override_field) is True]
     if trace_mode == "on" and len(override_events) != result.get(override_field + "_count"):
         raise EvaluationIntegrityError("H19 trace and result override counts differ")
     if not candidate and override_events:
         raise EvaluationIntegrityError("unchanged G7 parent unexpectedly recorded an H19 override")
     for event in override_events:
+        if trial_id == "h23":
+            from roguelike_ai.sts1_phase3.clash_reward_skip import validate_override
+            validate_override(event, H23_CARD_TYPES)
+            continue
         if trial_id in {"h20", "h21", "h22"}:
             from roguelike_ai.sts1_phase3.inflame_end_turn import select_inflame_before_end_turn
             from roguelike_ai.sts1_phase3.free_defense_end_turn import select_free_defense_before_end_turn
@@ -1102,10 +1132,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--private-identity-lock", type=Path, required=True)
     parser.add_argument("--candidate-commit", required=True)
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--native-source", type=Path)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    global H23_CARD_TYPES
     args = _parser().parse_args(argv)
     trial_id = args.trial_id
     stage = args.stage
@@ -1121,7 +1153,11 @@ def main(argv: list[str] | None = None) -> int:
         identities = _validate_identity(
             args.module_dir.resolve(), args.armg_root.resolve(), args.g7_checkpoint.resolve(),
             args.private_identity_lock.resolve(), trial_id, args.candidate_commit,
+            native_source=args.native_source.resolve() if args.native_source is not None else None,
         )
+        if trial_id == "h23":
+            from roguelike_ai.sts1_phase3.card_preparation import load_native_types
+            H23_CARD_TYPES = load_native_types(args.native_source)
         identities["stage_gate_protocol_version"] = STAGE_GATE_PROTOCOL_VERSION
         events = _read_jsonl(usage_path)
         allocation_event = events[0] if events else None

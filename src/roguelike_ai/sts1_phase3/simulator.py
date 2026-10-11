@@ -30,6 +30,7 @@ from .protocol import A0_FROZEN_SEEDS_V1, A0_PROTOCOL_VERSION, frozen_a0_manifes
 from .residual_scoring import apply_residual_scores, top1_index
 from .inflame_end_turn import select_inflame_before_end_turn
 from .free_defense_end_turn import select_free_defense_before_end_turn
+from .early_defend_end_turn import select_early_defend_before_end_turn
 
 
 SIMULATOR_EVIDENCE_SCHEMA = "sts1-phase3-a0-simulator-v1"
@@ -2063,6 +2064,7 @@ def run_simulator_game(
     lethal_intent_defend_rescue: bool = False,
     inflame_end_turn: bool = False,
     free_defense_end_turn: bool = False,
+    early_defend_end_turn: bool = False,
     avoid_low_hp_elite_routes: bool = False,
     prefer_smith_when_rest_overheals: bool = False,
     prefer_smith_when_overheal_exceeds_effective_rest_heal: bool = False,
@@ -2219,7 +2221,9 @@ def run_simulator_game(
         raise SimulatorRunError("Inflame intervention must be a boolean")
     if not isinstance(free_defense_end_turn, bool):
         raise SimulatorRunError("free defense intervention must be a boolean")
-    if (inflame_end_turn or free_defense_end_turn) and (
+    if not isinstance(early_defend_end_turn, bool):
+        raise SimulatorRunError("early Defend intervention must be a boolean")
+    if (inflame_end_turn or free_defense_end_turn or early_defend_end_turn) and (
         combat_mcts_sims != 2000 or consensus_budgets or hybrid_budgets
         or combat_mcts_late_sims is not None or combat_mcts_boss_sims is not None
         or combat_mcts_exploration is not None or collect_teacher or collect_ppo
@@ -2239,6 +2243,7 @@ def run_simulator_game(
             lethal_intent_defend_rescue,
             inflame_end_turn,
             free_defense_end_turn,
+            early_defend_end_turn,
             skip_card_reward_when_deck_size_at_least is not None,
             skip_duplicate_card_reward_when_deck_size_at_least is not None,
         )
@@ -2346,6 +2351,10 @@ def run_simulator_game(
         "free_defense_policy_intervention": (
             {"kind": "legal_free_defense_before_end_turn", "selection": "lowest_hand_index_then_native_ordinal"}
             if free_defense_end_turn else None
+        ),
+        "early_defend_policy_intervention": (
+            {"kind": "legal_early_defend_before_end_turn", "selection": "lowest_cost_then_hand_index_then_native_ordinal"}
+            if early_defend_end_turn else None
         ),
         "campfire_policy_intervention": (
             {
@@ -2914,7 +2923,7 @@ def run_simulator_game(
                         ) + 1
                         if lethal_intent_defend_override:
                             lethal_intent_defend_override_count += 1
-                    if inflame_end_turn or free_defense_end_turn:
+                    if inflame_end_turn or free_defense_end_turn or early_defend_end_turn:
                         # Independent of tracing: tracing must never change decisions.
                         inflame_run_state = _diagnostic_run_snapshot(gc, armg_policy)
                         inflame_run_state["room"] = "COMBAT"
@@ -2924,7 +2933,8 @@ def run_simulator_game(
                             projected_legal_actions=public_actions,
                         )
                         continuation_selector = (
-                            select_free_defense_before_end_turn if free_defense_end_turn
+                            select_early_defend_before_end_turn if early_defend_end_turn
+                            else select_free_defense_before_end_turn if free_defense_end_turn
                             else select_inflame_before_end_turn
                         )
                         inflame_choice, inflame_reason = continuation_selector(
@@ -2940,7 +2950,7 @@ def run_simulator_game(
                             inflame_override = True
                             inflame_override_count += 1
                             inflame_detail = {
-                                ("selected_defense_hand_index" if free_defense_end_turn else "selected_inflame_hand_index"): inflame_choice.action["hand_index"],
+                                ("selected_defense_hand_index" if free_defense_end_turn or early_defend_end_turn else "selected_inflame_hand_index"): inflame_choice.action["hand_index"],
                                 "selected_native_action_index": inflame_choice.native_action_index,
                             }
                         inflame_reason_counts[inflame_reason] = inflame_reason_counts.get(inflame_reason, 0) + 1
@@ -3073,6 +3083,9 @@ def run_simulator_game(
                             "free_defense_override": inflame_override if free_defense_end_turn else False,
                             "free_defense_reason": inflame_reason if free_defense_end_turn else "disabled",
                             "free_defense_detail": inflame_detail if free_defense_end_turn else {},
+                            "early_defend_override": inflame_override if early_defend_end_turn else False,
+                            "early_defend_reason": inflame_reason if early_defend_end_turn else "disabled",
+                            "early_defend_detail": inflame_detail if early_defend_end_turn else {},
                             "selected_action": trace_action,
                             "selected_public_action_index": (
                                 selected_public_matches[0] if len(selected_public_matches) == 1 else None
@@ -3105,6 +3118,9 @@ def run_simulator_game(
                         "free_defense_override": inflame_override if free_defense_end_turn else False,
                         "free_defense_reason": inflame_reason if free_defense_end_turn else "disabled",
                         "free_defense_detail": inflame_detail if free_defense_end_turn else {},
+                        "early_defend_override": inflame_override if early_defend_end_turn else False,
+                        "early_defend_reason": inflame_reason if early_defend_end_turn else "disabled",
+                        "early_defend_detail": inflame_detail if early_defend_end_turn else {},
                         "action_type": _action_type(chosen),
                         "card": trace_card,
                         "target_index": _value(chosen, "target_idx", -1),
@@ -3306,6 +3322,9 @@ def run_simulator_game(
         "free_defense_end_turn_enabled": free_defense_end_turn,
         "free_defense_override_count": inflame_override_count if free_defense_end_turn else 0,
         "free_defense_reason_counts": inflame_reason_counts if free_defense_end_turn else {},
+        "early_defend_end_turn_enabled": early_defend_end_turn,
+        "early_defend_override_count": inflame_override_count if early_defend_end_turn else 0,
+        "early_defend_reason_counts": inflame_reason_counts if early_defend_end_turn else {},
         "skip_card_reward_when_deck_size_at_least": (
             skip_card_reward_when_deck_size_at_least
         ),
@@ -3367,6 +3386,9 @@ def run_simulator_game(
         "free_defense_end_turn_enabled": free_defense_end_turn,
         "free_defense_override_count": inflame_override_count if free_defense_end_turn else 0,
         "free_defense_reason_counts": inflame_reason_counts if free_defense_end_turn else {},
+        "early_defend_end_turn_enabled": early_defend_end_turn,
+        "early_defend_override_count": inflame_override_count if early_defend_end_turn else 0,
+        "early_defend_reason_counts": inflame_reason_counts if early_defend_end_turn else {},
         "final_floor": summary["final_floor"],
         "final_act": int(_value(gc, "act", 0) or 0),
         "final_hp": summary["final_hp"],

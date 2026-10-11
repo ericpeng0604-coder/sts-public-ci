@@ -36,7 +36,7 @@ import sts1_g7_seed_ledger as seed_ledger  # noqa: E402
 
 EvaluationIntegrityError = h2.EvaluationIntegrityError
 ROUND_ID = "round-011-20261010"
-TRIAL_ROUND_IDS = {"h19": ROUND_ID, "h20": "round-013-20261010"}
+TRIAL_ROUND_IDS = {"h19": ROUND_ID, "h20": "round-013-20261010", "h21": "round-015-20261011"}
 TRIAL_POOL_ROLE = {
     trial: {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"}
     for trial in TRIAL_ROUND_IDS
@@ -44,6 +44,7 @@ TRIAL_POOL_ROLE = {
 TRIAL_POLICY_FIELDS = {
     "h19": ("lethal_intent_defend_rescue_enabled", "lethal_intent_defend_override", "lethal_intent_defend_reason"),
     "h20": ("inflame_end_turn_enabled", "inflame_override", "inflame_reason"),
+    "h21": ("free_defense_end_turn_enabled", "free_defense_override", "free_defense_reason"),
 }
 ACTIVE_TRIAL_IDS = tuple(TRIAL_POOL_ROLE)
 STAGE_CONFIG = {
@@ -301,7 +302,7 @@ def _validate_identity(
         or lock.get("mcts_sims") != 2000
         or MCTS_SIMS != 2000
         or not isinstance(expected_hashes, dict)
-        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS) | ({"candidate_selector_sha256"} if trial_id == "h20" else set())
+        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS) | ({"candidate_selector_sha256"} if trial_id in {"h20", "h21"} else set())
         or any(not _valid_sha256(value) for value in expected_hashes.values())
     ):
         raise EvaluationIntegrityError("private H19 identity lock does not match the preregistered identity")
@@ -314,7 +315,9 @@ def _validate_identity(
         "g7_checkpoint_sha256": checkpoint,
         "simulator_policy_source_sha256": simulator_source,
         "candidate_evaluator_sha256": Path(__file__).resolve(),
-        "candidate_selector_sha256": simulator_source.parent / "inflame_end_turn.py",
+        "candidate_selector_sha256": simulator_source.parent / (
+            "free_defense_end_turn.py" if trial_id == "h21" else "inflame_end_turn.py"
+        ),
     }
     identities: dict[str, str] = {}
     for name in expected_hashes:
@@ -968,6 +971,7 @@ def _run_episode(
         lethal_potion_rescue=False,
         lethal_intent_defend_rescue=candidate and identity["trial_id"] == "h19",
         inflame_end_turn=candidate and identity["trial_id"] == "h20",
+        free_defense_end_turn=candidate and identity["trial_id"] == "h21",
         avoid_low_hp_elite_routes=False,
         prefer_smith_when_rest_overheals=False,
         prefer_smith_when_overheal_exceeds_effective_rest_heal=False,
@@ -1000,18 +1004,22 @@ def _run_episode(
     if not candidate and override_events:
         raise EvaluationIntegrityError("unchanged G7 parent unexpectedly recorded an H19 override")
     for event in override_events:
-        if trial_id == "h20":
+        if trial_id in {"h20", "h21"}:
             from roguelike_ai.sts1_phase3.inflame_end_turn import select_inflame_before_end_turn
-            choice, reason = select_inflame_before_end_turn(
+            from roguelike_ai.sts1_phase3.free_defense_end_turn import select_free_defense_before_end_turn
+            selector = select_free_defense_before_end_turn if trial_id == "h21" else select_inflame_before_end_turn
+            detail_prefix = "free_defense" if trial_id == "h21" else "inflame"
+            hand_field = "selected_defense_hand_index" if trial_id == "h21" else "selected_inflame_hand_index"
+            choice, reason = selector(
                 event.get("public_state"), event.get("canonical_native_legal_actions"),
                 event.get("mcts_recommended_action"), legal_actions_complete=True,
             )
             if (
                 choice is None or choice.action != event.get("selected_action")
                 or choice.native_action_index != event.get("selected_native_action_index")
-                or reason != event.get("inflame_reason")
-                or event.get("inflame_detail") != {
-                    "selected_inflame_hand_index": choice.action["hand_index"],
+                or reason != event.get(reason_field)
+                or event.get(detail_prefix + "_detail") != {
+                    hand_field: choice.action["hand_index"],
                     "selected_native_action_index": choice.native_action_index,
                 }
             ):

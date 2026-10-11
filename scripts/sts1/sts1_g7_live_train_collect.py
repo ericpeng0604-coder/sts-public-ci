@@ -50,6 +50,7 @@ def private_path(path: Path) -> Path:
 def runtime_files(args) -> dict[str, Path]:
     return {
         **IDENTITY_FILES,
+        **getattr(args, "extra_identity_files", {}),
         "simulator_binding_sha256": args.module_dir / "slaythespire.cp312-win_amd64.pyd",
         "armg_source_sha256": args.armg_root / "armG_train.py",
         "armg_vocab_sha256": args.armg_root / "armS_card_vocab.json",
@@ -57,16 +58,20 @@ def runtime_files(args) -> dict[str, Path]:
     }
 
 
-def prepare(args, root: Path) -> dict:
+def prepare(args, root: Path, *, round_id: str = ROUND,
+            seeds_name: str = "round-014-seeds", prior_seeds_dir: Path | None = None,
+            prior_lock_path: Path | None = None) -> dict:
     prior = private_path(args.prior_root)
-    inventory = json.loads((prior / "round-013-seeds/exclusion-inventory.json").read_text())
-    pools = [json.loads((prior / "round-013-seeds/pools" / f"{name}.json").read_text())
+    prior_seeds_dir = private_path(prior_seeds_dir or prior / "round-013-seeds")
+    prior_lock_path = private_path(prior_lock_path or prior / "round-013-seeds/h20-identity-private.json")
+    inventory = json.loads((prior_seeds_dir / "exclusion-inventory.json").read_text())
+    pools = [json.loads((prior_seeds_dir / "pools" / f"{name}.json").read_text())
              for name in POOL_NAMES]
     inventory = ledger.extend_inventory_with_pools(
-        inventory, pools, inventory_id=ROUND + "-exclusions",
+        inventory, pools, inventory_id=round_id + "-exclusions",
     )
     excluded, sources = ledger.validate_inventory(inventory)
-    old_lock = json.loads((prior / "round-013-seeds/h20-identity-private.json").read_text())
+    old_lock = json.loads(prior_lock_path.read_text())
     hashes = {key: evaluation._sha256(path) for key, path in runtime_files(args).items()}
     for key in ("armg_source_sha256", "armg_vocab_sha256", "g7_checkpoint_sha256"):
         if hashes[key] != old_lock["expected_sha256"][key]:
@@ -75,7 +80,7 @@ def prepare(args, root: Path) -> dict:
     if Path(str(args.g7_checkpoint) + ".adapter.pt").exists():
         raise ValueError("G7 adapter sidecar is forbidden")
     root.mkdir(exist_ok=False)
-    seeds_dir = root / "round-014-seeds"
+    seeds_dir = root / seeds_name
     seeds_dir.mkdir()
     inventory_path = seeds_dir / "exclusion-inventory.json"
     write_new(inventory_path, inventory)
@@ -83,17 +88,17 @@ def prepare(args, root: Path) -> dict:
     (seeds_dir / "generation-key.txt").write_text(key, encoding="utf-8")
     generated = ledger.generate_exploration_round(
         inventory, inventory_sha256=evaluation._sha256(inventory_path),
-        round_id=ROUND, generation_key=key,
+        round_id=round_id, generation_key=key,
     )
     ledger._verify_generated(generated, excluded)
     (seeds_dir / "pools").mkdir()
     write_new(seeds_dir / "pools/ledger.json", generated)
     for name, pool in generated["pools"].items():
         write_new(seeds_dir / "pools" / f"{name}.json", pool)
-    lock = {"round_id": ROUND, "code_commit": head(), "expected_sha256": hashes,
+    lock = {"round_id": round_id, "code_commit": head(), "expected_sha256": hashes,
             "pool_ledger_sha256": evaluation._sha256(seeds_dir / "pools/ledger.json"),
             "inventory_sha256": evaluation._sha256(inventory_path),
-            "prior_identity_lock_sha256": evaluation._sha256(prior / "round-013-seeds/h20-identity-private.json"),
+            "prior_identity_lock_sha256": evaluation._sha256(prior_lock_path),
             "source_manifest_count": len(sources), "excluded_seed_count": len(excluded),
             "expected_episodes": 11, "baseline_seed_count": 10, "mcts_sims": 2000}
     write_new(root / "identity-private.json", lock)
@@ -102,9 +107,10 @@ def prepare(args, root: Path) -> dict:
             "baseline_seed_count": 10, "expected_episodes": 11}
 
 
-def validate_preflight(args, root: Path) -> tuple[dict, tuple[int, ...], dict]:
+def validate_preflight(args, root: Path, round_id: str = ROUND,
+                       seeds_name: str = "round-014-seeds") -> tuple[dict, tuple[int, ...], dict]:
     lock = json.loads((root / "identity-private.json").read_text())
-    if lock.get("round_id") != ROUND or lock.get("code_commit") != head():
+    if lock.get("round_id") != round_id or lock.get("code_commit") != head():
         raise ValueError("frozen collection code differs")
     actual = {key: evaluation._sha256(path) for key, path in runtime_files(args).items()}
     if actual != lock["expected_sha256"] or lock.get("mcts_sims") != 2000:
@@ -113,7 +119,7 @@ def validate_preflight(args, root: Path) -> tuple[dict, tuple[int, ...], dict]:
         raise ValueError("Teacher reranking must be disabled")
     if Path(str(args.g7_checkpoint) + ".adapter.pt").exists():
         raise ValueError("G7 adapter sidecar is forbidden")
-    seeds_dir = root / "round-014-seeds"
+    seeds_dir = root / seeds_name
     inventory_path = seeds_dir / "exclusion-inventory.json"
     pool_path = seeds_dir / "pools/ledger.json"
     if (evaluation._sha256(inventory_path) != lock["inventory_sha256"]
@@ -123,7 +129,7 @@ def validate_preflight(args, root: Path) -> tuple[dict, tuple[int, ...], dict]:
     excluded, _ = ledger.validate_inventory(inventory)
     generated = json.loads(pool_path.read_text())
     expected = ledger.generate_exploration_round(
-        inventory, inventory_sha256=evaluation._sha256(inventory_path), round_id=ROUND,
+        inventory, inventory_sha256=evaluation._sha256(inventory_path), round_id=round_id,
         generation_key=(seeds_dir / "generation-key.txt").read_text(),
     )
     if generated != expected:
@@ -139,8 +145,9 @@ def validate_preflight(args, root: Path) -> tuple[dict, tuple[int, ...], dict]:
     return lock, seeds, pool
 
 
-def collect(args, root: Path) -> dict:
-    lock, seeds, pool = validate_preflight(args, root)
+def collect(args, root: Path, *, round_id: str = ROUND,
+            seeds_name: str = "round-014-seeds", trace_observer=None) -> dict:
+    lock, seeds, pool = validate_preflight(args, root, round_id, seeds_name)
     usage = root / "usage-private.jsonl"
     if usage.exists() or (root / "episodes").exists():
         raise ValueError("collection already started; no automatic rerun")
@@ -155,7 +162,7 @@ def collect(args, root: Path) -> dict:
     policy = evaluation.ArmGNoncombatPolicy(root=args.armg_root, weight_path=args.g7_checkpoint)
     first = None
     for index, seed in enumerate(seeds, 1):
-        metadata = {"round_id": ROUND, "stage": "train", "purpose": "baseline_live_resource_diagnosis",
+        metadata = {"round_id": round_id, "stage": "train", "purpose": "baseline_live_resource_diagnosis",
                     "code_commit": lock["code_commit"], "pair_index": index,
                     "seed_id": seed, "pool_manifest_sha256": pool["manifest_sha256"],
                     "private_runtime": lock["expected_sha256"], "mcts_sims": 2000}
@@ -182,6 +189,8 @@ def collect(args, root: Path) -> dict:
                 if events[0].get("live_combat_resources_required") is not True:
                     raise ValueError("new live resource trace header is required")
                 evaluation._validate_action_trace_completeness(events)
+                if trace_observer is not None:
+                    trace_observer(events, metadata)
                 summary["baseline_completed"] += 1
                 summary["baseline_wins"] += result["outcome"] == "victory"
                 if index == 1:

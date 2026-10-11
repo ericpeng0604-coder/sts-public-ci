@@ -60,7 +60,7 @@ def runtime_files(args) -> dict[str, Path]:
 
 def prepare(args, root: Path, *, round_id: str = ROUND,
             seeds_name: str = "round-014-seeds", prior_seeds_dir: Path | None = None,
-            prior_lock_path: Path | None = None) -> dict:
+            prior_lock_path: Path | None = None, expected_episodes: int = 11) -> dict:
     prior = private_path(args.prior_root)
     prior_seeds_dir = private_path(prior_seeds_dir or prior / "round-013-seeds")
     prior_lock_path = private_path(prior_lock_path or prior / "round-013-seeds/h20-identity-private.json")
@@ -100,11 +100,11 @@ def prepare(args, root: Path, *, round_id: str = ROUND,
             "inventory_sha256": evaluation._sha256(inventory_path),
             "prior_identity_lock_sha256": evaluation._sha256(prior_lock_path),
             "source_manifest_count": len(sources), "excluded_seed_count": len(excluded),
-            "expected_episodes": 11, "baseline_seed_count": 10, "mcts_sims": 2000}
+            "expected_episodes": expected_episodes, "baseline_seed_count": 10, "mcts_sims": 2000}
     write_new(root / "identity-private.json", lock)
     return {"status": "PREPARED", "excluded_seed_count": len(excluded),
             "source_manifest_count": len(sources), "reserved_seed_count": 70,
-            "baseline_seed_count": 10, "expected_episodes": 11}
+            "baseline_seed_count": 10, "expected_episodes": expected_episodes}
 
 
 def validate_preflight(args, root: Path, round_id: str = ROUND,

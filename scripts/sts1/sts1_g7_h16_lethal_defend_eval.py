@@ -36,7 +36,7 @@ import sts1_g7_seed_ledger as seed_ledger  # noqa: E402
 
 EvaluationIntegrityError = h2.EvaluationIntegrityError
 ROUND_ID = "round-011-20261010"
-TRIAL_ROUND_IDS = {"h19": ROUND_ID, "h20": "round-013-20261010", "h21": "round-015-20261011", "h22": "round-016-20261011", "h23": "round-018-20261011"}
+TRIAL_ROUND_IDS = {"h19": ROUND_ID, "h20": "round-013-20261010", "h21": "round-015-20261011", "h22": "round-016-20261011", "h23": "round-018-20261011", "h24": "round-019-20261011"}
 TRIAL_POOL_ROLE = {
     trial: {"train": "train_hypothesis_1", "probe": "probe", "dev": "dev"}
     for trial in TRIAL_ROUND_IDS
@@ -47,6 +47,7 @@ TRIAL_POLICY_FIELDS = {
     "h21": ("free_defense_end_turn_enabled", "free_defense_override", "free_defense_reason"),
     "h22": ("early_defend_end_turn_enabled", "early_defend_override", "early_defend_reason"),
     "h23": ("clash_reward_skip_enabled", "clash_reward_override", "clash_reward_reason"),
+    "h24": ("draw_reward_enabled", "draw_reward_override", "draw_reward_reason"),
 }
 H23_CARD_TYPES = None
 
@@ -60,6 +61,13 @@ def h23_identity_paths(native_source: Path) -> dict[str, Path]:
            for i, relative in enumerate(SOURCE_HASHES)},
     }
 ACTIVE_TRIAL_IDS = tuple(TRIAL_POOL_ROLE)
+
+
+def h24_identity_paths(native_source: Path) -> dict[str, Path]:
+    return {**h23_identity_paths(native_source),
+        "h24_runner_sha256": REPO_ROOT / "scripts/sts1/sts1_g7_h24_draw_reward_eval.py",
+        "h24_prefix_helper_sha256": REPO_ROOT / "src/roguelike_ai/sts1_phase3/clash_reward_skip.py"}
+
 STAGE_CONFIG = {
     "train": {"paired_seed_count": 10, "minimum_override_seed_coverage": 3},
     "probe": {"paired_seed_count": 10, "minimum_override_seed_coverage": 3},
@@ -300,8 +308,8 @@ def _validate_identity(
     trial_id: str, candidate_commit: str,
     native_source: Path | None = None,
 ) -> dict[str, str]:
-    extra_paths = h23_identity_paths(native_source) if trial_id == "h23" and native_source is not None else {}
-    if trial_id == "h23" and not extra_paths:
+    extra_paths = (h24_identity_paths(native_source) if trial_id == "h24" else h23_identity_paths(native_source)) if trial_id in {"h23", "h24"} and native_source is not None else {}
+    if trial_id in {"h23", "h24"} and not extra_paths:
         raise EvaluationIntegrityError("H23 requires its reviewed native source")
     try:
         lock = h15._read_json(identity_lock_path)
@@ -319,7 +327,7 @@ def _validate_identity(
         or lock.get("mcts_sims") != 2000
         or MCTS_SIMS != 2000
         or not isinstance(expected_hashes, dict)
-        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS) | ({"candidate_selector_sha256"} if trial_id in {"h20", "h21", "h22", "h23"} else set()) | set(extra_paths)
+        or set(expected_hashes) != set(PRIVATE_IDENTITY_KEYS) | ({"candidate_selector_sha256"} if trial_id in {"h20", "h21", "h22", "h23", "h24"} else set()) | set(extra_paths)
         or any(not _valid_sha256(value) for value in expected_hashes.values())
     ):
         raise EvaluationIntegrityError("private H19 identity lock does not match the preregistered identity")
@@ -333,6 +341,7 @@ def _validate_identity(
         "simulator_policy_source_sha256": simulator_source,
         "candidate_evaluator_sha256": Path(__file__).resolve(),
         "candidate_selector_sha256": simulator_source.parent / (
+            "draw_reward.py" if trial_id == "h24" else
             "clash_reward_skip.py" if trial_id == "h23" else
             "early_defend_end_turn.py" if trial_id == "h22" else
             "free_defense_end_turn.py" if trial_id == "h21" else "inflame_end_turn.py"
@@ -487,6 +496,9 @@ def _pair_has_effective_override(
     candidate_trace: dict[str, list[dict[str, Any]]],
     trial_id: str = "h19",
 ) -> bool:
+    if trial_id == "h24":
+        from roguelike_ai.sts1_phase3.draw_reward import effective_override
+        return effective_override(parent_trace.get("events", []), candidate_trace.get("events", []))
     if trial_id == "h23":
         from roguelike_ai.sts1_phase3.clash_reward_skip import effective_override
         return effective_override(parent_trace.get("events", []), candidate_trace.get("events", []))
@@ -997,7 +1009,8 @@ def _run_episode(
         free_defense_end_turn=candidate and identity["trial_id"] == "h21",
         early_defend_end_turn=candidate and identity["trial_id"] == "h22",
         skip_clash_reward_in_mixed_deck=candidate and identity["trial_id"] == "h23",
-        clash_reward_card_types=H23_CARD_TYPES if identity["trial_id"] == "h23" else None,
+        clash_reward_card_types=H23_CARD_TYPES if identity["trial_id"] in {"h23", "h24"} else None,
+        prefer_draw_reward_under_two=candidate and identity["trial_id"] == "h24",
         avoid_low_hp_elite_routes=False,
         prefer_smith_when_rest_overheals=False,
         prefer_smith_when_overheal_exceeds_effective_rest_heal=False,
@@ -1023,9 +1036,9 @@ def _run_episode(
         trace_payload = {"decisions": [], "applied": []}
     combat_events = [
         event for event in events if event.get("type") == (
-            "noncombat_decision_trace_v1" if trial_id == "h23" else "combat_decision_trace_v1")
+            "noncombat_decision_trace_v1" if trial_id in {"h23", "h24"} else "combat_decision_trace_v1")
     ]
-    if trial_id == "h23":
+    if trial_id in {"h23", "h24"}:
         trace_payload["events"] = events
     override_events = [event for event in combat_events if event.get(override_field) is True]
     if trace_mode == "on" and len(override_events) != result.get(override_field + "_count"):
@@ -1033,6 +1046,10 @@ def _run_episode(
     if not candidate and override_events:
         raise EvaluationIntegrityError("unchanged G7 parent unexpectedly recorded an H19 override")
     for event in override_events:
+        if trial_id == "h24":
+            from roguelike_ai.sts1_phase3.draw_reward import validate_override
+            validate_override(event, H23_CARD_TYPES)
+            continue
         if trial_id == "h23":
             from roguelike_ai.sts1_phase3.clash_reward_skip import validate_override
             validate_override(event, H23_CARD_TYPES)
@@ -1155,7 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
             args.private_identity_lock.resolve(), trial_id, args.candidate_commit,
             native_source=args.native_source.resolve() if args.native_source is not None else None,
         )
-        if trial_id == "h23":
+        if trial_id in {"h23", "h24"}:
             from roguelike_ai.sts1_phase3.card_preparation import load_native_types
             H23_CARD_TYPES = load_native_types(args.native_source)
         identities["stage_gate_protocol_version"] = STAGE_GATE_PROTOCOL_VERSION

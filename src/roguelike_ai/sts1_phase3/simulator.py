@@ -2073,6 +2073,7 @@ def run_simulator_game(
     require_all_card_reward_options_are_duplicates: bool = False,
     skip_clash_reward_in_mixed_deck: bool = False,
     clash_reward_card_types: dict[str, str] | None = None,
+    prefer_draw_reward_under_two: bool = False,
     heldout_seeds: Sequence[int] | None = None,
     training_seeds: Sequence[int] | None = None,
     collect_ppo: bool = False,
@@ -2080,6 +2081,10 @@ def run_simulator_game(
     diagnostic_trace_path: Path | None = None,
     diagnostic_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if not isinstance(prefer_draw_reward_under_two, bool):
+        raise SimulatorRunError("Draw reward mode must be a boolean")
+    if prefer_draw_reward_under_two and (armg_policy is None or not isinstance(clash_reward_card_types, dict)):
+        raise SimulatorRunError("Draw reward rule requires ArmG and frozen native types")
     if not isinstance(skip_clash_reward_in_mixed_deck, bool):
         raise SimulatorRunError("Clash reward mode must be a boolean")
     if skip_clash_reward_in_mixed_deck and (armg_policy is None or not isinstance(clash_reward_card_types, dict)):
@@ -2253,6 +2258,7 @@ def run_simulator_game(
             skip_card_reward_when_deck_size_at_least is not None,
             skip_duplicate_card_reward_when_deck_size_at_least is not None,
             skip_clash_reward_in_mixed_deck,
+            prefer_draw_reward_under_two,
         )
     ) > 1:
         raise SimulatorRunError("enable only one primary policy intervention per run")
@@ -2291,6 +2297,8 @@ def run_simulator_game(
     card_reward_skip_eligible_count = 0
     card_reward_skip_reason_counts: dict[str, int] = {}
     clash_reward_override_count = 0
+    draw_reward_override_count = 0
+    draw_reward_reason_counts: dict[str, int] = {}
     clash_reward_reason_counts: dict[str, int] = {}
     campfire_overheal_override_count = 0
     map_elite_avoidance_override_count = 0
@@ -2425,6 +2433,7 @@ def run_simulator_game(
                 shop_policy_intervention: dict[str, Any] | None = None
                 card_reward_skip_intervention: dict[str, Any] | None = None
                 clash_reward_intervention: dict[str, Any] | None = None
+                draw_reward_intervention: dict[str, Any] | None = None
                 if armg_policy is None:
                     if diagnostic_trace_path is not None:
                         (
@@ -2571,6 +2580,15 @@ def run_simulator_game(
                         clash_reward_override_count += int(clash_reward_intervention["overridden"])
                         reason = clash_reward_intervention["reason"]
                         clash_reward_reason_counts[reason] = clash_reward_reason_counts.get(reason, 0) + 1
+                    if prefer_draw_reward_under_two and kind == "card":
+                        from .draw_reward import select_draw_reward
+                        selected_index, draw_reward_intervention = select_draw_reward(
+                            selected_index, choice_semantics, armg_policy.deck_snapshot(gc),
+                            clash_reward_card_types, legal_choices_complete=len(descs) == len(execs),
+                        )
+                        draw_reward_override_count += int(draw_reward_intervention["overridden"])
+                        reason = draw_reward_intervention["reason"]
+                        draw_reward_reason_counts[reason] = draw_reward_reason_counts.get(reason, 0) + 1
                     if kind == "shop":
                         selected_index, shop_policy_intervention = (
                             _apply_full_potion_shop_skip_guard(
@@ -2620,6 +2638,7 @@ def run_simulator_game(
                         "shop_policy_intervention": shop_policy_intervention,
                         "choice_count": len(descs),
                         "clash_reward_intervention": clash_reward_intervention,
+                        "draw_reward_intervention": draw_reward_intervention,
                         "choice_descriptions": choice_descriptions,
                         "choice_semantics": choice_semantics,
                         "choice_scores": scores,
@@ -2672,6 +2691,9 @@ def run_simulator_game(
                         "card_reward_skip_intervention": card_reward_skip_intervention,
                         "clash_reward_intervention": clash_reward_intervention,
                         "clash_reward_override": bool(clash_reward_intervention and clash_reward_intervention["overridden"]),
+                        "draw_reward_intervention": draw_reward_intervention,
+                        "draw_reward_override": bool(draw_reward_intervention and draw_reward_intervention["overridden"]),
+                        "draw_reward_reason": draw_reward_intervention["reason"] if draw_reward_intervention else "disabled_or_not_reward",
                         "clash_reward_reason": clash_reward_intervention["reason"] if clash_reward_intervention else "disabled_or_not_reward",
                         "route": diagnostic_route,
                         "selected_choice": choice,
@@ -3347,6 +3369,9 @@ def run_simulator_game(
         "free_defense_reason_counts": inflame_reason_counts if free_defense_end_turn else {},
         "early_defend_end_turn_enabled": early_defend_end_turn,
         "clash_reward_skip_enabled": skip_clash_reward_in_mixed_deck,
+        "draw_reward_enabled": prefer_draw_reward_under_two,
+        "draw_reward_override_count": draw_reward_override_count,
+        "draw_reward_reason_counts": draw_reward_reason_counts,
         "clash_reward_override_count": clash_reward_override_count,
         "clash_reward_reason_counts": clash_reward_reason_counts,
         "early_defend_override_count": inflame_override_count if early_defend_end_turn else 0,

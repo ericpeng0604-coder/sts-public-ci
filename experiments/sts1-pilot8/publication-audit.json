@@ -1,0 +1,10 @@
+{
+  "status": "PASS",
+  "synthetic_simulator_states": 240,
+  "source_simulator_runs": 112,
+  "raw_human_runs_in_commit": 0,
+  "opaque_checkpoints_in_commit": 0,
+  "opaque_native_binaries_in_commit": 0,
+  "sensitive_token_patterns_in_simulator_data": 0,
+  "g7_consumed_from_existing_public_artifact": 11079234863
+}

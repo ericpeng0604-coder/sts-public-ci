@@ -1,0 +1,15 @@
+--- a/bindings/slaythespire.cpp
++++ b/bindings/slaythespire.cpp
+@@ -66,6 +66,12 @@
+     gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())
+         .def("clone", [](const GameContext &gc) { GameContext copy(gc); copy.map = std::make_shared<Map>(*gc.map); return copy; },
+              "copy the full run state for deterministic out-of-combat branching")
++        .def_property_readonly("public_noncombat_extra", [](const GameContext &gc) {
++            pybind11::dict d;
++            d["blue_key"] = gc.blueKey; d["green_key"] = gc.greenKey; d["red_key"] = gc.redKey;
++            d["potion_capacity"] = gc.potionCapacity; d["shop_remove_count"] = gc.shopRemoveCount;
++            return d;
++        })
+         .def("pick_reward_card", &sts::py::pickRewardCard, "choose to obtain the card at the specified index in the card reward list")
+         .def("skip_reward_cards", &sts::py::skipRewardCards, "choose to skip the card reward (increases max_hp by 2 with singing bowl)")
+         .def("get_card_reward", &sts::py::getCardReward, "return the current card reward list")

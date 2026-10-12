@@ -1,0 +1,49 @@
+{
+  "scope": "completed local pilot; public Actions is a platform reproduction, not a new performance holdout",
+  "labels": 240,
+  "worlds": 8,
+  "verdict": "HOLD_G7_NO_CALIBRATED_ADVANTAGE",
+  "gate": null,
+  "calibration": [
+    {
+      "threshold": 0.02,
+      "lower": -0.05340909090909091,
+      "mean": -0.007481060606060606,
+      "runs": 22,
+      "decisions": 67,
+      "method": "run-cluster bootstrap; Bonferroni 6 prereg thresholds; diagnostic approximate-world evidence"
+    },
+    {
+      "threshold": 0.05,
+      "lower": null,
+      "runs": 13,
+      "decisions": 23
+    },
+    {
+      "threshold": 0.1,
+      "lower": null,
+      "runs": 0,
+      "decisions": 0
+    },
+    {
+      "threshold": 0.15,
+      "lower": null,
+      "runs": 0,
+      "decisions": 0
+    },
+    {
+      "threshold": 0.25,
+      "lower": null,
+      "runs": 0,
+      "decisions": 0
+    },
+    {
+      "threshold": 0.4,
+      "lower": null,
+      "runs": 0,
+      "decisions": 0
+    }
+  ],
+  "evaluation_run": false,
+  "production_replaced": false
+}

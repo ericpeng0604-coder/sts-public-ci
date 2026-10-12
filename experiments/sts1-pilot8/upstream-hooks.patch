@@ -1,0 +1,473 @@
+diff --git a/bindings/bindings-util.cpp b/bindings/bindings-util.cpp
+index 471ce96..a7db701 100644
+--- a/bindings/bindings-util.cpp
++++ b/bindings/bindings-util.cpp
+@@ -11,6 +11,9 @@
+ #include "game/Game.h"
+ #include "game/Map.h"
+ 
++#include "combat/BattleContext.h"
++#include "sim/search/Action.h"
++
+ #include "slaythespire.h"
+ 
+ namespace sts {
+@@ -292,4 +295,59 @@ namespace sts::py {
+         return false;
+     }
+ 
++    // Enumerates all valid actions in the current battle state for forward search.
++    std::vector<search::Action> getLegalActions(const BattleContext &bc) {
++        using search::Action;
++        using search::ActionType;
++
++        std::vector<Action> actions;
++
++        if (bc.outcome != Outcome::UNDECIDED) {
++            return actions;
++        }
++
++        if (bc.inputState == InputState::CARD_SELECT) {
++            return Action::enumerateCardSelectActions(bc);
++        }
++
++        if (bc.inputState != InputState::PLAYER_NORMAL) {
++            return actions;
++        }
++
++        const int monsterCount = bc.monsters.monsterCount;
++
++        // Card actions: every card in hand against every monster slot.
++        for (int cardIdx = 0; cardIdx < bc.cards.cardsInHand; ++cardIdx) {
++            for (int targetIdx = 0; targetIdx < monsterCount; ++targetIdx) {
++                Action a(ActionType::CARD, cardIdx, targetIdx);
++                if (a.isValidAction(bc)) {
++                    actions.push_back(a);
++                }
++            }
++        }
++
++        // Potion actions: drink against every monster slot, plus discard.
++        for (int potionIdx = 0; potionIdx < bc.potionCapacity; ++potionIdx) {
++            for (int targetIdx = 0; targetIdx < monsterCount; ++targetIdx) {
++                Action a(ActionType::POTION, potionIdx, targetIdx);
++                if (a.isValidAction(bc)) {
++                    actions.push_back(a);
++                }
++            }
++            // discard potion uses a target idx > 5
++            Action discard(ActionType::POTION, potionIdx, 6);
++            if (discard.isValidAction(bc)) {
++                actions.push_back(discard);
++            }
++        }
++
++        // End turn.
++        Action endTurn(ActionType::END_TURN);
++        if (endTurn.isValidAction(bc)) {
++            actions.push_back(endTurn);
++        }
++
++        return actions;
++    }
++
+ }
+\ No newline at end of file
+diff --git a/bindings/slaythespire.cpp b/bindings/slaythespire.cpp
+index a9afe35..1338058 100644
+--- a/bindings/slaythespire.cpp
++++ b/bindings/slaythespire.cpp
+@@ -12,10 +12,23 @@
+ 
+ #include "sim/ConsoleSimulator.h"
+ #include "sim/search/ScumSearchAgent2.h"
++#include "sim/search/GameAction.h"
++#include "sim/search/BattleScumSearcher2.h"
++#include "game/Shop.h"
+ #include "sim/SimHelpers.h"
+ #include "sim/PrintHelpers.h"
+ #include "game/Game.h"
+ 
++#include "combat/BattleContext.h"
++#include "combat/Player.h"
++#include "combat/Monster.h"
++#include "combat/CardInstance.h"
++#include "combat/InputState.h"
++#include "sim/search/Action.h"
++#include "constants/MonsterMoves.h"
++#include "constants/PlayerStatusEffects.h"
++#include "constants/MonsterStatusEffects.h"
++
+ #include "slaythespire.h"
+ 
+ 
+@@ -38,6 +51,11 @@ PYBIND11_MODULE(slaythespire, m) {
+     agent.def_readwrite("simulation_count_base", &search::ScumSearchAgent2::simulationCountBase, "number of simulations the agent uses for monte carlo tree search each turn")
+         .def_readwrite("boss_simulation_multiplier", &search::ScumSearchAgent2::bossSimulationMultiplier, "bonus multiplier to the simulation count for boss fights")
+         .def_readwrite("pause_on_card_reward", &search::ScumSearchAgent2::pauseOnCardReward, "causes the agent to pause so as to cede control to the user when it encounters a card reward choice")
++        .def_readwrite("pause_on_map", &search::ScumSearchAgent2::pauseOnMap, "pause and cede control on the map (path choice) screen")
++        .def_readwrite("pause_on_rest", &search::ScumSearchAgent2::pauseOnRest, "pause and cede control on the rest site (campfire) screen")
++        .def_readwrite("pause_on_shop", &search::ScumSearchAgent2::pauseOnShop, "pause and cede control on the shop screen")
++        .def_readwrite("pause_on_event", &search::ScumSearchAgent2::pauseOnEvent, "pause and cede control on event screens that have a real choice")
++        .def_readwrite("pause_on_battle", &search::ScumSearchAgent2::pauseOnBattle, "pause at the start of each battle so the caller can drive combat with its own model")
+         .def_readwrite("print_logs", &search::ScumSearchAgent2::printLogs, "when set to true, the agent prints state information as it makes actions")
+         .def("playout", &search::ScumSearchAgent2::playout);
+ 
+@@ -69,6 +87,43 @@ PYBIND11_MODULE(slaythespire, m) {
+                [] (const GameContext &gc) { return std::vector(gc.relics.relics); },
+                "returns a copy of the list of relics"
+         )
++        .def_property_readonly("cur_event",
++               [](const GameContext &gc) { return static_cast<int>(gc.curEvent); },
++               "integer id of the current event (Event enum); for encoding event-screen choices"
++        )
++        .def("map_node_room",
++             [](const GameContext &gc, int x, int y) {
++                 if (!gc.map || x < 0 || x > 6 || y < 0 || y > 14) return Room::INVALID;
++                 return gc.map->getNode(x, y).room;
++             },
++             "room type of the map node at (x, y); used to describe path-choice candidates"
++        )
++        .def("get_map_nn",
++             [](const GameContext &gc) {
++                 if (!gc.map) return std::vector<int>();
++                 return sts::py::getNNMapRepresentation(*gc.map);   // full map graph (edges + room types) as a vector
++             },
++             "NN encoding of the whole current map (edges + room types); global lookahead features for path planning"
++        )
++        .def("map_node_children",
++             [](const GameContext &gc, int x, int y) {
++                 std::vector<int> kids;
++                 if (!gc.map || x < 0 || x > 6 || y < 0 || y > 13) return kids;
++                 const auto &node = gc.map->getNode(x, y);
++                 for (int i = 0; i < node.edgeCount; ++i) kids.push_back(node.edges[i]);
++                 return kids;
++             },
++             "x-coords of the child nodes (next row) reachable from node (x,y); for position-relative path lookahead"
++        )
++        .def("get_shop_cards",
++             [](const GameContext &gc) {
++                 std::vector<std::pair<Card,int>> out;          // (card, price); price -1 if slot empty/sold
++                 const auto &s = gc.info.shop;
++                 for (int i = 0; i < 7; ++i) out.emplace_back(s.cards[i], s.cardPrice(i));
++                 return out;
++             },
++             "the 7 shop card slots as (Card, price) pairs (price -1 if empty)"
++        )
+         .def("__repr__", [](const GameContext &gc) {
+             std::ostringstream oss;
+             oss << "<" << gc << ">";
+@@ -828,6 +883,226 @@ PYBIND11_MODULE(slaythespire, m) {
+         .value("RED_CIRCLET", RelicId::RED_CIRCLET)
+         .value("INVALID", RelicId::INVALID);
+ 
++    // ******************** BATTLE / FORWARD-SEARCH API ********************
++
++    pybind11::enum_<Outcome>(m, "Outcome")
++        .value("UNDECIDED", Outcome::UNDECIDED)
++        .value("PLAYER_VICTORY", Outcome::PLAYER_VICTORY)
++        .value("PLAYER_LOSS", Outcome::PLAYER_LOSS);
++
++    pybind11::enum_<InputState>(m, "InputState")
++        .value("EXECUTING_ACTIONS", InputState::EXECUTING_ACTIONS)
++        .value("PLAYER_NORMAL", InputState::PLAYER_NORMAL)
++        .value("CARD_SELECT", InputState::CARD_SELECT);
++
++    pybind11::enum_<search::ActionType>(m, "SearchActionType")
++        .value("CARD", search::ActionType::CARD)
++        .value("POTION", search::ActionType::POTION)
++        .value("SINGLE_CARD_SELECT", search::ActionType::SINGLE_CARD_SELECT)
++        .value("MULTI_CARD_SELECT", search::ActionType::MULTI_CARD_SELECT)
++        .value("END_TURN", search::ActionType::END_TURN);
++
++    // a useful subset of player statuses for has_status / get_status
++    pybind11::enum_<PlayerStatus>(m, "PlayerStatus")
++        .value("VULNERABLE", PlayerStatus::VULNERABLE)
++        .value("WEAK", PlayerStatus::WEAK)
++        .value("FRAIL", PlayerStatus::FRAIL)
++        .value("STRENGTH", PlayerStatus::STRENGTH)
++        .value("DEXTERITY", PlayerStatus::DEXTERITY)
++        .value("FOCUS", PlayerStatus::FOCUS)
++        .value("ARTIFACT", PlayerStatus::ARTIFACT)
++        .value("METALLICIZE", PlayerStatus::METALLICIZE)
++        .value("REGEN", PlayerStatus::REGEN)
++        .value("PLATED_ARMOR", PlayerStatus::PLATED_ARMOR)
++        .value("DEMON_FORM", PlayerStatus::DEMON_FORM)
++        .value("RITUAL", PlayerStatus::RITUAL)
++        .value("THORNS", PlayerStatus::THORNS)
++        .value("BARRICADE", PlayerStatus::BARRICADE)
++        .value("INTANGIBLE", PlayerStatus::INTANGIBLE)
++        .value("NO_BLOCK", PlayerStatus::NO_BLOCK)
++        .value("ENTANGLED", PlayerStatus::ENTANGLED);
++
++    pybind11::enum_<MonsterStatus>(m, "MonsterStatus")
++        .value("VULNERABLE", MonsterStatus::VULNERABLE)
++        .value("WEAK", MonsterStatus::WEAK)
++        .value("POISON", MonsterStatus::POISON)
++        .value("STRENGTH", MonsterStatus::STRENGTH)
++        .value("ARTIFACT", MonsterStatus::ARTIFACT)
++        .value("METALLICIZE", MonsterStatus::METALLICIZE)
++        .value("REGEN", MonsterStatus::REGEN)
++        .value("PLATED_ARMOR", MonsterStatus::PLATED_ARMOR)
++        .value("BLOCK_RETURN", MonsterStatus::BLOCK_RETURN)
++        .value("MARK", MonsterStatus::MARK)
++        .value("LOCK_ON", MonsterStatus::LOCK_ON)
++        .value("SHACKLED", MonsterStatus::SHACKLED)
++        .value("INTANGIBLE", MonsterStatus::INTANGIBLE)
++        .value("CHOKED", MonsterStatus::CHOKED);
++
++    pybind11::class_<DamageInfo>(m, "DamageInfo")
++        .def_readonly("damage", &DamageInfo::damage)
++        .def_readonly("attack_count", &DamageInfo::attackCount);
++
++    pybind11::class_<CardInstance>(m, "CardInstance")
++        .def_property_readonly("id", &CardInstance::getId)
++        .def_property_readonly("name", [](const CardInstance &c) { return std::string(c.getName()); })
++        .def_property_readonly("type", &CardInstance::getType)
++        .def_property_readonly("upgraded", &CardInstance::isUpgraded)
++        .def_readonly("cost", &CardInstance::cost)
++        .def_readonly("cost_for_turn", &CardInstance::costForTurn)
++        .def_property_readonly("requires_target", &CardInstance::requiresTarget)
++        .def("__repr__", [](const CardInstance &c) {
++            std::ostringstream os;
++            os << "<slaythespire.CardInstance " << c.getName() << ">";
++            return os.str();
++        });
++
++    pybind11::class_<Player>(m, "Player")
++        .def_readonly("cur_hp", &Player::curHp)
++        .def_readonly("max_hp", &Player::maxHp)
++        .def_readonly("block", &Player::block)
++        .def_readonly("energy", &Player::energy)
++        .def_readonly("strength", &Player::strength)
++        .def_readonly("dexterity", &Player::dexterity)
++        .def_readonly("focus", &Player::focus)
++        .def_readonly("artifact", &Player::artifact)
++        .def("has_status", &Player::hasStatusRuntime)
++        .def("get_status", &Player::getStatusRuntime);
++
++    pybind11::class_<Monster>(m, "Monster")
++        .def_readonly("cur_hp", &Monster::curHp)
++        .def_readonly("max_hp", &Monster::maxHp)
++        .def_readonly("block", &Monster::block)
++        .def_readonly("strength", &Monster::strength)
++        .def_readonly("vulnerable", &Monster::vulnerable)
++        .def_readonly("weak", &Monster::weak)
++        .def_readonly("poison", &Monster::poison)
++        .def_property_readonly("name", [](const Monster &mo) { return std::string(mo.getName()); })
++        .def_property_readonly("alive", &Monster::isAlive)
++        .def_property_readonly("targetable", &Monster::isTargetable)
++        .def_property_readonly("is_attacking", &Monster::isAttacking)
++        .def_property_readonly("intent", [](const Monster &mo) {
++            if (mo.moveHistory[0] == MMID::INVALID) {
++                return std::string("UNKNOWN");
++            }
++            return std::string(monsterMoveStrings[static_cast<int>(mo.moveHistory[0])]);
++        })
++        .def("intent_damage", &Monster::getMoveBaseDamage)
++        .def("has_status", &Monster::hasStatusInternal)
++        .def("get_status", &Monster::getStatusInternal);
++
++    pybind11::class_<search::Action>(m, "SearchAction")
++        .def(pybind11::init<search::ActionType>())
++        .def(pybind11::init<search::ActionType, int>())
++        .def(pybind11::init<search::ActionType, int, int>())
++        .def_property_readonly("action_type", &search::Action::getActionType)
++        .def_property_readonly("source_idx", &search::Action::getSourceIdx)
++        .def_property_readonly("target_idx", &search::Action::getTargetIdx)
++        .def_readonly("bits", &search::Action::bits)
++        .def("is_valid", &search::Action::isValidAction)
++        .def("execute", &search::Action::execute)
++        .def("desc", [](const search::Action &a, const BattleContext &bc) {
++            std::ostringstream os;
++            a.printDesc(os, bc);
++            return os.str();
++        })
++        .def("__repr__", [](const search::Action &a) {
++            std::ostringstream os;
++            os << "<slaythespire.SearchAction type=" << static_cast<int>(a.getActionType())
++               << " src=" << a.getSourceIdx() << " tgt=" << a.getTargetIdx() << ">";
++            return os.str();
++        });
++
++    pybind11::class_<BattleContext>(m, "BattleContext")
++        .def(pybind11::init<>())
++        .def("init", pybind11::overload_cast<const GameContext&>(&BattleContext::init),
++             "initialize the battle from a GameContext that is in the BATTLE screen state")
++        .def("init_encounter",
++             pybind11::overload_cast<const GameContext&, MonsterEncounter>(&BattleContext::init),
++             "initialize the battle from a GameContext with an explicit monster encounter")
++        .def("clone", [](const BattleContext &bc) { return BattleContext(bc); },
++             "returns a deep copy of the battle (value semantics, RNG included) for deterministic lookahead")
++        .def("exit_battle", &BattleContext::exitBattle,
++             "write the battle results back into the GameContext")
++        .def_readonly("outcome", &BattleContext::outcome)
++        .def_readonly("input_state", &BattleContext::inputState)
++        .def_readonly("turn", &BattleContext::turn)
++        .def_readonly("player", &BattleContext::player)
++        .def_property_readonly("monsters", [](const BattleContext &bc) {
++            const int count = bc.monsters.monsterCount;
++            return std::vector<Monster>(bc.monsters.arr.begin(), bc.monsters.arr.begin() + count);
++        }, "returns the live monsters in the battle (truncated to monsterCount)")
++        .def_property_readonly("hand", [](const BattleContext &bc) {
++            const int count = bc.cards.cardsInHand;
++            return std::vector<CardInstance>(bc.cards.hand.begin(), bc.cards.hand.begin() + count);
++        }, "returns the cards currently in hand (truncated to cardsInHand)")
++        .def_property_readonly("draw_pile", [](const BattleContext &bc) {
++            return std::vector<CardInstance>(bc.cards.drawPile.begin(), bc.cards.drawPile.end());
++        }, "cards currently in the draw pile")
++        .def_property_readonly("discard_pile", [](const BattleContext &bc) {
++            return std::vector<CardInstance>(bc.cards.discardPile.begin(), bc.cards.discardPile.end());
++        }, "cards currently in the discard pile")
++        .def_property_readonly("exhaust_pile", [](const BattleContext &bc) {
++            return std::vector<CardInstance>(bc.cards.exhaustPile.begin(), bc.cards.exhaustPile.end());
++        }, "cards currently in the exhaust pile")
++        .def("__repr__", [](const BattleContext &bc) {
++            std::ostringstream os;
++            os << bc;
++            return os.str();
++        });
++
++    m.def("get_legal_actions", &sts::py::getLegalActions,
++          "enumerate all legal actions in the current battle state for forward search");
++
++    m.def("mcts_recommend",
++          [](const BattleContext &bc, int sims) {
++              search::BattleScumSearcher2 searcher(bc);     // copies bc internally
++              searcher.search(sims);
++              if (searcher.outcomePlayerHp > 0 && !searcher.bestActionSequence.empty()) {
++                  return searcher.bestActionSequence.front();   // first action of the best found line
++              }
++              const search::Action *best = nullptr; long maxsim = -1;   // else most-visited root edge
++              for (const auto &e : searcher.root.edges) {
++                  if (e.node.simulationCount > maxsim) { maxsim = e.node.simulationCount; best = &e.action; }
++              }
++              return best ? *best : search::Action(search::ActionType::END_TURN);
++          },
++          "run MCTS from the given battle state and return its recommended next action (BC teacher oracle)");
++
++    // ******************** OUT-OF-COMBAT GAME ACTION API ********************
++    // generic interface to drive map / rest / shop / event / rewards decisions from python,
++    // mirroring the in-combat forward-search api (get_legal_game_actions + GameAction.execute)
++
++    pybind11::enum_<search::GameAction::RewardsActionType>(m, "RewardsActionType")
++        .value("CARD", search::GameAction::RewardsActionType::CARD)
++        .value("GOLD", search::GameAction::RewardsActionType::GOLD)
++        .value("KEY", search::GameAction::RewardsActionType::KEY)
++        .value("POTION", search::GameAction::RewardsActionType::POTION)
++        .value("RELIC", search::GameAction::RewardsActionType::RELIC)
++        .value("CARD_REMOVE", search::GameAction::RewardsActionType::CARD_REMOVE)
++        .value("SKIP", search::GameAction::RewardsActionType::SKIP);
++
++    pybind11::class_<search::GameAction>(m, "GameAction")
++        .def(pybind11::init<std::uint32_t>())
++        .def_readonly("bits", &search::GameAction::bits)
++        .def_property_readonly("idx1", &search::GameAction::getIdx1, "primary index: map node x / rest option / event option / shop slot / reward slot")
++        .def_property_readonly("idx2", &search::GameAction::getIdx2)
++        .def_property_readonly("idx3", &search::GameAction::getIdx3)
++        .def_property_readonly("is_potion_action", &search::GameAction::isPotionAction)
++        .def_property_readonly("rewards_action_type", &search::GameAction::getRewardsActionType,
++                               "only meaningful on REWARDS / SHOP screens (CARD/RELIC/POTION/CARD_REMOVE/SKIP)")
++        .def("is_valid", &search::GameAction::isValidAction)
++        .def("execute", &search::GameAction::execute, "apply this choice to the GameContext")
++        .def("__repr__", [](const search::GameAction &a) {
++            std::ostringstream os;
++            os << "<slaythespire.GameAction bits=" << a.bits
++               << " idx1=" << a.getIdx1() << " idx2=" << a.getIdx2() << ">";
++            return os.str();
++        });
++
++    m.def("get_legal_game_actions",
++          [](const GameContext &gc) { return search::GameAction::getAllActionsInState(gc); },
++          "enumerate all legal out-of-combat game actions in the current screen state");
++
+ #ifdef VERSION_INFO
+     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
+ #else
+diff --git a/bindings/slaythespire.h b/bindings/slaythespire.h
+index 6ec4658..f5df7c1 100644
+--- a/bindings/slaythespire.h
++++ b/bindings/slaythespire.h
+@@ -10,6 +10,7 @@
+ #include <array>
+ 
+ #include "constants/Rooms.h"
++#include "sim/search/Action.h"
+ 
+ namespace sts {
+ 
+@@ -61,6 +62,8 @@ namespace sts {
+         std::vector<int> getNNMapRepresentation(const Map &map);
+         Room getRoomType(const Map &map, int x, int y);
+         bool hasEdge(const Map &map, int x, int y, int x2);
++
++        std::vector<search::Action> getLegalActions(const BattleContext &bc);
+     }
+ 
+ 
+diff --git a/include/sim/search/ScumSearchAgent2.h b/include/sim/search/ScumSearchAgent2.h
+index ffa449b..ccf0a0d 100644
+--- a/include/sim/search/ScumSearchAgent2.h
++++ b/include/sim/search/ScumSearchAgent2.h
+@@ -23,6 +23,13 @@ namespace sts::search {
+         int stepCount = 0;
+         bool paused = false;
+         bool pauseOnCardReward = false;
++        // pause and cede control to the caller (python) on these out-of-combat decision screens,
++        // so an external policy (e.g. a learned model) can make the choice instead of the built-in heuristic.
++        bool pauseOnMap = false;
++        bool pauseOnRest = false;
++        bool pauseOnShop = false;
++        bool pauseOnEvent = false;
++        bool pauseOnBattle = false;   // cede combat to caller (python drives BattleContext with a learned model)
+ 
+         bool printActions = false;
+         bool printLogs = false;
+diff --git a/src/sim/search/ScumSearchAgent2.cpp b/src/sim/search/ScumSearchAgent2.cpp
+index 53aa5d2..a0c1a74 100644
+--- a/src/sim/search/ScumSearchAgent2.cpp
++++ b/src/sim/search/ScumSearchAgent2.cpp
+@@ -35,6 +35,7 @@ void search::ScumSearchAgent2::playout(GameContext &gc) {
+ 
+     while (gc.outcome == GameOutcome::UNDECIDED && !paused) {
+         if (gc.screenState == ScreenState::BATTLE) {
++            if (pauseOnBattle) { paused = true; return; }   // cede to caller: python drives the battle
+             bc = BattleContext();
+             bc.init(gc);
+ 
+@@ -149,6 +150,8 @@ void search::ScumSearchAgent2::stepOutOfCombatPolicy(GameContext &gc) {
+ 
+     switch (gc.screenState) {
+         case ScreenState::EVENT_SCREEN:
++            // cede to caller only if there is a real choice (MATCH_AND_KEEP / no-select events have 0 valid bits)
++            if (pauseOnEvent && search::GameAction::getValidEventSelectBits(gc) != 0) { paused = true; return; }
+             stepEventPolicy(gc);
+             break;
+ 
+@@ -166,6 +169,7 @@ void search::ScumSearchAgent2::stepOutOfCombatPolicy(GameContext &gc) {
+         }
+ 
+         case ScreenState::SHOP_ROOM: {
++            if (pauseOnShop) { paused = true; return; }
+             bool purchased = false;
+             for (int i = 0; i < 3; ++i) {
+                 if (gc.info.shop.relicPrice(i) != -1 &&  gc.gold >= gc.info.shop.relicPrice(i)) {
+@@ -202,6 +206,7 @@ void search::ScumSearchAgent2::stepOutOfCombatPolicy(GameContext &gc) {
+         }
+ 
+         case ScreenState::REST_ROOM: {
++            if (pauseOnRest) { paused = true; return; }
+             if (gc.curHp > 50 && gc.deck.getUpgradeableCount() > 0 && !gc.hasRelic(RelicId::FUSION_HAMMER)) {
+                 takeAction(gc, 1);
+             } else if (gc.curHp < 15 && !gc.relics.has(RelicId::COFFEE_DRIPPER)){
+@@ -219,6 +224,10 @@ void search::ScumSearchAgent2::stepOutOfCombatPolicy(GameContext &gc) {
+             break;
+ 
+         case ScreenState::MAP_SCREEN:
++            if (pauseOnMap) { paused = true; return; }
++            stepRandom(gc);
++            return;
++
+         default:
+             stepRandom(gc);
+             return;

@@ -1,0 +1,38 @@
+{
+  "schema": "representative-eight-world-pilot-v1",
+  "created_unix": 1791795156.8904223,
+  "deadline_unix": 1791830744.283471,
+  "label_deadline_unix": 1791821744.283471,
+  "scope_change": "User requested representative eight-world trial before large-scale labelling.",
+  "selection": "state-only deterministic greedy stratification over original run-group splits, acts, hp, source-run diversity; no outcomes consulted",
+  "counts": {
+    "selected": 240,
+    "split_counts": {
+      "train": 144,
+      "validation": 80,
+      "development": 16
+    },
+    "by_act": {
+      "2": 85,
+      "1": 85,
+      "3": 70
+    },
+    "hp_bands": {
+      "high": 86,
+      "medium": 85,
+      "low": 69
+    },
+    "source_runs": 112,
+    "options": 922
+  },
+  "worlds_per_action": 8,
+  "combat_mcts": 2000,
+  "sampler": "same v4 research stochastic continuation approximation, NOT exact seed posterior",
+  "model": "same ArmG nonlinear advantage pipeline and source-balanced human preference prior",
+  "calibration_gate": "same 50 interventions / 15 runs / positive run-cluster bootstrap lower bound, six fixed advantage thresholds; no lowering gates for pilot",
+  "evaluation_pairs_if_calibrated": 300,
+  "large_scale_gate": "fresh paired research gate passes AND all replay/input/safety checks pass; no automatic large-scale job if calibration insufficient or evaluation fails",
+  "time_limit_behavior": "stop new work at stage caps; retain partial states/results; report INCONCLUSIVE rather than treat missing cases as losses or claim verification",
+  "no_guarantee_of_improvement": true,
+  "production_replaced": false
+}

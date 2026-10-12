@@ -1,0 +1,82 @@
+--- a/bindings/slaythespire.cpp
++++ b/bindings/slaythespire.cpp
+@@ -36,6 +36,71 @@
+ 
+ 
+ using namespace sts;
++
++
++// Research stochastic continuation model, NOT an exact original-seed posterior.
++// Preserve current visible map/boss/state and consumed encounter prefix.
++// Replace all RNG futures, unseen encounter suffixes and ordered relic pools.
++static GameContext samplePublicFuture(const GameContext &original, std::uint64_t worldSeed) {
++    if (original.act < 1 || original.act > 3 || !original.map)
++        throw std::runtime_error("world_sampler_unsupported_act_or_map");
++    GameContext copy(original);
++    copy.map = std::make_shared<Map>(*original.map);
++    copy.seed = worldSeed;
++    Random master(worldSeed);
++    auto reset = [&](Random &r) {
++        auto oldCounter = r.counter;
++        r = Random(master.randomLong(), oldCounter);
++    };
++    reset(copy.aiRng); reset(copy.cardRandomRng); reset(copy.cardRng);
++    reset(copy.eventRng); reset(copy.mathUtilRng); reset(copy.merchantRng);
++    reset(copy.miscRng); reset(copy.monsterHpRng); reset(copy.monsterRng);
++    reset(copy.neowRng); reset(copy.potionRng); reset(copy.relicRng);
++    reset(copy.shuffleRng); reset(copy.treasureRng);
++    auto shufflePool = [&](auto &pool) {
++        java::Collections::shuffle(pool.begin(), pool.end(), java::Random(master.randomLong()));
++    };
++    shufflePool(copy.commonRelicPool); shufflePool(copy.uncommonRelicPool);
++    shufflePool(copy.rareRelicPool); shufflePool(copy.shopRelicPool); shufflePool(copy.bossRelicPool);
++    shufflePool(copy.colorlessCardPool);
++    const int target = original.monsterList.size();
++    const int consumed = original.monsterListOffset;
++    if (consumed < 0 || consumed > target) throw std::runtime_error("world_bad_monster_offset");
++    copy.monsterList.clear();
++    for (int i=0;i<consumed;++i) copy.monsterList.push_back(original.monsterList[i]);
++    const int actIdx=copy.act-1;
++    // Initial queue is 3/2 weak + special first strong + 12 strong.
++    // Replacement queues contain only 12 strong encounters.
++    const int weak = copy.act==1 ? 3 : 2;
++    const bool initialQueue = target == weak+13;
++    if (initialQueue && consumed < weak) {
++        copy.populateMonsterList(MonsterEncounterPool::weakEnemies[actIdx],
++            MonsterEncounterPool::weakWeights[actIdx],MonsterEncounterPool::weakCount[actIdx],weak-consumed);
++    }
++    if (initialQueue && copy.monsterList.size()==weak && copy.monsterList.size()<target) {
++        copy.populateFirstStrongEnemy(MonsterEncounterPool::strongEnemies[actIdx],
++            MonsterEncounterPool::strongWeights[actIdx],MonsterEncounterPool::strongCount[actIdx]);
++    }
++    if (copy.monsterList.size()<target) {
++        copy.populateMonsterList(MonsterEncounterPool::strongEnemies[actIdx],
++            MonsterEncounterPool::strongWeights[actIdx],MonsterEncounterPool::strongCount[actIdx],target-copy.monsterList.size());
++    }
++    const int eliteTarget=original.eliteMonsterList.size();
++    const int eliteConsumed=original.eliteMonsterListOffset;
++    if (eliteConsumed<0 || eliteConsumed>eliteTarget) throw std::runtime_error("world_bad_elite_offset");
++    copy.eliteMonsterList.clear();
++    for(int i=0;i<eliteConsumed;++i)copy.eliteMonsterList.push_back(original.eliteMonsterList[i]);
++    while(copy.eliteMonsterList.size()<eliteTarget) {
++        auto next=MonsterEncounterPool::elites[actIdx][copy.monsterRng.random(2)];
++        if(copy.eliteMonsterList.empty() || next!=copy.eliteMonsterList.back())copy.eliteMonsterList.push_back(next);
++    }
++    if(copy.act==3 && copy.ascension>=20) {
++        std::vector<MonsterEncounter> possible{MonsterEncounter::AWAKENED_ONE,MonsterEncounter::TIME_EATER,MonsterEncounter::DONU_AND_DECA};
++        possible.erase(std::remove(possible.begin(),possible.end(),copy.boss),possible.end());
++        copy.secondBoss=possible[copy.monsterRng.random(1)];
++    }
++    return copy;
++}
+ 
+ PYBIND11_MODULE(slaythespire, m) {
+     m.doc() = "pybind11 example plugin"; // optional module docstring
+@@ -72,6 +137,7 @@
+             d["potion_capacity"] = gc.potionCapacity; d["shop_remove_count"] = gc.shopRemoveCount;
+             return d;
+         })
++        .def("sample_public_future", &samplePublicFuture, "research stochastic continuation preserving visible state; not an exact seed posterior")
+         .def("pick_reward_card", &sts::py::pickRewardCard, "choose to obtain the card at the specified index in the card reward list")
+         .def("skip_reward_cards", &sts::py::skipRewardCards, "choose to skip the card reward (increases max_hp by 2 with singing bowl)")
+         .def("get_card_reward", &sts::py::getCardReward, "return the current card reward list")

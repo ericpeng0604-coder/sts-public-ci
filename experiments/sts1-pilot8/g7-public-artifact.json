@@ -1,0 +1,20 @@
+{
+  "id": 11079234863,
+  "node_id": "MDg6QXJ0aWZhY3QxMTA3OTIzNDg2Mw==",
+  "name": "sts1-armg-ppo-v19-multistep-state",
+  "size_in_bytes": 4015884,
+  "url": "https://api.github.com/repos/ericpeng0604-coder/sts-public-ci/actions/artifacts/11079234863",
+  "archive_download_url": "https://api.github.com/repos/ericpeng0604-coder/sts-public-ci/actions/artifacts/11079234863/zip",
+  "expired": false,
+  "digest": "sha256:3f4fc50b9452138e50ed5274cc7ac71a9ad011077785279de7834a478c934e66",
+  "created_at": "2026-09-30T05:53:11Z",
+  "updated_at": "2026-09-30T05:53:11Z",
+  "expires_at": "2026-12-29T05:42:26Z",
+  "workflow_run": {
+    "id": 36674639174,
+    "repository_id": 1350244750,
+    "head_repository_id": 1350244750,
+    "head_branch": "gpt/sts1-ppo-v19-multistep-win-conversion-20260930",
+    "head_sha": "2358701770caf4ac3caa1e11866f0f0eabda46d8"
+  }
+}

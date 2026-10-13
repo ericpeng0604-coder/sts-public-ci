@@ -1,0 +1,69 @@
+{
+  "schema": "sts1-next-training-protocol-v1",
+  "stage1_run": 38342627848,
+  "architectures": [
+    "armg_v4_control",
+    "armg_v5_card_identity"
+  ],
+  "epochs": 40,
+  "learning_rate": 0.0003,
+  "thresholds": [
+    0.02,
+    0.05,
+    0.1,
+    0.15,
+    0.25,
+    0.4
+  ],
+  "multiple_comparisons": 12,
+  "bootstrap_draws": 6000,
+  "bootstrap_seed": 2026101301,
+  "calibration_min_decisions": 50,
+  "calibration_min_source_runs": 15,
+  "calibration_adoption": "positive 12-comparison-corrected source-cluster lower bound",
+  "mean_and_uncertainty": "mean paired win advantage and auxiliary per-world outcome variance; variance is not a confidence bound",
+  "training_cases": 640,
+  "fresh_calibration_cases": 200,
+  "label_worlds": {
+    "train": 8,
+    "calibration": 16,
+    "old_shortlist": 32
+  },
+  "combat_mcts": 2000,
+  "evaluation_pairs": 1200,
+  "evaluation_power_plan": "Approximate 80% power for +5 percentage-point paired difference at discordance probability <=0.4, one-sided alpha .05; fixed 1200 pairs, not sequential retesting.",
+  "evaluation_gate": "all 1200 pairs complete, all safety counters zero, positive net wins, exact one-sided sign p<=.05, mean floor not lower",
+  "evaluation_seeds": "first 1200 of the 2000 reserved seeds; never collected or labeled before model freeze",
+  "production_replaced": false,
+  "max_expected_wall_hours": 10,
+  "file_sha256": {
+    "paths.py": "6f727c8d3ef060f2502d9165f737feaf47829493d7849de4731f3758fb59c08d",
+    "prepare.py": "11266066ebb7570274316a7680d9642cc7d08b9ad490b6ee23ff31e9bf6120fe",
+    "features.py": "6e32126d716ff6c43bb1eaa3530e075a65a9fdf0be5e34f28f86a27223d2c1e6",
+    "test_features.py": "818e53c8dc3a3e8a4ceb4f300551ee428ca7c452a8b3c2ec770d7f8814b333df",
+    "verify.py": "0e6abcd711e382a56509ed327bab57c85f611ce3a59aeec5695746a164dc23c6",
+    "README.md": "9c50d8cd0552e480f422cd20970c70e7af88edf6d2bd1ca6c896be386c075eaf",
+    "train.py": "c8afe59cfee8f64804605c007dfb690f83b3f2eeb3810b701ff22a2072cf7438",
+    "label.py": "e6b05ebd2ce9683d2f7dd1e13b52e8a52128be14dad8a0c3ff86e6f155920846",
+    "evaluate.py": "19a4a3dce1fd824e05671bd9a502337bd12598919d0199a35dc620cec459284c",
+    "runtime.py": "ba94c9a99b0c383bb1a183f68d04e6272f9dddab07383aed52497f0bb2d6c1c0"
+  },
+  "pilot_sha256": {
+    "model_v4.py": "34c8605b69d7257ecebc5c5892cf4b05dc9df6501aca270928c6216d25426dc7",
+    "state_v3.py": "768a1a4476c5cffd7ded5d447b65bad3357007cda1b3bb5c59a300a863520fe4",
+    "collect_v3.py": "cfca317cb7ad52db321f86a39855c165af0d4557407aae7bab58c8074f0a5fa0",
+    "collect_v4.py": "00b2483ae4b6b7174d0a7a5db89a4a238482ddb84a246e8d9e7e43dad9015c78",
+    "worlds_v4.py": "d27545970b930e6c81edebcfaa22f54ad5bd263828f92dd08fc6934fd585df6f",
+    "replay_v4.py": "0ab50332e61974b6926539307bfa0ca14a0af24d3889647f4e3989f0bd9dcadb",
+    "catalog.json": "e64f88e01c306756decc811b545e9eed4c8b4bc7525f039b9b5d8f57a8840708",
+    "human-prior.json": "3e032eebb3f162f4902ee2edeba8ac33180558ad544a1f61e85cf05bd1314f56",
+    "sampler-binding.cpp": "6a68ef3db4492d1230550af6c91ec8d0598f24a7cbf650b80350171e7102c4dc"
+  },
+  "stage1_cost_measured": {
+    "cases": 8,
+    "new_rollouts": 744,
+    "mean_seconds_per_rollout": 1.6773285474828494,
+    "max_case_seconds_per_rollout": 4.751517189045747,
+    "limits": "Eight-case selected sample and replay overhead; not guaranteed runtime."
+  }
+}

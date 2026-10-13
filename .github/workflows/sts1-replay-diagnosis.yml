@@ -1,0 +1,49 @@
+name: STS1 Replay Diagnosis
+on:
+  push:
+    branches: [codex/sts1-eight-world-public-pilot]
+    paths:
+      - 'experiments/sts1-replay-diagnosis/**'
+      - '.github/workflows/sts1-replay-diagnosis.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: sts1-replay-diagnosis-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  PYTHONUNBUFFERED: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  PYTHONPATH: ${{ github.workspace }}/experiments/sts1-pilot8/native:${{ github.workspace }}/src:${{ github.workspace }}/experiments/sts1-pilot8
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: experiments/sts1-pilot8/requirements.txt
+      - run: python -m pip install --index-url https://download.pytorch.org/whl/cpu -r experiments/sts1-pilot8/requirements.txt
+      - name: Read already-public G7 source artifact
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '11079234863'
+          run-id: '36674639174'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: original-g7
+      - run: python experiments/sts1-pilot8/setup_runtime.py g7 --downloads original-g7
+      - name: Compile pinned public simulator and audited bindings
+        run: python experiments/sts1-pilot8/setup_runtime.py build --destination "$RUNNER_TEMP/sts1-native"
+      - run: python experiments/sts1-replay-diagnosis/diagnose.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pilot8-replay-diagnosis
+          path: experiments/sts1-pilot8/data/replay-diagnosis.json
+          if-no-files-found: warn

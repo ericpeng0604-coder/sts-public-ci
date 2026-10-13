@@ -1,0 +1,285 @@
+{
+  "run_id": 38353967978,
+  "url": "https://github.com/ericpeng0604-coder/sts-public-ci/actions/runs/38353967978",
+  "run_commit": "54681573e5d704a728e5205cea8c100747a35d47",
+  "pricing_fix_commit": "293b945ea9ebac3876de48f48c316b77a3a126b0",
+  "training_report": {
+    "status": "PASS",
+    "training_cases": 640,
+    "fresh_calibration_cases": 200,
+    "epochs": 40,
+    "architectures": [
+      "armg_v4_control",
+      "armg_v5_card_identity"
+    ],
+    "calibration": [
+      {
+        "architecture": "armg_v4_control",
+        "threshold": 0.02,
+        "lower": -0.03164511494252874,
+        "mean": -0.006681034482758621,
+        "runs": 29,
+        "decisions": 76,
+        "method": "source-run cluster bootstrap; 12 preregistered model/gate combinations; approximate-world evidence"
+      },
+      {
+        "architecture": "armg_v4_control",
+        "threshold": 0.05,
+        "lower": null,
+        "runs": 14,
+        "decisions": 14
+      },
+      {
+        "architecture": "armg_v4_control",
+        "threshold": 0.1,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v4_control",
+        "threshold": 0.15,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v4_control",
+        "threshold": 0.25,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v4_control",
+        "threshold": 0.4,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v5_card_identity",
+        "threshold": 0.02,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v5_card_identity",
+        "threshold": 0.05,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v5_card_identity",
+        "threshold": 0.1,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v5_card_identity",
+        "threshold": 0.15,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v5_card_identity",
+        "threshold": 0.25,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      },
+      {
+        "architecture": "armg_v5_card_identity",
+        "threshold": 0.4,
+        "lower": null,
+        "runs": 0,
+        "decisions": 0
+      }
+    ],
+    "noise_prediction_diagnostics": {
+      "armg_v4_control": null,
+      "armg_v5_card_identity": {
+        "outcome_variance_rmse": 0.08747150799665478,
+        "mean_predicted_sampling_se_at16worlds": 0.06732205174778007,
+        "not_a_confidence_bound": true
+      }
+    },
+    "selected": null,
+    "verdict": "HOLD_G7_NO_CALIBRATED_ADVANTAGE",
+    "production_replaced": false,
+    "formal_evaluation_pairs_if_eligible": 1200,
+    "calibration_consumed": true,
+    "no_more_tuning_on_this_calibration_cohort": true
+  },
+  "final_report": {
+    "verdict": "HOLD_G7_NO_CALIBRATED_ADVANTAGE",
+    "formal_evaluation_executed": false,
+    "production_replaced": false,
+    "known_simulator_courier_pricing_bug": true,
+    "real_game_performance_claim_supported": false,
+    "training": {
+      "status": "PASS",
+      "training_cases": 640,
+      "fresh_calibration_cases": 200,
+      "epochs": 40,
+      "architectures": [
+        "armg_v4_control",
+        "armg_v5_card_identity"
+      ],
+      "calibration": [
+        {
+          "architecture": "armg_v4_control",
+          "threshold": 0.02,
+          "lower": -0.03164511494252874,
+          "mean": -0.006681034482758621,
+          "runs": 29,
+          "decisions": 76,
+          "method": "source-run cluster bootstrap; 12 preregistered model/gate combinations; approximate-world evidence"
+        },
+        {
+          "architecture": "armg_v4_control",
+          "threshold": 0.05,
+          "lower": null,
+          "runs": 14,
+          "decisions": 14
+        },
+        {
+          "architecture": "armg_v4_control",
+          "threshold": 0.1,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v4_control",
+          "threshold": 0.15,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v4_control",
+          "threshold": 0.25,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v4_control",
+          "threshold": 0.4,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v5_card_identity",
+          "threshold": 0.02,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v5_card_identity",
+          "threshold": 0.05,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v5_card_identity",
+          "threshold": 0.1,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v5_card_identity",
+          "threshold": 0.15,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v5_card_identity",
+          "threshold": 0.25,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        },
+        {
+          "architecture": "armg_v5_card_identity",
+          "threshold": 0.4,
+          "lower": null,
+          "runs": 0,
+          "decisions": 0
+        }
+      ],
+      "noise_prediction_diagnostics": {
+        "armg_v4_control": null,
+        "armg_v5_card_identity": {
+          "outcome_variance_rmse": 0.08747150799665478,
+          "mean_predicted_sampling_se_at16worlds": 0.06732205174778007,
+          "not_a_confidence_bound": true
+        }
+      },
+      "selected": null,
+      "verdict": "HOLD_G7_NO_CALIBRATED_ADVANTAGE",
+      "production_replaced": false,
+      "formal_evaluation_pairs_if_eligible": 1200,
+      "calibration_consumed": true,
+      "no_more_tuning_on_this_calibration_cohort": true
+    }
+  },
+  "model_freeze": {
+    "candidate_sha256": null,
+    "source_sha256": {
+      "paths.py": "6f727c8d3ef060f2502d9165f737feaf47829493d7849de4731f3758fb59c08d",
+      "prepare.py": "11266066ebb7570274316a7680d9642cc7d08b9ad490b6ee23ff31e9bf6120fe",
+      "features.py": "6e32126d716ff6c43bb1eaa3530e075a65a9fdf0be5e34f28f86a27223d2c1e6",
+      "test_features.py": "818e53c8dc3a3e8a4ceb4f300551ee428ca7c452a8b3c2ec770d7f8814b333df",
+      "verify.py": "0e6abcd711e382a56509ed327bab57c85f611ce3a59aeec5695746a164dc23c6",
+      "README.md": "9c50d8cd0552e480f422cd20970c70e7af88edf6d2bd1ca6c896be386c075eaf",
+      "train.py": "c8afe59cfee8f64804605c007dfb690f83b3f2eeb3810b701ff22a2072cf7438",
+      "label.py": "e6b05ebd2ce9683d2f7dd1e13b52e8a52128be14dad8a0c3ff86e6f155920846",
+      "evaluate.py": "19a4a3dce1fd824e05671bd9a502337bd12598919d0199a35dc620cec459284c",
+      "runtime.py": "ba94c9a99b0c383bb1a183f68d04e6272f9dddab07383aed52497f0bb2d6c1c0"
+    },
+    "protocol_sha256": "790b882127e9b35241816770bc42bbc73d5106c11e918d25f28d1f43ccb81591",
+    "g7_sha256": "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0",
+    "calibration_gate_frozen": null,
+    "evaluation_pairs": 1200,
+    "mechanical_amendment_sha256": "24cf34628d17465c85e151fd4c6da4c983f1fb896a46c7822b575edd5a088206",
+    "mechanical_source_sha256": {
+      "mechanical.py": "dbe3b0278e82135dd76950ec66bb14684da2e0cc1529df6089e16253772fe7e6",
+      "label.py": "460328d2f59b606579742f9fa8948f5845b0d85fd9f1a3c82e35e5c0a14f5255",
+      "evaluate.py": "205b7bae04c57bb065bc4e9da9e7a1ccac8192d3ceb1ebd81877eb9715ec70d2",
+      "verify.py": "947940c2c465017ad5c9609908fca0f547a26c417c814d550b855e0ecde65f90",
+      "freeze.py": "f0b040b2b02e0e1dfb3e3c77d93eab415e2a51c829d064b4ce2bffe4eec80af4",
+      "test_mechanical.py": "507dabb6bb8cceaa0c609c2263b1340e28234872d85815a0968815bd42b56281",
+      "README.md": "ba0d5a3a29307d251d315f8cfb65f13005b3bb0c71da1e9a627c1f4647b926ab"
+    },
+    "known_simulator_courier_pricing_bug": true,
+    "real_game_performance_claim_supported": false
+  },
+  "weight_sha256": {
+    "armg_v4_control.pt": "3250c9dd44245ad696b5509a62214369ef1d99e662fb643f84ac927bc401dbc4",
+    "armg_v5_card_identity.pt": "263d5d73396895f05770841fc7815b1999cd64499560d693a405ff9b3dbc00dc"
+  },
+  "models_artifact_id": 11792949028,
+  "final_report_artifact_id": 11793058775,
+  "baseline": "G7 + MCTS 2000",
+  "calibration_cohort_consumed": true,
+  "calibration_may_not_be_reused_as_fresh_validation": true,
+  "evaluation_reserved_seeds_executed": false,
+  "active_engine_pricing_corrected": false,
+  "corrected_pricing_patch_verified": true,
+  "timing": {
+    "created_at": "2026-10-13T05:56:12Z",
+    "completed_at": "2026-10-13T06:28:11Z",
+    "recovery_elapsed_minutes": 31.983333333333334
+  }
+}

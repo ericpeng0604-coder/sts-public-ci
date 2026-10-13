@@ -1,0 +1,40 @@
+--- a/src/game/Shop.cpp
++++ b/src/game/Shop.cpp
+@@ -127,7 +127,7 @@
+ 
+     if (gc.hasRelic(RelicId::THE_COURIER)) {
+         relics[idx] = gc.returnRandomRelic(rollRelicTier(gc.merchantRng), true, false);
+-        getNewPrice(gc, getRelicBasePrice(relics[idx]));
++        relicPrice(idx) = getNewPrice(gc, getRelicBasePrice(relics[idx]));
+     } else {
+         relicPrice(idx) = -1;
+     }
+@@ -198,21 +198,21 @@
+     if (gc.hasRelic(RelicId::THE_COURIER)) {
+         price *= 0.8f;
+     }
+-    if (gc.hasRelic(RelicId::THE_COURIER)) {
++    if (gc.hasRelic(RelicId::MEMBERSHIP_CARD)) {
+         price *= 0.5f;
+     }
+     return static_cast<int>(price);
+ }
+ 
+ int Shop::getNewPrice(GameContext &gc, int basePrice) {
+-    basePrice = static_cast<int>(std::round(gc.merchantRng.random(0.95f, 1.05f)));
+-    if (gc.hasRelic(RelicId::THE_COURIER)) {
+-        std::round(basePrice * COURIER_FACTOR);
++    float price = static_cast<float>(basePrice) * gc.merchantRng.random(0.95f, 1.05f);
++    if (gc.hasRelic(RelicId::THE_COURIER)) {
++        price *= COURIER_FACTOR;
+     }
+     if (gc.hasRelic(RelicId::MEMBERSHIP_CARD)) {
+-        std::round(basePrice * MEMBERSHIP_CARD_FACTOR);
+-    }
+-    return basePrice;
++        price *= MEMBERSHIP_CARD_FACTOR;
++    }
++    return static_cast<int>(std::round(price));
+ }
+ 
+ int Shop::getRemoveCost(const GameContext &gc) {

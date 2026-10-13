@@ -1,0 +1,338 @@
+[
+  [
+    {
+      "seed": "379401236669681506",
+      "split": "train"
+    },
+    {
+      "seed": "104919984935323707",
+      "split": "train"
+    },
+    {
+      "seed": "809540048890411154",
+      "split": "train"
+    },
+    {
+      "seed": "570771185590364113",
+      "split": "train"
+    },
+    {
+      "seed": "798707529917646519",
+      "split": "train"
+    },
+    {
+      "seed": "617417032814758724",
+      "split": "train"
+    },
+    {
+      "seed": "68248961176201831",
+      "split": "calibration"
+    },
+    {
+      "seed": "371914382821112158",
+      "split": "calibration"
+    },
+    {
+      "seed": "296998637057897956",
+      "split": "calibration"
+    },
+    {
+      "seed": "104129381257954935",
+      "split": "calibration"
+    }
+  ],
+  [
+    {
+      "seed": "1057885429001499826",
+      "split": "train"
+    },
+    {
+      "seed": "15694880262195639",
+      "split": "train"
+    },
+    {
+      "seed": "478938435201401679",
+      "split": "train"
+    },
+    {
+      "seed": "391881568992607695",
+      "split": "train"
+    },
+    {
+      "seed": "846354789922546964",
+      "split": "train"
+    },
+    {
+      "seed": "269050590988580412",
+      "split": "train"
+    },
+    {
+      "seed": "846976936245188191",
+      "split": "calibration"
+    },
+    {
+      "seed": "468578802604606234",
+      "split": "calibration"
+    },
+    {
+      "seed": "745839210042709570",
+      "split": "calibration"
+    },
+    {
+      "seed": "88931276883440488",
+      "split": "calibration"
+    }
+  ],
+  [
+    {
+      "seed": "322071234357061020",
+      "split": "train"
+    },
+    {
+      "seed": "847996718121903049",
+      "split": "train"
+    },
+    {
+      "seed": "842951777766108753",
+      "split": "train"
+    },
+    {
+      "seed": "356016741022198687",
+      "split": "train"
+    },
+    {
+      "seed": "889223446041624558",
+      "split": "train"
+    },
+    {
+      "seed": "632095732910344519",
+      "split": "train"
+    },
+    {
+      "seed": "988061619530711704",
+      "split": "calibration"
+    },
+    {
+      "seed": "230541221182499290",
+      "split": "calibration"
+    },
+    {
+      "seed": "17242025836759161",
+      "split": "calibration"
+    },
+    {
+      "seed": "534147554939917698",
+      "split": "calibration"
+    }
+  ],
+  [
+    {
+      "seed": "4406260801525405",
+      "split": "train"
+    },
+    {
+      "seed": "916224239508414951",
+      "split": "train"
+    },
+    {
+      "seed": "754218879182182020",
+      "split": "train"
+    },
+    {
+      "seed": "1090087240805881836",
+      "split": "train"
+    },
+    {
+      "seed": "125232761025837410",
+      "split": "train"
+    },
+    {
+      "seed": "193633011220791748",
+      "split": "train"
+    },
+    {
+      "seed": "249822357561038150",
+      "split": "calibration"
+    },
+    {
+      "seed": "446895407059224021",
+      "split": "calibration"
+    },
+    {
+      "seed": "399016226172162533",
+      "split": "calibration"
+    },
+    {
+      "seed": "892048921500400322",
+      "split": "calibration"
+    }
+  ],
+  [
+    {
+      "seed": "464774259006563475",
+      "split": "train"
+    },
+    {
+      "seed": "890509012984352096",
+      "split": "train"
+    },
+    {
+      "seed": "578200996595033751",
+      "split": "train"
+    },
+    {
+      "seed": "723680396946359007",
+      "split": "train"
+    },
+    {
+      "seed": "335521006435982044",
+      "split": "train"
+    },
+    {
+      "seed": "141367542065790216",
+      "split": "train"
+    },
+    {
+      "seed": "694520038678648021",
+      "split": "calibration"
+    },
+    {
+      "seed": "812410617851658862",
+      "split": "calibration"
+    },
+    {
+      "seed": "334409863043922132",
+      "split": "calibration"
+    },
+    {
+      "seed": "345442741820862754",
+      "split": "calibration"
+    }
+  ],
+  [
+    {
+      "seed": "259721764001638530",
+      "split": "train"
+    },
+    {
+      "seed": "563387261518571633",
+      "split": "train"
+    },
+    {
+      "seed": "852939794355556026",
+      "split": "train"
+    },
+    {
+      "seed": "680982569103982400",
+      "split": "train"
+    },
+    {
+      "seed": "1018779508271416098",
+      "split": "train"
+    },
+    {
+      "seed": "255694861645916038",
+      "split": "train"
+    },
+    {
+      "seed": "1029101862083554049",
+      "split": "calibration"
+    },
+    {
+      "seed": "163753166882465006",
+      "split": "calibration"
+    },
+    {
+      "seed": "1005395337806248567",
+      "split": "calibration"
+    },
+    {
+      "seed": "405267682705957546",
+      "split": "calibration"
+    }
+  ],
+  [
+    {
+      "seed": "549365542089041117",
+      "split": "train"
+    },
+    {
+      "seed": "774295354776515488",
+      "split": "train"
+    },
+    {
+      "seed": "994776011438570035",
+      "split": "train"
+    },
+    {
+      "seed": "53590090115587703",
+      "split": "train"
+    },
+    {
+      "seed": "992880585702826714",
+      "split": "train"
+    },
+    {
+      "seed": "141692242611672469",
+      "split": "train"
+    },
+    {
+      "seed": "1122185639812902835",
+      "split": "calibration"
+    },
+    {
+      "seed": "693854666923585093",
+      "split": "calibration"
+    },
+    {
+      "seed": "905965448532636739",
+      "split": "calibration"
+    },
+    {
+      "seed": "294175133228913883",
+      "split": "calibration"
+    }
+  ],
+  [
+    {
+      "seed": "477417181567507301",
+      "split": "train"
+    },
+    {
+      "seed": "364981992543869292",
+      "split": "train"
+    },
+    {
+      "seed": "562970905196795521",
+      "split": "train"
+    },
+    {
+      "seed": "572481834683798992",
+      "split": "train"
+    },
+    {
+      "seed": "596757077255848416",
+      "split": "train"
+    },
+    {
+      "seed": "408530882063160973",
+      "split": "train"
+    },
+    {
+      "seed": "374844055614346362",
+      "split": "calibration"
+    },
+    {
+      "seed": "947155793504375903",
+      "split": "calibration"
+    },
+    {
+      "seed": "378129865987178436",
+      "split": "calibration"
+    },
+    {
+      "seed": "899282893208606310",
+      "split": "calibration"
+    }
+  ]
+]

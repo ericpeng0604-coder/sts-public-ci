@@ -1,0 +1,26 @@
+{
+  "schema": "sts1-next-round-stage1-v1",
+  "file_sha256": {
+    "cohort-manifest.json": "70af07499a1625a01503c1aa4e67abf0d9aac1a18067a4ad5cc9813ddf15a379",
+    "finalize.py": "b69b407d2aa481e9f8c73cc09f567f18f3e094bb009141ca27b360bdb32468bb",
+    "refine.py": "23740c01fb61cb54eb158aec4d42a37d81e3b8cd4faf7da6e1c55348746308cf",
+    "diagnose.py": "f3736edb07f6f133bb8faeb547fff6115a41c4460b52a47d3c43c4488008d2de",
+    "collect.py": "2530dbaab3afb652e7d0d04cf26cb644e5e92187642971df63e609c2b79a3a91",
+    "collection-shards.json": "f63a2d51e533acd9ef08a6fa7713c17e5581c80283decd168ea098a3b5132db7",
+    "verify.py": "00190dc58608a51a9d3fff0980a01a8a4f78d5d0ba4c1a16444fb487ac726ebd",
+    "common.py": "93c436ff6b85f1a3f9dbb68a4c5094a43da37f4febf77b679a9ea122daab75bc",
+    "README.md": "a2f4c1b8a8d65466fe6c4c4488c56b8fd3eb62cd8efdea6927d89d48612147d7"
+  },
+  "frozen_before_execution": true,
+  "stage": "diagnose, refine8, capture80runs, select400train200calibration",
+  "architecture_change": false,
+  "combat_mcts": 2000,
+  "future_worlds": [
+    8,
+    16,
+    32
+  ],
+  "same_worlds_for_all_options": true,
+  "formal_evaluation_executed": false,
+  "public_base_commit": "7e9b68e879066850b41e9e5ebe7cc2a91d0cd18b"
+}

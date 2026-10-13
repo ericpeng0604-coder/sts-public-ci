@@ -17,7 +17,7 @@
     "state_v3.py": "768a1a4476c5cffd7ded5d447b65bad3357007cda1b3bb5c59a300a863520fe4",
     "local-pilot-result.json": "3c7c1f465b235fa589360b6e3e34b761d016d00b74b7a17dc9221cab58206816",
     "human-prior.json": "3e032eebb3f162f4902ee2edeba8ac33180558ad544a1f61e85cf05bd1314f56",
-    "pilot_jobs_v4.py": "ef2ca963840530962cf6a69c7aaf8e39a620ff71fddc87348550b6d7667141d7",
+    "pilot_jobs_v4.py": "c0bdd7b05525f0b8514e7ed59f08f221b6e56318d4d75e5fe08042b20a4e4cee",
     "shards.json": "b7704589347e089bd0d3927ca00cc1185b4b4994907f4c6311440318a9c88ec7",
     "runtime_v4.py": "92b30cc48d8f98a7edb89825ce9d885266ffe0bc6e70134cfec1212be32e8ab4",
     "model_v4.py": "34c8605b69d7257ecebc5c5892cf4b05dc9df6501aca270928c6216d25426dc7",
@@ -31,7 +31,7 @@
     "sampler-binding.cpp": "6a68ef3db4492d1230550af6c91ec8d0598f24a7cbf650b80350171e7102c4dc",
     "catalog.py": "536fcbf6a968a5941e415fdfc73ee54b59445ce9530bf9b940c0132a58931947",
     "catalog.json": "e64f88e01c306756decc811b545e9eed4c8b4bc7525f039b9b5d8f57a8840708",
-    "README.md": "58672d9112682e84a6e5c390d5360f68daedecbbe0ab4cfae442f16e54575315",
+    "README.md": "f5aedc08feea7a5f7955e105f4bc0a02a900cc1b4f8a037529d5b183c91844ff",
     "setup_runtime.py": "7c13d2e5394a698bbecc731c3768a061edc2fc8bdc8a21b300c5821378576ada",
     "stochastic-future-binding.patch": "5ad46f2520fd01f0271f4c4febf0901501380426296af18792ae23eb008d42d4",
     "upstream-hooks.patch": "6cb33d57fc70ab44d23c2e5216e745cd7af59477b5994ae7065990b406933dbc",
@@ -154,7 +154,9 @@
     "input-scouts/169778790589513825.json": "e0b195de4f331be61c1cad2e1f467d37879c0115fe5727de58462fb1c6155556",
     "input-scouts/345077367354578495.json": "0484b29a0ed37e3267b00ef86a3868ca3520ce0c4515fbfa03a8908cf83ec71e",
     "input-scouts/462818249979261699.json": "ed7c9b54134c03497980ca3d5efb746062625059c330c58d4db846462b1fee9d",
-    "input-scouts/839804312884778531.json": "5a872f12c74b1989e6dd662b2360e6a5c2d628c8990c26ff8ffb17694fb2c64c"
+    "input-scouts/839804312884778531.json": "5a872f12c74b1989e6dd662b2360e6a5c2d628c8990c26ff8ffb17694fb2c64c",
+    "replay_v4.py": "0ab50332e61974b6926539307bfa0ca14a0af24d3889647f4e3989f0bd9dcadb",
+    "test_replay_v4.py": "60e72ba4738803fece4cabcfa72ce94f144f4b39acdc9f1d45619abeb328a060"
   },
   "project_snapshot_parent": "74417e621d4acdd2dd7296707cf2e38e6b8db2ed",
   "g7_source": {
@@ -165,5 +167,21 @@
     "expected_checkpoint_sha256": "8313c99d9b0ab0c0d206fdd2f744fed11f4104d440dcb465cf7c78a517f9ccd0"
   },
   "native_build": "GitHub builds pinned public source + upstream hook patch + auditable sampler binding; no opaque native binary published",
-  "local_reference_native_sha256": "adf42fb23b6be43ee0e17cfbe4c5655eda1117d5c18109e44a159c1874fa7e61"
+  "local_reference_native_sha256": "adf42fb23b6be43ee0e17cfbe4c5655eda1117d5c18109e44a159c1874fa7e61",
+  "recovery": {
+    "original_run": 38266942068,
+    "reused_shards": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6
+    ],
+    "recomputed_shards": [
+      5,
+      7
+    ],
+    "replay_exception": "Only identical map descriptors with finite float32 scores within 1e-5; use the legal recorded action. Card state, inputs, choices and teacher identity still match exactly."
+  }
 }

@@ -40,6 +40,7 @@ jobs:
       - run: python experiments/sts1-pilot8/setup_runtime.py g7 --downloads original-g7
       - name: Compile pinned public simulator and audited bindings
         run: python experiments/sts1-pilot8/setup_runtime.py build --destination "$RUNNER_TEMP/sts1-native"
+      - run: python -m unittest discover -s experiments/sts1-pilot8 -p 'test_replay_v4.py'
       - run: python experiments/sts1-pilot8/run.py preflight
       - uses: actions/upload-artifact@v4
         if: always()
@@ -55,7 +56,7 @@ jobs:
       fail-fast: false
       max-parallel: 8
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [5, 7]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -83,6 +84,7 @@ jobs:
             experiments/sts1-pilot8/data/labels/
             experiments/sts1-pilot8/data/shard-summary.json
             experiments/sts1-pilot8/data/label-progress.jsonl
+            experiments/sts1-pilot8/data/replay-ties.jsonl
           if-no-files-found: warn
           retention-days: 30
   train-and-evaluate:
@@ -110,6 +112,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: pilot8-shard-*
+          path: downloaded
+      - name: Reuse six verified shards from the original run
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '11756167217,11755893461,11755829369,11755783831,11755368969,11755248678'
+          run-id: '38266942068'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           path: downloaded
       - run: python experiments/sts1-pilot8/run.py aggregate --downloads downloaded
       - run: python experiments/sts1-pilot8/train.py

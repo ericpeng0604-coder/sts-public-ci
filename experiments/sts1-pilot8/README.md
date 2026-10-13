@@ -19,3 +19,19 @@ Upstream credits: [sts_lightspeed](https://github.com/gamerpuppy/sts_lightspeed)
 The local 240-state pilot has completed and its advantage calibration failed: HOLD_G7_NO_CALIBRATED_ADVANTAGE. Public execution reproduces the same frozen data/protocol on parallel runners; it is not an independent performance test or a reason to relax thresholds. Full-scale labelling is not started by this workflow. See local-pilot-result.json.
 
 Training and calibration traverse labels in stable case-ID order for reproducibility across parallel workers. The local result used its original file order; this ordering fix is not a new independent performance holdout.
+
+
+Replay recovery (2026-10-13): original Actions run 38266942068 completed six shards,
+but shards 5 and 7 stopped on historical map argmax differences. Local replay of
+all 28 affected source runs recovered all 63 selected card states. Six map choices
+had identical model descriptors and score gaps of at most 9.54e-7. Historical
+reconstruction now accepts the recorded legal map index only for identical
+descriptors and finite scores within 1e-5, logging every exception. Other journal
+mismatches still stop the run; card states, action sets, teacher choices, observation
+vectors and descriptors remain exact checks. This exception reconstructs history;
+it does not change G7 decisions in future rollouts or evaluation.
+
+Recovery reuses successful original shards 0, 1, 2, 3, 4 and 6, recomputes 5 and 7,
+and requires all 240 states and eight complete shard summaries before training.
+The architecture, calibration thresholds, paired worlds, and evaluation criteria
+are unchanged. Replay diagnosis is diagnostic evidence, not a fresh win-rate test.

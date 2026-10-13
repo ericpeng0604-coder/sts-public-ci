@@ -1,0 +1,23 @@
+{
+  "schema": "sts1-mechanical-recovery-v1",
+  "original_run": 38344535817,
+  "diagnosis_run": 38350942615,
+  "combat_mcts": 2000,
+  "game_step_bound": 10000,
+  "native_engine_changed": false,
+  "resample_failed_worlds": false,
+  "model_hyperparameters_changed": false,
+  "calibration_results_seen": false,
+  "known_simulator_courier_pricing_bug": true,
+  "real_game_performance_claim_supported": false,
+  "formal_pairs_if_eligible": 1200,
+  "source_sha256": {
+    "mechanical.py": "dbe3b0278e82135dd76950ec66bb14684da2e0cc1529df6089e16253772fe7e6",
+    "label.py": "460328d2f59b606579742f9fa8948f5845b0d85fd9f1a3c82e35e5c0a14f5255",
+    "evaluate.py": "205b7bae04c57bb065bc4e9da9e7a1ccac8192d3ceb1ebd81877eb9715ec70d2",
+    "verify.py": "947940c2c465017ad5c9609908fca0f547a26c417c814d550b855e0ecde65f90",
+    "freeze.py": "f0b040b2b02e0e1dfb3e3c77d93eab415e2a51c829d064b4ce2bffe4eec80af4",
+    "test_mechanical.py": "507dabb6bb8cceaa0c609c2263b1340e28234872d85815a0968815bd42b56281",
+    "README.md": "ba0d5a3a29307d251d315f8cfb65f13005b3bb0c71da1e9a627c1f4647b926ab"
+  }
+}
